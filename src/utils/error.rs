@@ -17,6 +17,8 @@ pub enum NorenError {
     LookupFailure(),
     UploadFailure(),
     DataFailure(),
+    JSONError(serde_json::Error),
+    IOFailure(std::io::Error),
     RDBFileError(RdbErr),
 }
 
@@ -28,6 +30,8 @@ impl std::fmt::Display for NorenError {
             NorenError::UploadFailure() => todo!(),
             NorenError::DataFailure() => todo!(),
             NorenError::RDBFileError(rdb_err) => todo!(),
+            NorenError::IOFailure(error) => todo!(),
+            NorenError::JSONError(error) => todo!(),
         }
     }
 }
@@ -37,6 +41,19 @@ impl From<RdbErr> for NorenError {
         NorenError::RDBFileError(value)
     }
 }
+
+impl From<serde_json::Error> for NorenError {
+    fn from(value: serde_json::Error) -> Self {
+        NorenError::JSONError(value)
+    }
+}
+
+impl From<std::io::Error> for NorenError {
+    fn from(value: std::io::Error) -> Self {
+        return NorenError::IOFailure(value);
+    }
+}
+
 impl std::error::Error for NorenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         None

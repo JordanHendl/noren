@@ -33,6 +33,7 @@ pub struct DatabaseLayoutFile {
     pub models: String,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct ModelLayoutFile {
 
 }

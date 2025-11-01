@@ -17,3 +17,8 @@ bytemuck = { version = "1.17", features = ["derive"] }
 bincode = "1"
 
 [lib]
+
+[[bin]]
+name = "noren_dbgen"
+path = "src/exec/dbgen/bin.rs"
+
