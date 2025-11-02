@@ -119,8 +119,20 @@ impl DB {
 }
 
 impl DB {
-    fn assemble_model<Model, Mesh, Material, Texture, Geometry, Image, FetchGeometry, FetchImage,
-                      MakeTexture, MakeMaterial, MakeMesh, MakeModel>(
+    fn assemble_model<
+        Model,
+        Mesh,
+        Material,
+        Texture,
+        Geometry,
+        Image,
+        FetchGeometry,
+        FetchImage,
+        MakeTexture,
+        MakeMaterial,
+        MakeMesh,
+        MakeModel,
+    >(
         &mut self,
         entry: DatabaseEntry,
         mut fetch_geometry: FetchGeometry,
@@ -229,9 +241,7 @@ mod tests {
         imagery::{HostImage, ImageInfo},
         primitives::Vertex,
     };
-    use crate::parsing::{
-        MaterialLayout, MeshLayout, ModelLayout, ModelLayoutFile, TextureLayout,
-    };
+    use crate::parsing::{MaterialLayout, MeshLayout, ModelLayout, ModelLayoutFile, TextureLayout};
     use crate::utils::rdbfile::RDBFile;
     use std::fs::File;
     use tempfile::tempdir;
