@@ -4,11 +4,12 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db};
+use common::{SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db, write_image_artifact};
 use dashi::driver::command::BlitImage;
 use dashi::gpu::CommandStream;
 use dashi::gpu::driver::state::SubresourceRange;
 use dashi::{Filter, Rect2D};
+use image::RgbaImage;
 use std::error::Error;
 
 fn main() {
@@ -66,8 +67,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         SAMPLE_TEXTURE_ENTRY, dims[0], dims[1]
     );
 
-    // Should blit to a display.
-    todo!();
+    let preview = RgbaImage::from_raw(dims[0], dims[1], source_image.data().to_vec())
+        .ok_or("invalid source image dimensions")?;
+    let output_path = write_image_artifact("image_blit", "blit.png", &preview)?;
+    println!("Saved blit output preview to {}", output_path.display());
 
     Ok(())
 }

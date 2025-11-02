@@ -4,12 +4,15 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db};
+use common::{
+    SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db, write_image_artifact, write_text_artifact,
+};
 use dashi::builders::{BindTableBuilder, BindTableLayoutBuilder};
 use dashi::{
     BindGroupVariable, BindGroupVariableType, ImageView, IndexedResource, SamplerInfo, ShaderInfo,
     ShaderResource, ShaderType,
 };
+use image::RgbaImage;
 use std::error::Error;
 
 fn main() {
@@ -71,8 +74,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         "Created bindless table {:?} containing texture '{}'",
         table, SAMPLE_TEXTURE_ENTRY
     );
-    
-    // Should render to a display, with a camera.
-    todo!();
+
+    let summary = format!(
+        "Bindless table: {:?}\nLayout: {:?}\nTexture handle: {:?}\nSampler: {:?}\n",
+        table, layout, gpu_texture, sampler
+    );
+    let summary_path = write_text_artifact("bindless_render", "table.txt", &summary)?;
+    println!("Wrote bindless summary to {}", summary_path.display());
+
+    let dims = texture.info().dim;
+    let preview = RgbaImage::from_raw(dims[0], dims[1], texture.data().to_vec())
+        .ok_or("invalid texture dimensions")?;
+    let image_path = write_image_artifact("bindless_render", "texture.png", &preview)?;
+    println!("Saved texture preview to {}", image_path.display());
+
     Ok(())
 }

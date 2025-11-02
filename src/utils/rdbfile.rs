@@ -40,7 +40,7 @@ fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> T {
 
 #[cfg(test)]
 mod tests {
-    use super::{name64, portable_type_hash, RDBFile};
+    use super::{RDBFile, name64, portable_type_hash};
     #[test]
     fn same_everywhere_for_same_type() {
         let a = portable_type_hash::<Result<i32, ()>>();
@@ -178,8 +178,7 @@ impl RDBFile {
         if let Some(pos) = self.entries.iter().position(|&x| {
             let cmp_len = name_bytes.len().min(x.name.len().saturating_sub(1));
             x.name[..cmp_len] == name_bytes[..cmp_len] && x.name[cmp_len] == 0
-        })
-        {
+        }) {
             let entry = &self.entries[pos];
 
             // Types match?
