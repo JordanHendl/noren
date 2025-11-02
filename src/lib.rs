@@ -84,181 +84,138 @@ impl DB {
     }
 
     pub fn fetch_model(&mut self, entry: DatabaseEntry) -> Result<HostModel, NorenError> {
-        let layout = self
-            .model_file
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let model = layout
-            .models
-            .get(entry)
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let model_name = model.name.clone().unwrap_or_else(|| entry.to_string());
-        let mut meshes = Vec::new();
-
-        for mesh_key in &model.meshes {
-            let mesh_def = match layout.meshes.get(mesh_key) {
-                Some(mesh) => mesh,
-                None => continue,
-            };
-
-            if mesh_def.geometry.is_empty() {
-                continue;
-            }
-
-            let geometry_entry = Self::leak_entry(&mesh_def.geometry);
-            let geometry = self.geometry.fetch_raw_geometry(geometry_entry)?;
-
-            let mesh_name = mesh_def.name.clone().unwrap_or_else(|| mesh_key.clone());
-
-            let mut mesh_textures = Vec::new();
-            for tex_key in &mesh_def.textures {
-                if let Some(tex_def) = layout.textures.get(tex_key) {
-                    if tex_def.image.is_empty() {
-                        continue;
-                    }
-
-                    let tex_entry = Self::leak_entry(&tex_def.image);
-                    let image = self.imagery.fetch_raw_image(tex_entry)?;
-                    let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-                    mesh_textures.push(HostTexture { name, image });
-                }
-            }
-
-            let material = if let Some(material_key) = &mesh_def.material {
-                if let Some(material_def) = layout.materials.get(material_key) {
-                    let mut textures = Vec::new();
-                    for tex_key in &material_def.textures {
-                        if let Some(tex_def) = layout.textures.get(tex_key) {
-                            if tex_def.image.is_empty() {
-                                continue;
-                            }
-
-                            let tex_entry = Self::leak_entry(&tex_def.image);
-                            let image = self.imagery.fetch_raw_image(tex_entry)?;
-                            let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-                            textures.push(HostTexture { name, image });
-                        }
-                    }
-
-                    Some(HostMaterial {
-                        name: material_def
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| material_key.clone()),
-                        textures,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            meshes.push(HostMesh {
-                name: mesh_name,
+        self.assemble_model(
+            entry,
+            |geometry_db, entry| geometry_db.fetch_raw_geometry(entry),
+            |imagery_db, entry| imagery_db.fetch_raw_image(entry),
+            |name, image| HostTexture { name, image },
+            |name, textures| HostMaterial { name, textures },
+            |name, geometry, textures, material| HostMesh {
+                name,
                 geometry,
-                textures: mesh_textures,
+                textures,
                 material,
-            });
-        }
-
-        Ok(HostModel {
-            name: model_name,
-            meshes,
-        })
+            },
+            |name, meshes| HostModel { name, meshes },
+        )
     }
 
     pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry) -> Result<DeviceModel, NorenError> {
-        let layout = self
-            .model_file
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let model = layout
-            .models
-            .get(entry)
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let model_name = model.name.clone().unwrap_or_else(|| entry.to_string());
-        let mut meshes = Vec::new();
-
-        for mesh_key in &model.meshes {
-            let mesh_def = match layout.meshes.get(mesh_key) {
-                Some(mesh) => mesh,
-                None => continue,
-            };
-
-            if mesh_def.geometry.is_empty() {
-                continue;
-            }
-
-            let geometry_entry = Self::leak_entry(&mesh_def.geometry);
-            let geometry = self.geometry.fetch_gpu_geometry(geometry_entry)?;
-
-            let mesh_name = mesh_def.name.clone().unwrap_or_else(|| mesh_key.clone());
-
-            let mut mesh_textures = Vec::new();
-            for tex_key in &mesh_def.textures {
-                if let Some(tex_def) = layout.textures.get(tex_key) {
-                    if tex_def.image.is_empty() {
-                        continue;
-                    }
-
-                    let tex_entry = Self::leak_entry(&tex_def.image);
-                    let image = self.imagery.fetch_gpu_image(tex_entry)?;
-                    let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-                    mesh_textures.push(DeviceTexture { name, image });
-                }
-            }
-
-            let material = if let Some(material_key) = &mesh_def.material {
-                if let Some(material_def) = layout.materials.get(material_key) {
-                    let mut textures = Vec::new();
-                    for tex_key in &material_def.textures {
-                        if let Some(tex_def) = layout.textures.get(tex_key) {
-                            if tex_def.image.is_empty() {
-                                continue;
-                            }
-
-                            let tex_entry = Self::leak_entry(&tex_def.image);
-                            let image = self.imagery.fetch_gpu_image(tex_entry)?;
-                            let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-                            textures.push(DeviceTexture { name, image });
-                        }
-                    }
-
-                    Some(DeviceMaterial {
-                        name: material_def
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| material_key.clone()),
-                        textures,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            meshes.push(DeviceMesh {
-                name: mesh_name,
+        self.assemble_model(
+            entry,
+            |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
+            |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
+            |name, image| DeviceTexture { name, image },
+            |name, textures| DeviceMaterial { name, textures },
+            |name, geometry, textures, material| DeviceMesh {
+                name,
                 geometry,
-                textures: mesh_textures,
+                textures,
                 material,
-            });
-        }
-
-        Ok(DeviceModel {
-            name: model_name,
-            meshes,
-        })
+            },
+            |name, meshes| DeviceModel { name, meshes },
+        )
     }
 }
 
 impl DB {
+    fn assemble_model<Model, Mesh, Material, Texture, Geometry, Image, FetchGeometry, FetchImage,
+                      MakeTexture, MakeMaterial, MakeMesh, MakeModel>(
+        &mut self,
+        entry: DatabaseEntry,
+        mut fetch_geometry: FetchGeometry,
+        mut fetch_image: FetchImage,
+        mut make_texture: MakeTexture,
+        mut make_material: MakeMaterial,
+        mut make_mesh: MakeMesh,
+        mut make_model: MakeModel,
+    ) -> Result<Model, NorenError>
+    where
+        FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry) -> Result<Geometry, NorenError>,
+        FetchImage: FnMut(&mut ImageDB, DatabaseEntry) -> Result<Image, NorenError>,
+        MakeTexture: FnMut(String, Image) -> Texture,
+        MakeMaterial: FnMut(String, Vec<Texture>) -> Material,
+        MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
+        MakeModel: FnMut(String, Vec<Mesh>) -> Model,
+    {
+        let layout = self
+            .model_file
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let model = layout
+            .models
+            .get(entry)
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let model_name = model.name.clone().unwrap_or_else(|| entry.to_string());
+        let mut meshes = Vec::new();
+
+        for mesh_key in &model.meshes {
+            let mesh_def = match layout.meshes.get(mesh_key) {
+                Some(mesh) => mesh,
+                None => continue,
+            };
+
+            if mesh_def.geometry.is_empty() {
+                continue;
+            }
+
+            let geometry_entry = Self::leak_entry(&mesh_def.geometry);
+            let geometry = fetch_geometry(&mut self.geometry, geometry_entry)?;
+
+            let mesh_name = mesh_def.name.clone().unwrap_or_else(|| mesh_key.clone());
+
+            let mut mesh_textures = Vec::new();
+            for tex_key in &mesh_def.textures {
+                if let Some(tex_def) = layout.textures.get(tex_key) {
+                    if tex_def.image.is_empty() {
+                        continue;
+                    }
+
+                    let tex_entry = Self::leak_entry(&tex_def.image);
+                    let image = fetch_image(&mut self.imagery, tex_entry)?;
+                    let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
+                    mesh_textures.push(make_texture(name, image));
+                }
+            }
+
+            let material = if let Some(material_key) = &mesh_def.material {
+                if let Some(material_def) = layout.materials.get(material_key) {
+                    let mut textures = Vec::new();
+                    for tex_key in &material_def.textures {
+                        if let Some(tex_def) = layout.textures.get(tex_key) {
+                            if tex_def.image.is_empty() {
+                                continue;
+                            }
+
+                            let tex_entry = Self::leak_entry(&tex_def.image);
+                            let image = fetch_image(&mut self.imagery, tex_entry)?;
+                            let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
+                            textures.push(make_texture(name, image));
+                        }
+                    }
+
+                    Some(make_material(
+                        material_def
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| material_key.clone()),
+                        textures,
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            meshes.push(make_mesh(mesh_name, geometry, mesh_textures, material));
+        }
+
+        Ok(make_model(model_name, meshes))
+    }
+
     fn leak_entry(entry: &str) -> DatabaseEntry {
         Box::leak(entry.to_string().into_boxed_str())
     }
@@ -272,13 +229,21 @@ mod tests {
         imagery::{HostImage, ImageInfo},
         primitives::Vertex,
     };
+    use crate::parsing::{
+        MaterialLayout, MeshLayout, ModelLayout, ModelLayoutFile, TextureLayout,
+    };
     use crate::utils::rdbfile::RDBFile;
-    use std::{fs, path::Path};
+    use std::fs::File;
     use tempfile::tempdir;
 
     const MODEL_ENTRY: DatabaseEntry = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
     const IMAGE_ENTRY: &str = "imagery/sample_texture";
+    const MATERIAL_ENTRY: &str = "material/simple";
+    const MESH_ENTRY: &str = "mesh/simple_mesh";
+    const MESH_MISSING_GEOMETRY: &str = "mesh/no_geometry";
+    const MESH_TEXTURE_ENTRY: &str = "texture/mesh_texture";
+    const MISSING_TEXTURE_ENTRY: &str = "texture/missing_image";
 
     fn sample_vertex(x: f32) -> Vertex {
         Vertex {
@@ -295,9 +260,67 @@ mod tests {
         let tmp = tempdir().expect("create temp dir");
         let base_dir = tmp.path();
 
-        let models_src = Path::new("sample/sample_pre/models.json");
         let models_dst = base_dir.join("models.json");
-        fs::copy(models_src, &models_dst).expect("copy models.json");
+        let mut layout = ModelLayoutFile::default();
+
+        layout.textures.insert(
+            MESH_TEXTURE_ENTRY.to_string(),
+            TextureLayout {
+                image: IMAGE_ENTRY.to_string(),
+                name: None,
+            },
+        );
+        layout.textures.insert(
+            MISSING_TEXTURE_ENTRY.to_string(),
+            TextureLayout {
+                image: String::new(),
+                name: Some("ShouldSkip".to_string()),
+            },
+        );
+
+        layout.materials.insert(
+            MATERIAL_ENTRY.to_string(),
+            MaterialLayout {
+                name: None,
+                textures: vec![
+                    MESH_TEXTURE_ENTRY.to_string(),
+                    MISSING_TEXTURE_ENTRY.to_string(),
+                ],
+            },
+        );
+
+        layout.meshes.insert(
+            MESH_ENTRY.to_string(),
+            MeshLayout {
+                name: Some("Simple Mesh".to_string()),
+                geometry: GEOMETRY_ENTRY.to_string(),
+                material: Some(MATERIAL_ENTRY.to_string()),
+                textures: vec![
+                    MESH_TEXTURE_ENTRY.to_string(),
+                    MISSING_TEXTURE_ENTRY.to_string(),
+                ],
+            },
+        );
+
+        layout.meshes.insert(
+            MESH_MISSING_GEOMETRY.to_string(),
+            MeshLayout {
+                name: Some("No Geometry".to_string()),
+                geometry: String::new(),
+                material: None,
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+            },
+        );
+
+        layout.models.insert(
+            MODEL_ENTRY.to_string(),
+            ModelLayout {
+                name: None,
+                meshes: vec![MESH_ENTRY.to_string(), MESH_MISSING_GEOMETRY.to_string()],
+            },
+        );
+
+        serde_json::to_writer(File::create(&models_dst)?, &layout)?;
 
         let mut geom_rdb = RDBFile::new();
         let geom = HostGeometry {
@@ -334,19 +357,31 @@ mod tests {
         let mut db = DB::new(&db_info)?;
 
         let host_model = db.fetch_model(MODEL_ENTRY)?;
+        assert_eq!(host_model.name, MODEL_ENTRY);
         assert_eq!(host_model.meshes.len(), 1);
         let mesh = &host_model.meshes[0];
+        assert_eq!(mesh.name, "Simple Mesh");
         assert_eq!(mesh.geometry.vertices.len(), 3);
+        assert_eq!(mesh.textures.len(), 1);
+        assert_eq!(mesh.textures[0].name, MESH_TEXTURE_ENTRY);
         assert!(mesh.material.is_some());
         let mat = mesh.material.as_ref().unwrap();
+        assert_eq!(mat.name, MATERIAL_ENTRY);
         assert_eq!(mat.textures.len(), 1);
-        assert_eq!(mesh.textures.len(), 0);
+        assert_eq!(mat.textures[0].name, MESH_TEXTURE_ENTRY);
 
         let device_model = db.fetch_gpu_model(MODEL_ENTRY)?;
+        assert_eq!(device_model.name, MODEL_ENTRY);
         assert_eq!(device_model.meshes.len(), 1);
         let device_mesh = &device_model.meshes[0];
+        assert_eq!(device_mesh.name, "Simple Mesh");
         assert!(device_mesh.material.is_some());
-        assert_eq!(device_mesh.material.as_ref().unwrap().textures.len(), 1);
+        let device_mat = device_mesh.material.as_ref().unwrap();
+        assert_eq!(device_mat.name, MATERIAL_ENTRY);
+        assert_eq!(device_mesh.textures.len(), 1);
+        assert_eq!(device_mesh.textures[0].name, MESH_TEXTURE_ENTRY);
+        assert_eq!(device_mat.textures.len(), 1);
+        assert_eq!(device_mat.textures[0].name, MESH_TEXTURE_ENTRY);
 
         Ok(())
     }
