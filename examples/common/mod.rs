@@ -26,8 +26,8 @@ pub const SAMPLE_MODEL_ENTRY: DatabaseEntry = "model/quad";
 /// Convenience wrapper that creates a headless GPU context suitable for the
 /// examples. When the host system lacks a Vulkan device the failure is
 /// propagated so that callers can gracefully skip the demo.
-pub fn init_headless_context() -> Result<gpu::Context, dashi::GPUError> {
-    gpu::Context::headless(&ContextInfo::default())
+pub fn init_context() -> Result<gpu::Context, dashi::GPUError> {
+    gpu::Context::new(&ContextInfo::default())
 }
 
 /// Open the bundled sample database against the provided GPU context.
