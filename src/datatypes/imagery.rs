@@ -70,6 +70,20 @@ pub struct HostImage {
     data: Vec<u8>,
 }
 
+impl HostImage {
+    pub fn new(info: ImageInfo, data: Vec<u8>) -> Self {
+        Self { info, data }
+    }
+
+    pub fn info(&self) -> &ImageInfo {
+        &self.info
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Debug, Default)]
 pub struct DeviceImage {

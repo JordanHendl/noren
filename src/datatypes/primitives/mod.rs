@@ -24,5 +24,3 @@ pub struct SkeletalVertex {
     pub joint_indices: [u32; 4],
     pub joint_weights: [f32; 4],
 }
-
-

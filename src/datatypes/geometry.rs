@@ -97,9 +97,7 @@ impl GeometryDB {
             }
         };
 
-        let cache_entry = self
-            .cache
-            .insert_or_increment(entry, || device_geom);
+        let cache_entry = self.cache.insert_or_increment(entry, || device_geom);
 
         Ok(cache_entry.payload.clone())
     }

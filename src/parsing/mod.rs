@@ -15,7 +15,7 @@ fn default_model_path() -> String {
 ////////////////////////////////
 /// This struct defines the structure of the database.
 /// It is not needed, and if data is missing, it will default to values for data lookups.
-/// 
+///
 /// Raw data (geometry, imagery, etc.) is found in '*.rdb' files inside the database. These are
 /// mapped and data is looked up at runtime when fetched.
 ///
@@ -23,7 +23,7 @@ fn default_model_path() -> String {
 /// primitives they use (mutliple meshes, ref geometry a/b/c with textures d/e/f, etc).
 ////////////////////////////////
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseLayoutFile {
     #[serde(default = "default_geometry_path")]
     pub geometry: String,
@@ -34,9 +34,7 @@ pub struct DatabaseLayoutFile {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ModelLayoutFile {
-
-}
+pub struct ModelLayoutFile {}
 
 impl Default for DatabaseLayoutFile {
     fn default() -> Self {
