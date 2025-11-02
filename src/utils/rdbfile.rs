@@ -1,9 +1,9 @@
 use bytemuck::{Pod, Zeroable};
 use memmap2::{Mmap, MmapMut};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use std::{
     fs::{File, OpenOptions},
-    io::{Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom},
     path::Path,
 };
 
@@ -40,7 +40,8 @@ fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> T {
 
 #[cfg(test)]
 mod tests {
-    use super::{name64, portable_type_hash, RDBFile};
+    use super::{RDBFile, name64, portable_type_hash};
+    use crate::error::RdbErr;
     #[test]
     fn same_everywhere_for_same_type() {
         let a = portable_type_hash::<Result<i32, ()>>();
@@ -49,31 +50,42 @@ mod tests {
     }
 
     #[test]
-    fn name64_nul_terminates_and_truncates() {
+    fn name64_rejects_long_names() {
         let long = "abc".repeat(30); // 90 chars
-        let name = name64(&long);
-        assert_eq!(&name[..63], &long.as_bytes()[..63]);
-        assert_eq!(name[63], 0);
+        assert!(name64(&long).is_err());
     }
 
     #[test]
-    fn add_truncates_long_names_without_panic() {
+    fn name64_sets_nul_terminator_within_bounds() {
+        let name = "abc".repeat(10);
+        let encoded = name64(&name).expect("encoding name within limit");
+        assert_eq!(&encoded[..name.len()], name.as_bytes());
+        assert_eq!(encoded[name.len()], 0);
+    }
+
+    #[test]
+    fn add_rejects_long_names_without_panic() {
         let mut rdb = RDBFile::new();
         let long = "x".repeat(80);
-        rdb.add(&long, &123u32).expect("add long name");
-        assert_eq!(rdb.entries.len(), 1);
-        let entry = &rdb.entries[0];
-        assert_eq!(&entry.name[..63], &long.as_bytes()[..63]);
-        assert_eq!(entry.name[63], 0);
+        let err = rdb.add(&long, &123u32).expect_err("add long name");
+        assert!(matches!(err, RdbErr::NameTooLong));
+        assert!(rdb.entries.is_empty());
     }
 
     #[test]
-    fn fetch_handles_truncated_names() {
+    fn fetch_requires_exact_names() {
         let mut rdb = RDBFile::new();
-        let long = "y".repeat(80);
-        rdb.add(&long, &456u32).expect("add long name");
-        let fetched: u32 = rdb.fetch(&long).expect("fetch long name");
-        assert_eq!(fetched, 456u32);
+        rdb.add("alpha", &456u32).expect("add short name");
+        rdb.add("alpha_beta", &789u32)
+            .expect("add longer name with shared prefix");
+
+        let fetched_alpha: u32 = rdb.fetch("alpha").expect("fetch alpha");
+        assert_eq!(fetched_alpha, 456u32);
+
+        let fetched_beta: u32 = rdb.fetch("alpha_beta").expect("fetch alpha_beta");
+        assert_eq!(fetched_beta, 789u32);
+
+        assert!(rdb.fetch::<u32>("alp").is_err());
     }
 }
 
@@ -129,13 +141,24 @@ impl<'a> Iterator for EntryIter<'a> {
     }
 }
 
-fn name64(s: &str) -> [u8; 64] {
+fn name64(s: &str) -> Result<[u8; 64], RdbErr> {
     let mut out = [0u8; 64];
     let bytes = s.as_bytes();
-    let n = bytes.len().min(out.len() - 1);
-    out[..n].copy_from_slice(&bytes[..n]);
+    if bytes.len() > out.len() - 1 {
+        return Err(RdbErr::NameTooLong);
+    }
+
+    let n = bytes.len();
+    if n > 0 {
+        out[..n].copy_from_slice(bytes);
+    }
     out[n] = b'\0';
-    out
+    Ok(out)
+}
+
+fn stored_name_bytes(name: &[u8; 64]) -> &[u8] {
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    &name[..end]
 }
 
 pub struct RDBFile {
@@ -154,11 +177,7 @@ impl RDBFile {
     }
 
     pub fn add<T: Serialize>(&mut self, name: &str, obj: &T) -> Result<(), RdbErr> {
-        let b = name.as_bytes();
-        let mut nameb = [0u8; 64];
-        let len = b.len().min(nameb.len() - 1);
-        nameb[..len].copy_from_slice(&b[..len]);
-        nameb[len] = b'\0';
+        let nameb = name64(name)?;
 
         let bytes = to_bytes(obj);
         self.entries.push(Entry {
@@ -175,13 +194,11 @@ impl RDBFile {
 
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
         let name_bytes = name.as_bytes();
-        if let Some(pos) = self.entries.iter().position(|&x| {
-            let cmp_len = name_bytes.len().min(x.name.len().saturating_sub(1));
-            x.name[..cmp_len] == name_bytes[..cmp_len] && x.name[cmp_len] == 0
-        })
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| stored_name_bytes(&entry.name) == name_bytes)
         {
-            let entry = &self.entries[pos];
-
             // Types match?
             if entry.type_tag == portable_type_hash::<T>() as u32 {
                 let data_start = entry.offset as usize;
@@ -297,6 +314,7 @@ pub struct RDBView {
 impl RDBView {
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
         let data = &self.mmap[self.data_start..self.mmap.len()];
+        let name_bytes = name.as_bytes();
 
         for i in 0..self.header.entry_count {
             //self.mmap[self.entries_start..self.data_start]
@@ -304,7 +322,7 @@ impl RDBView {
             let entry_end = self.entries_start + offset + std::mem::size_of::<Entry>();
             let ptr = self.mmap[self.entries_start + offset..entry_end].as_ptr() as *const Entry;
             let entry = unsafe { std::ptr::read_unaligned(ptr) };
-            if entry.name[0..name.len()] == name.as_bytes()[0..name.len()] {
+            if stored_name_bytes(&entry.name) == name_bytes {
                 // Types match?
                 if entry.type_tag == portable_type_hash::<T>() as u32 {
                     let data_start = entry.offset as usize;
@@ -355,6 +373,7 @@ impl RDBView {
 #[cfg(test)]
 mod test {
     use super::{RDBFile, RDBView};
+    use crate::error::RdbErr;
     use serde::{Deserialize, Serialize};
     #[test]
     fn test_rdb_read_write() {
@@ -510,7 +529,49 @@ mod test {
         assert!(rdb.fetch::<TempObject>("t.a.c.d").is_err());
         assert!(rdb.fetch::<TempObject2>("obj/t.a.c.b").is_err());
 
+        let long_name = "obj/".repeat(16);
+        let err = rdb
+            .add(&long_name, &tmp)
+            .expect_err("Should reject overly long name");
+        assert!(matches!(err, RdbErr::NameTooLong));
+
         rdb.save("target/failure_test.rdb")
             .expect("should be able to write file");
+    }
+
+    #[test]
+    fn view_requires_exact_names() {
+        let mut rdb = RDBFile::new();
+
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct TempObject {
+            value: u32,
+        }
+
+        let obj_a = TempObject { value: 1 };
+        let obj_ab = TempObject { value: 2 };
+
+        rdb.add("obj/a", &obj_a)
+            .expect("Should insert first object");
+        rdb.add("obj/ab", &obj_ab)
+            .expect("Should insert second object");
+
+        rdb.save("target/view_exact_names.rdb")
+            .expect("should be able to write file");
+
+        let mut view = RDBView::load("target/view_exact_names.rdb")
+            .expect("Should be able to load view from disk");
+
+        let fetched_a = view
+            .fetch::<TempObject>("obj/a")
+            .expect("Should fetch exact name");
+        assert_eq!(fetched_a, obj_a);
+
+        let fetched_ab = view
+            .fetch::<TempObject>("obj/ab")
+            .expect("Should fetch second name");
+        assert_eq!(fetched_ab, obj_ab);
+
+        assert!(view.fetch::<TempObject>("obj/").is_err());
     }
 }
