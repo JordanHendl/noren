@@ -1,0 +1,32 @@
+{
+  "textures": {
+    "texture/simple_diffuse": {
+      "name": "Simple Diffuse",
+      "image": "imagery/sample_texture"
+    }
+  },
+  "materials": {
+    "material/simple": {
+      "name": "Sample Material",
+      "textures": [
+        "texture/simple_diffuse"
+      ]
+    }
+  },
+  "meshes": {
+    "mesh/simple_mesh": {
+      "name": "Simple Mesh",
+      "geometry": "geom/simple_mesh",
+      "material": "material/simple",
+      "textures": []
+    }
+  },
+  "models": {
+    "model/simple": {
+      "name": "Sample Model",
+      "meshes": [
+        "mesh/simple_mesh"
+      ]
+    }
+  }
+}

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 fn default_geometry_path() -> String {
@@ -33,8 +35,54 @@ pub struct DatabaseLayoutFile {
     pub models: String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ModelLayoutFile {}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelLayoutFile {
+    #[serde(default)]
+    pub textures: HashMap<String, TextureLayout>,
+    #[serde(default)]
+    pub materials: HashMap<String, MaterialLayout>,
+    #[serde(default)]
+    pub meshes: HashMap<String, MeshLayout>,
+    #[serde(default)]
+    pub models: HashMap<String, ModelLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TextureLayout {
+    /// Database entry for the texture image.
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaterialLayout {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub textures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MeshLayout {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub geometry: String,
+    #[serde(default)]
+    pub material: Option<String>,
+    #[serde(default)]
+    pub textures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelLayout {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub meshes: Vec<String>,
+}
 
 impl Default for DatabaseLayoutFile {
     fn default() -> Self {
