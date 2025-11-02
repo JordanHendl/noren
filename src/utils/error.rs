@@ -3,6 +3,7 @@ pub enum RdbErr {
     Io(),
     BadHeader,
     TooSmall,
+    NameTooLong,
 }
 
 impl std::fmt::Display for RdbErr {
@@ -11,6 +12,7 @@ impl std::fmt::Display for RdbErr {
             RdbErr::Io() => write!(f, "RDB file I/O error"),
             RdbErr::BadHeader => write!(f, "RDB file has an invalid header"),
             RdbErr::TooSmall => write!(f, "RDB file is too small"),
+            RdbErr::NameTooLong => write!(f, "RDB entry name exceeds 63 bytes"),
         }
     }
 }
@@ -129,5 +131,9 @@ mod tests {
             "RDB file has an invalid header"
         );
         assert_eq!(format!("{}", RdbErr::TooSmall), "RDB file is too small");
+        assert_eq!(
+            format!("{}", RdbErr::NameTooLong),
+            "RDB entry name exceeds 63 bytes"
+        );
     }
 }
