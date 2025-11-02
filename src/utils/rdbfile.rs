@@ -270,8 +270,8 @@ impl RDBView {
         for i in 0..self.header.entry_count {
             //self.mmap[self.entries_start..self.data_start]
             let offset = (i as isize * std::mem::size_of::<Entry>() as isize) as usize;
-            let ptr = self.mmap[self.entries_start + offset..std::mem::size_of::<Entry>()].as_ptr()
-                as *const Entry;
+            let entry_end = self.entries_start + offset + std::mem::size_of::<Entry>();
+            let ptr = self.mmap[self.entries_start + offset..entry_end].as_ptr() as *const Entry;
             let entry = unsafe { std::ptr::read_unaligned(ptr) };
             if entry.name[0..name.len()] == name.as_bytes()[0..name.len()] {
                 // Types match?
@@ -337,12 +337,30 @@ mod test {
             data: vec![12; 32],
             name: vec!["lmao".to_string(); 32],
         };
+        let tmp_alt = TempObject {
+            data: vec![34; 16],
+            name: vec!["bruh".to_string(); 16],
+        };
 
         rdb.add("obj/t.a.c.b", &tmp)
             .expect("Should be able to insert into an empty RDB");
+        rdb.add("obj/t.a.c.c", &tmp_alt)
+            .expect("Should be able to insert a second entry into the RDB");
         let tmp2 = rdb
             .fetch::<TempObject>("obj/t.a.c.b")
             .expect("Should be able to read object just inserted.");
+        let tmp3 = rdb
+            .fetch::<TempObject>("obj/t.a.c.c")
+            .expect("Should be able to read second object just inserted.");
+
+        rdb.save("target/read_write_multi.rdb")
+            .expect("should be able to write multi entry file");
+
+        let mut rdb_view = RDBView::load("target/read_write_multi.rdb")
+            .expect("Should be able to load multi entry file");
+        let tmp_view = rdb_view
+            .fetch::<TempObject>("obj/t.a.c.c")
+            .expect("Should be able to read the second object via view");
 
         // Verify read data is the same.
         for e in tmp2.data {
@@ -350,6 +368,18 @@ mod test {
         }
         for s in tmp2.name {
             assert_eq!("lmao".to_string(), s);
+        }
+        for e in tmp3.data {
+            assert_eq!(e, 34);
+        }
+        for s in tmp3.name {
+            assert_eq!("bruh".to_string(), s);
+        }
+        for e in tmp_view.data {
+            assert_eq!(e, 34);
+        }
+        for s in tmp_view.name {
+            assert_eq!("bruh".to_string(), s);
         }
     }
 
