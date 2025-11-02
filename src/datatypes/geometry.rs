@@ -5,7 +5,7 @@ use dashi::{Buffer, Context, Handle};
 use serde::{Deserialize, Serialize};
 
 use super::{DatabaseEntry, primitives::Vertex};
-use crate::{error::NorenError, DataCache, RDBView};
+use crate::{DataCache, RDBView, error::NorenError};
 
 #[repr(C)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,7 +49,7 @@ impl GeometryDB {
     }
 
     pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
-        todo!()
+        self.cache.get(*entry).is_some()
     }
 
     pub fn fetch_raw_geometry(&mut self, entry: DatabaseEntry) -> Result<HostGeometry, NorenError> {
@@ -80,7 +80,7 @@ impl GeometryDB {
         // }
         todo!()
     }
-    
+
     // Checks whether any geometry needs to be unloaded, and does so.
     pub fn unload_pulse(&mut self) {
         todo!()

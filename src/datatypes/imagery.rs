@@ -105,7 +105,7 @@ impl ImageDB {
     }
 
     pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
-        todo!()
+        self.cache.get(*entry).is_some()
     }
 
     pub fn fetch_raw_image(&mut self, entry: DatabaseEntry) -> Result<HostImage, NorenError> {
