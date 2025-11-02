@@ -385,10 +385,9 @@ mod test {
 
     #[test]
     fn test_rdb_io() {
-
         ///////////////// Test creating new file...
         /////////////////
-        
+
         let mut rdb = RDBFile::new();
 
         #[repr(C)]

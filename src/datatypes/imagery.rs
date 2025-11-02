@@ -64,10 +64,10 @@ impl ImageInfo {
 }
 
 #[repr(C)]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HostImage {
-    info: ImageInfo,
-    data: Vec<u8>,
+    pub info: ImageInfo,
+    pub data: Vec<u8>,
 }
 
 #[repr(C)]
