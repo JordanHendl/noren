@@ -1,11 +1,32 @@
 {
-  "models": [
-    {
-      "name": "quad",
-      "geometry": "geometry/quad",
+  "textures": {
+    "texture/quad_diffuse": {
+      "name": "Quad Diffuse",
+      "image": "imagery/tulips"
+    }
+  },
+  "materials": {
+    "material/quad": {
+      "name": "Quad Material",
       "textures": [
-        "imagery/tulips"
+        "texture/quad_diffuse"
       ]
     }
-  ]
+  },
+  "meshes": {
+    "mesh/quad": {
+      "name": "Quad Mesh",
+      "geometry": "geometry/quad",
+      "material": "material/quad",
+      "textures": []
+    }
+  },
+  "models": {
+    "model/quad": {
+      "name": "Quad",
+      "meshes": [
+        "mesh/quad"
+      ]
+    }
+  }
 }
