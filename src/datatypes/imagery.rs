@@ -1,4 +1,7 @@
-use std::{ptr::NonNull, time::Instant};
+use std::{
+    ptr::NonNull,
+    time::{Duration, Instant},
+};
 
 use dashi::{Context, Handle, Image};
 use serde::{Deserialize, Serialize};
@@ -6,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::{DataCache, RDBView, utils::NorenError};
 
 use super::DatabaseEntry;
+
+#[cfg(test)]
+const UNLOAD_DELAY: Duration = Duration::from_secs(0);
+#[cfg(not(test))]
+const UNLOAD_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct GPUImageInfo {
@@ -165,6 +173,18 @@ impl ImageDB {
         Ok(device_image)
     }
 
+    /// Releases a previously fetched GPU image reference.
+    ///
+    /// Once all references have been released, [`unload_pulse`] should be
+    /// invoked to destroy any images whose unload delay has elapsed.
+    pub fn unref_entry(&mut self, entry: DatabaseEntry) -> Result<(), NorenError> {
+        let unload_at = Instant::now() + UNLOAD_DELAY;
+        match self.cache.decrement(entry, unload_at) {
+            Some(_) => Ok(()),
+            None => Err(NorenError::LookupFailure()),
+        }
+    }
+
     // Checks whether any imagery needs to be unloaded, and does so.
     pub fn unload_pulse(&mut self) {
         let expired = self.cache.drain_expired(Instant::now());
@@ -183,11 +203,7 @@ impl ImageDB {
 mod tests {
     use super::*;
     use crate::utils::rdbfile::RDBFile;
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{Duration, Instant},
-    };
+    use std::{fs, path::PathBuf};
 
     const TEST_ENTRY: DatabaseEntry = "imagery/test_image";
 
@@ -236,10 +252,50 @@ mod tests {
         assert!(device.img.valid());
         assert!(db.is_loaded(&TEST_ENTRY));
 
-        db.cache
-            .decrement(TEST_ENTRY, Instant::now() - Duration::from_secs(1));
+        db.unref_entry(TEST_ENTRY)
+            .expect("release gpu image reference");
         db.unload_pulse();
 
+        assert!(!db.is_loaded(&TEST_ENTRY));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn repeated_fetch_unref_cycle() {
+        let mut ctx = match dashi::Context::headless(&Default::default()) {
+            Ok(ctx) => ctx,
+            Err(_) => return,
+        };
+
+        let image = create_sample_image();
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("noren_image_cycle_test_{}.rdb", std::process::id()));
+        write_sample_rdb(&path, &image);
+
+        let path_string = path.to_string_lossy().to_string();
+
+        let mut db = ImageDB::new(&mut ctx, &path_string);
+
+        db.fetch_gpu_image(TEST_ENTRY)
+            .expect("initial gpu image load");
+        assert!(db.is_loaded(&TEST_ENTRY));
+
+        db.fetch_gpu_image(TEST_ENTRY)
+            .expect("second gpu image load increments refcount");
+
+        db.unref_entry(TEST_ENTRY)
+            .expect("release first image reference");
+        db.unref_entry(TEST_ENTRY)
+            .expect("release second image reference");
+        db.unload_pulse();
+        assert!(!db.is_loaded(&TEST_ENTRY));
+
+        db.fetch_gpu_image(TEST_ENTRY)
+            .expect("reload image after unload");
+        db.unref_entry(TEST_ENTRY).expect("release final reference");
+        db.unload_pulse();
         assert!(!db.is_loaded(&TEST_ENTRY));
 
         let _ = fs::remove_file(&path);
