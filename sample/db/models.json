@@ -1,0 +1,11 @@
+{
+  "models": [
+    {
+      "name": "quad",
+      "geometry": "geometry/quad",
+      "textures": [
+        "imagery/tulips"
+      ]
+    }
+  ]
+}
