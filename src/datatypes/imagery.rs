@@ -59,8 +59,10 @@ impl ImageInfo {
 
     pub fn gpu(&self) -> GPUImageInfo {
         let mut bytes: [u8; 64] = [0; 64];
-        bytes[0..self.name.len()].copy_from_slice(self.name[0..self.name.len()].as_bytes());
-        bytes[self.name.len().min(63)] = '\0' as u8;
+        let name_bytes = self.name.as_bytes();
+        let copy_len = name_bytes.len().min(bytes.len() - 1);
+        bytes[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+        bytes[copy_len] = b'\0';
         GPUImageInfo {
             name: bytes,
             dim: self.dim,
@@ -297,5 +299,41 @@ mod tests {
         assert!(!db.is_loaded(&TEST_ENTRY));
 
         let _ = fs::remove_file(&path);
+    }
+
+    fn build_image_with_name(name: &str) -> ImageInfo {
+        ImageInfo {
+            name: name.to_string(),
+            dim: [1, 1, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        }
+    }
+
+    #[test]
+    fn gpu_name_shorter_than_max() {
+        let info = build_image_with_name("short");
+        let gpu = info.gpu();
+        assert_eq!(&gpu.name[..5], b"short");
+        assert_eq!(gpu.name[5], 0);
+    }
+
+    #[test]
+    fn gpu_name_equal_to_max_length() {
+        let max_name = "a".repeat(63);
+        let info = build_image_with_name(&max_name);
+        let gpu = info.gpu();
+        assert_eq!(&gpu.name[..63], max_name.as_bytes());
+        assert_eq!(gpu.name[63], 0);
+    }
+
+    #[test]
+    fn gpu_name_longer_than_max_length_is_truncated() {
+        let long_name = "long".repeat(20); // 80 chars
+        let info = build_image_with_name(&long_name);
+        let gpu = info.gpu();
+        assert_eq!(&gpu.name[..63], &long_name.as_bytes()[..63]);
+        assert_eq!(gpu.name[63], 0);
     }
 }

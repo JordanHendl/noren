@@ -4,7 +4,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_TEXTURE_ENTRY, init_headless_context, open_sample_db};
+use common::{SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db};
 use dashi::driver::command::BlitImage;
 use dashi::gpu::CommandStream;
 use dashi::gpu::driver::state::SubresourceRange;
@@ -19,7 +19,7 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let mut ctx = match init_headless_context() {
+    let mut ctx = match init_context() {
         Ok(ctx) => ctx,
         Err(err) => {
             eprintln!("Skipping example – unable to create GPU context: {err}");
@@ -65,6 +65,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         "Recorded blit commands for '{}' ({}x{})",
         SAMPLE_TEXTURE_ENTRY, dims[0], dims[1]
     );
+
+    // Should blit to a display.
+    todo!();
 
     Ok(())
 }

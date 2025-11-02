@@ -40,12 +40,40 @@ fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> T {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{name64, portable_type_hash, RDBFile};
     #[test]
     fn same_everywhere_for_same_type() {
         let a = portable_type_hash::<Result<i32, ()>>();
         let b = portable_type_hash::<Result<i32, ()>>();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn name64_nul_terminates_and_truncates() {
+        let long = "abc".repeat(30); // 90 chars
+        let name = name64(&long);
+        assert_eq!(&name[..63], &long.as_bytes()[..63]);
+        assert_eq!(name[63], 0);
+    }
+
+    #[test]
+    fn add_truncates_long_names_without_panic() {
+        let mut rdb = RDBFile::new();
+        let long = "x".repeat(80);
+        rdb.add(&long, &123u32).expect("add long name");
+        assert_eq!(rdb.entries.len(), 1);
+        let entry = &rdb.entries[0];
+        assert_eq!(&entry.name[..63], &long.as_bytes()[..63]);
+        assert_eq!(entry.name[63], 0);
+    }
+
+    #[test]
+    fn fetch_handles_truncated_names() {
+        let mut rdb = RDBFile::new();
+        let long = "y".repeat(80);
+        rdb.add(&long, &456u32).expect("add long name");
+        let fetched: u32 = rdb.fetch(&long).expect("fetch long name");
+        assert_eq!(fetched, 456u32);
     }
 }
 
@@ -104,8 +132,9 @@ impl<'a> Iterator for EntryIter<'a> {
 fn name64(s: &str) -> [u8; 64] {
     let mut out = [0u8; 64];
     let bytes = s.as_bytes();
-    let n = bytes.len().min(64);
+    let n = bytes.len().min(out.len() - 1);
     out[..n].copy_from_slice(&bytes[..n]);
+    out[n] = b'\0';
     out
 }
 
@@ -127,7 +156,9 @@ impl RDBFile {
     pub fn add<T: Serialize>(&mut self, name: &str, obj: &T) -> Result<(), RdbErr> {
         let b = name.as_bytes();
         let mut nameb = [0u8; 64];
-        nameb[..b.len()].copy_from_slice(&b[..b.len()]);
+        let len = b.len().min(nameb.len() - 1);
+        nameb[..len].copy_from_slice(&b[..len]);
+        nameb[len] = b'\0';
 
         let bytes = to_bytes(obj);
         self.entries.push(Entry {
@@ -143,11 +174,11 @@ impl RDBFile {
     }
 
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
-        let b = name.as_bytes();
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|&x| x.name[0..name.len()] == name.as_bytes()[0..name.len()])
+        let name_bytes = name.as_bytes();
+        if let Some(pos) = self.entries.iter().position(|&x| {
+            let cmp_len = name_bytes.len().min(x.name.len().saturating_sub(1));
+            x.name[..cmp_len] == name_bytes[..cmp_len] && x.name[cmp_len] == 0
+        })
         {
             let entry = &self.entries[pos];
 
@@ -321,8 +352,10 @@ impl RDBView {
 // Tiny example
 // ---------------------------
 
+#[cfg(test)]
 mod test {
-    use super::*;
+    use super::{RDBFile, RDBView};
+    use serde::{Deserialize, Serialize};
     #[test]
     fn test_rdb_read_write() {
         let mut rdb = RDBFile::new();

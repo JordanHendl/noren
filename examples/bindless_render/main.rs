@@ -4,7 +4,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_TEXTURE_ENTRY, init_headless_context, open_sample_db};
+use common::{SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db};
 use dashi::builders::{BindTableBuilder, BindTableLayoutBuilder};
 use dashi::{
     BindGroupVariable, BindGroupVariableType, ImageView, IndexedResource, SamplerInfo, ShaderInfo,
@@ -20,7 +20,7 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let mut ctx = match init_headless_context() {
+    let mut ctx = match init_context() {
         Ok(ctx) => ctx,
         Err(err) => {
             eprintln!("Skipping example – unable to create GPU context: {err}");
@@ -71,6 +71,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         "Created bindless table {:?} containing texture '{}'",
         table, SAMPLE_TEXTURE_ENTRY
     );
-
+    
+    // Should render to a display, with a camera.
+    todo!();
     Ok(())
 }
