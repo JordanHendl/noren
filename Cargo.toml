@@ -3,6 +3,9 @@ name = "noren"
 version = "0.1.0"
 edition = "2024"
 
+[profile.dev.package."*"]
+debug = false
+
 [dependencies]
 gltf = "1.4.1"  # For reading glTF files
 glam = "0.24.0"  # For vector math (Vec2 and Vec3)
