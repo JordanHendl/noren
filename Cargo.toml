@@ -26,5 +26,6 @@ name = "noren_dbgen"
 path = "src/exec/dbgen/bin.rs"
 
 [dev-dependencies]
+rand = "0.8"
 tempfile = "3"
 

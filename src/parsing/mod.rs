@@ -25,7 +25,7 @@ fn default_model_path() -> String {
 /// primitives they use (mutliple meshes, ref geometry a/b/c with textures d/e/f, etc).
 ////////////////////////////////
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseLayoutFile {
     #[serde(default = "default_geometry_path")]
     pub geometry: String,

@@ -11,6 +11,10 @@ use meta::*;
 use parsing::*;
 use utils::*;
 
+pub use parsing::DatabaseLayoutFile;
+pub use utils::error::RdbErr;
+pub use utils::rdbfile::RDBFile;
+
 pub struct DBInfo<'a> {
     pub ctx: *mut dashi::Context,
     pub base_dir: &'a str,
