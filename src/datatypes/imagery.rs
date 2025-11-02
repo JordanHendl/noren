@@ -1,4 +1,4 @@
-use std::ptr::NonNull;
+use std::{ptr::NonNull, time::Instant};
 
 use dashi::{Context, Handle, Image};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ pub struct ImageInfo {
 }
 
 impl ImageInfo {
-    pub fn dashi(&self) -> dashi::ImageInfo {
+    pub fn dashi(&self) -> dashi::ImageInfo<'_> {
         dashi::ImageInfo {
             debug_name: &self.name,
             dim: self.dim,
@@ -98,10 +98,27 @@ impl ImageDB {
     }
 
     pub fn enter_gpu_image(
+        &mut self,
         entry: DatabaseEntry,
-        geom: HostImage,
+        image: HostImage,
     ) -> Result<DeviceImage, NorenError> {
-        todo!()
+        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+
+        let HostImage { info, data } = image;
+
+        let gpu_info = info.gpu();
+        let mut dashi_info = info.dashi();
+        dashi_info.debug_name = entry;
+        dashi_info.initial_data = Some(&data);
+
+        let img = ctx
+            .make_image(&dashi_info)
+            .map_err(|_| NorenError::UploadFailure())?;
+
+        Ok(DeviceImage {
+            img,
+            info: gpu_info,
+        })
     }
 
     pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
@@ -117,17 +134,98 @@ impl ImageDB {
     }
 
     pub fn fetch_gpu_image(&mut self, entry: DatabaseEntry) -> Result<DeviceImage, NorenError> {
-        // pseudocode:
-        // if not loaded in cache {
-        //   fetch_raw_image, upload and cache
-        //   refcount
-        // }
+        if let Some(entry) = self.cache.get_mut(entry) {
+            entry.refcount += 1;
+            entry.clear_unload();
+            return Ok(entry.payload.clone());
+        }
 
-        todo!()
+        let host_image = self.fetch_raw_image(entry)?;
+        let device_image = self.enter_gpu_image(entry, host_image)?;
+
+        let cached_image = device_image.clone();
+        self.cache.insert_or_increment(entry, || cached_image);
+
+        Ok(device_image)
     }
 
     // Checks whether any imagery needs to be unloaded, and does so.
     pub fn unload_pulse(&mut self) {
-        todo!()
+        let expired = self.cache.drain_expired(Instant::now());
+        if expired.is_empty() {
+            return;
+        }
+
+        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+        for (_key, entry) in expired {
+            ctx.destroy_image(entry.payload.img);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::rdbfile::RDBFile;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
+
+    const TEST_ENTRY: DatabaseEntry = "imagery/test_image";
+
+    fn create_sample_image() -> HostImage {
+        let info = ImageInfo {
+            name: TEST_ENTRY.to_string(),
+            dim: [2, 2, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+
+        let data = vec![255u8; (info.dim[0] * info.dim[1] * 4) as usize];
+
+        HostImage { info, data }
+    }
+
+    fn write_sample_rdb(path: &PathBuf, image: &HostImage) {
+        let mut file = RDBFile::new();
+        file.add(TEST_ENTRY, image).expect("add sample image");
+        file.save(path).expect("write rdb");
+    }
+
+    #[test]
+    fn fetch_and_unload_gpu_image() {
+        let mut ctx = match dashi::Context::headless(&Default::default()) {
+            Ok(ctx) => ctx,
+            Err(_) => return,
+        };
+
+        let image = create_sample_image();
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("noren_image_test_{}.rdb", std::process::id()));
+        write_sample_rdb(&path, &image);
+
+        let path_string = path.to_string_lossy().to_string();
+
+        let mut db = ImageDB::new(&mut ctx, &path_string);
+
+        assert!(!db.is_loaded(&TEST_ENTRY));
+
+        let device = db
+            .fetch_gpu_image(TEST_ENTRY)
+            .expect("load gpu image from rdb");
+        assert!(device.img.valid());
+        assert!(db.is_loaded(&TEST_ENTRY));
+
+        db.cache
+            .decrement(TEST_ENTRY, Instant::now() - Duration::from_secs(1));
+        db.unload_pulse();
+
+        assert!(!db.is_loaded(&TEST_ENTRY));
+
+        let _ = fs::remove_file(&path);
     }
 }
