@@ -97,8 +97,8 @@ impl HostImage {
 #[repr(C)]
 #[derive(Clone, Debug, Default)]
 pub struct DeviceImage {
-    img: Handle<Image>,
-    info: GPUImageInfo,
+    pub img: Handle<Image>,
+    pub info: GPUImageInfo,
 }
 
 pub struct ImageDB {

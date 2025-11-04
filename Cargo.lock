@@ -365,7 +365,7 @@ dependencies = [
 [[package]]
 name = "dashi"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/dashi#a02f54b4692aa7e6d6c0d4c55bc8d8771343084b"
+source = "git+https://github.com/JordanHendl/dashi#14cd750436e7e3c38954aa752f60faed755b0308"
 dependencies = [
  "anyhow",
  "ash",
@@ -942,6 +942,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unzip3",
+ "winit",
 ]
 
 [[package]]
@@ -986,7 +987,7 @@ dependencies = [
 [[package]]
 name = "offset-allocator"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/offsetallocator-rs#47627173b611dcd79bf0a182392218d5c7d8dd97"
+source = "git+https://github.com/JordanHendl/offsetallocator-rs#5dc727d39c0f599583d31ebaaf18fdb56c827402"
 
 [[package]]
 name = "once_cell"
