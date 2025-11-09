@@ -7,9 +7,10 @@ use std::{
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, RDBFile, RdbErr,
-    datatypes::{HostGeometry, HostImage, ImageInfo, primitives::Vertex},
+    datatypes::{HostGeometry, HostImage, ImageInfo, ShaderModule, primitives::Vertex},
 };
 use serde::{Deserialize, Serialize};
+use shaderc as sc;
 
 fn main() {
     let mut args = std::env::args();
@@ -45,6 +46,7 @@ fn run_from_path(input: &Path) -> Result<(), BuildError> {
         output,
         imagery,
         geometry,
+        shaders,
         models,
     } = spec;
 
@@ -54,10 +56,12 @@ fn run_from_path(input: &Path) -> Result<(), BuildError> {
     let geometry_path = resolve_string_path(&output_dir, &output.layout.geometry);
     let imagery_path = resolve_string_path(&output_dir, &output.layout.imagery);
     let models_path = resolve_string_path(&output_dir, &output.layout.models);
+    let shaders_path = resolve_string_path(&output_dir, &output.layout.shaders);
     let layout_path = resolve_path(&output_dir, &output.layout_file);
 
     build_geometry(&base_dir, &geometry_path, &geometry)?;
     build_imagery(&base_dir, &imagery_path, &imagery)?;
+    build_shaders(&base_dir, &shaders_path, &shaders)?;
 
     if let Some(parent) = models_path.parent() {
         fs::create_dir_all(parent)?;
@@ -201,6 +205,59 @@ fn to_rgba(image: DynamicImage) -> image::RgbaImage {
     }
 }
 
+fn build_shaders(
+    base_dir: &Path,
+    output: &Path,
+    entries: &[ShaderEntry],
+) -> Result<(), BuildError> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = RDBFile::new();
+
+    if entries.is_empty() {
+        rdb.save(output).map_err(BuildError::from)?;
+        return Ok(());
+    }
+
+    let mut compiler = sc::Compiler::new()
+        .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
+    let options = sc::CompileOptions::new()
+        .ok_or_else(|| BuildError::message("unable to initialize shader compiler options"))?;
+
+    for entry in entries {
+        let module = compile_shader(&mut compiler, &options, base_dir, entry)?;
+        rdb.add(&entry.entry, &module).map_err(BuildError::from)?;
+    }
+
+    rdb.save(output).map_err(BuildError::from)?;
+    Ok(())
+}
+
+fn compile_shader(
+    compiler: &mut sc::Compiler,
+    options: &sc::CompileOptions,
+    base_dir: &Path,
+    entry: &ShaderEntry,
+) -> Result<ShaderModule, BuildError> {
+    let path = resolve_path(base_dir, &entry.file);
+    let source = fs::read_to_string(&path)?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| BuildError::message("shader path contains invalid UTF-8"))?;
+
+    let artifact = compiler.compile_into_spirv(
+        &source,
+        entry.stage.to_shaderc_kind(),
+        path_str,
+        "main",
+        Some(options),
+    )?;
+
+    Ok(ShaderModule::from_words(artifact.as_binary().to_vec()))
+}
+
 fn resolve_path(base: &Path, value: &Path) -> PathBuf {
     if value.is_absolute() {
         value.to_path_buf()
@@ -222,6 +279,8 @@ struct BuildSpec {
     imagery: Vec<ImageEntry>,
     #[serde(default)]
     geometry: Vec<GeometryEntry>,
+    #[serde(default)]
+    shaders: Vec<ShaderEntry>,
     #[serde(default)]
     models: Vec<ModelEntry>,
 }
@@ -278,6 +337,37 @@ fn default_format() -> dashi::Format {
     dashi::Format::RGBA8
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct ShaderEntry {
+    entry: String,
+    stage: ShaderStageKind,
+    file: PathBuf,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ShaderStageKind {
+    Vertex,
+    Fragment,
+    Geometry,
+    TessellationControl,
+    TessellationEvaluation,
+    Compute,
+}
+
+impl ShaderStageKind {
+    fn to_shaderc_kind(self) -> sc::ShaderKind {
+        match self {
+            ShaderStageKind::Vertex => sc::ShaderKind::Vertex,
+            ShaderStageKind::Fragment => sc::ShaderKind::Fragment,
+            ShaderStageKind::Geometry => sc::ShaderKind::Geometry,
+            ShaderStageKind::TessellationControl => sc::ShaderKind::TessControl,
+            ShaderStageKind::TessellationEvaluation => sc::ShaderKind::TessEvaluation,
+            ShaderStageKind::Compute => sc::ShaderKind::Compute,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelEntry {
     name: String,
@@ -298,6 +388,7 @@ enum BuildError {
     Image(image::ImageError),
     Gltf(gltf::Error),
     Rdb(RdbErr),
+    Shader(sc::Error),
     Message(String),
 }
 
@@ -315,6 +406,7 @@ impl std::fmt::Display for BuildError {
             BuildError::Image(err) => write!(f, "image decode error: {err}"),
             BuildError::Gltf(err) => write!(f, "glTF error: {err}"),
             BuildError::Rdb(err) => write!(f, "RDB error: {err}"),
+            BuildError::Shader(err) => write!(f, "shader compile error: {err}"),
             BuildError::Message(msg) => write!(f, "{msg}"),
         }
     }
@@ -352,6 +444,12 @@ impl From<RdbErr> for BuildError {
     }
 }
 
+impl From<sc::Error> for BuildError {
+    fn from(value: sc::Error) -> Self {
+        BuildError::Shader(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +461,7 @@ mod tests {
         let tmp_root = temp_dir();
         fs::create_dir_all(tmp_root.join("sample_pre/imagery")).unwrap();
         fs::create_dir_all(tmp_root.join("sample_pre/gltf")).unwrap();
+        fs::create_dir_all(tmp_root.join("sample_pre/shaders")).unwrap();
 
         copy_fixture(
             "sample/sample_pre/imagery/tulips.png",
@@ -376,6 +475,14 @@ mod tests {
             "sample/sample_pre/gltf/quad.gltf",
             tmp_root.join("sample_pre/gltf/quad.gltf"),
         );
+        copy_fixture(
+            "sample/sample_pre/shaders/quad.vert",
+            tmp_root.join("sample_pre/shaders/quad.vert"),
+        );
+        copy_fixture(
+            "sample/sample_pre/shaders/quad.frag",
+            tmp_root.join("sample_pre/shaders/quad.frag"),
+        );
 
         let build_spec = BuildSpec {
             output: OutputSpec {
@@ -385,6 +492,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     models: "models.json".into(),
+                    shaders: "shaders.rdb".into(),
                 },
             },
             imagery: vec![
@@ -409,6 +517,18 @@ mod tests {
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
             }],
+            shaders: vec![
+                ShaderEntry {
+                    entry: "shader/quad.vert".into(),
+                    stage: ShaderStageKind::Vertex,
+                    file: PathBuf::from("shaders/quad.vert"),
+                },
+                ShaderEntry {
+                    entry: "shader/quad.frag".into(),
+                    stage: ShaderStageKind::Fragment,
+                    file: PathBuf::from("shaders/quad.frag"),
+                },
+            ],
             models: vec![ModelEntry {
                 name: "quad".into(),
                 geometry: "geometry/quad".into(),
@@ -426,6 +546,7 @@ mod tests {
         assert!(output_dir.join("geometry.rdb").exists());
         assert!(output_dir.join("imagery.rdb").exists());
         assert!(output_dir.join("models.json").exists());
+        assert!(output_dir.join("shaders.rdb").exists());
         assert!(output_dir.join("layout.json").exists());
 
         let mut layout_text = String::new();
@@ -437,6 +558,7 @@ mod tests {
         assert_eq!(layout.geometry, "geometry.rdb");
         assert_eq!(layout.imagery, "imagery.rdb");
         assert_eq!(layout.models, "models.json");
+        assert_eq!(layout.shaders, "shaders.rdb");
 
         let mut geom = RDBFile::load(output_dir.join("geometry.rdb")).unwrap();
         let host_geom = geom.fetch::<HostGeometry>("geometry/quad").unwrap();
@@ -448,6 +570,12 @@ mod tests {
         assert_eq!(tulips.info().dim[2], 1);
         assert_eq!(tulips.info().layers, 1);
         assert_eq!(tulips.info().format, dashi::Format::RGBA8);
+
+        let mut shaders = RDBFile::load(output_dir.join("shaders.rdb")).unwrap();
+        let vert = shaders.fetch::<ShaderModule>("shader/quad.vert").unwrap();
+        assert!(vert.is_spirv());
+        let frag = shaders.fetch::<ShaderModule>("shader/quad.frag").unwrap();
+        assert!(frag.is_spirv());
     }
 
     fn temp_dir() -> PathBuf {

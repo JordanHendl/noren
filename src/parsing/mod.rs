@@ -14,6 +14,10 @@ fn default_model_path() -> String {
     "models.json".to_string()
 }
 
+fn default_shader_path() -> String {
+    "shaders.rdb".to_string()
+}
+
 ////////////////////////////////
 /// This struct defines the structure of the database.
 /// It is not needed, and if data is missing, it will default to values for data lookups.
@@ -33,6 +37,8 @@ pub struct DatabaseLayoutFile {
     pub imagery: String,
     #[serde(default = "default_model_path")]
     pub models: String,
+    #[serde(default = "default_shader_path")]
+    pub shaders: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -45,6 +51,8 @@ pub struct ModelLayoutFile {
     pub meshes: HashMap<String, MeshLayout>,
     #[serde(default)]
     pub models: HashMap<String, ModelLayout>,
+    #[serde(default)]
+    pub shaders: HashMap<String, GraphicsShaderLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -62,6 +70,8 @@ pub struct MaterialLayout {
     pub name: Option<String>,
     #[serde(default)]
     pub textures: Vec<String>,
+    #[serde(default)]
+    pub shader: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -84,12 +94,29 @@ pub struct ModelLayout {
     pub meshes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GraphicsShaderLayout {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub vertex: Option<String>,
+    #[serde(default)]
+    pub fragment: Option<String>,
+    #[serde(default)]
+    pub geometry: Option<String>,
+    #[serde(default, rename = "tessellation_control")]
+    pub tessellation_control: Option<String>,
+    #[serde(default, rename = "tessellation_evaluation")]
+    pub tessellation_evaluation: Option<String>,
+}
+
 impl Default for DatabaseLayoutFile {
     fn default() -> Self {
         Self {
             geometry: default_geometry_path(),
             imagery: default_imagery_path(),
             models: default_model_path(),
+            shaders: default_shader_path(),
         }
     }
 }

@@ -5,7 +5,8 @@
     "layout": {
       "geometry": "geometry.rdb",
       "imagery": "imagery.rdb",
-      "models": "models.json"
+      "models": "models.json",
+      "shaders": "shaders.rdb"
     }
   },
   "geometry": [
@@ -33,6 +34,18 @@
       "textures": [
         "imagery/tulips"
       ]
+    }
+  ],
+  "shaders": [
+    {
+      "entry": "shader/quad.vert",
+      "stage": "vertex",
+      "file": "shaders/quad.vert"
+    },
+    {
+      "entry": "shader/quad.frag",
+      "stage": "fragment",
+      "file": "shaders/quad.frag"
     }
   ]
 }

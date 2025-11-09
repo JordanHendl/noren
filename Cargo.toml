@@ -19,6 +19,7 @@ memmap2 = "0.9"
 bytemuck = { version = "1.17", features = ["derive"] }
 bincode = "1"
 winit = { version = "0.26" }
+shaderc = "0.8"
 
 [lib]
 
