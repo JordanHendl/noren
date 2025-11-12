@@ -33,6 +33,7 @@ pub struct DB {
     geometry: GeometryDB,
     imagery: ImageDB,
     shaders: ShaderDB,
+    render_passes: RenderPassDB,
     model_file: Option<ModelLayoutFile>,
 }
 
@@ -87,11 +88,18 @@ impl DB {
             }
         }
 
+        let render_passes = if let Some(layout) = model_file.as_mut() {
+            RenderPassDB::new(std::mem::take(&mut layout.render_passes))
+        } else {
+            RenderPassDB::default()
+        };
+
         Ok(Self {
             ctx: ctx_ptr,
             geometry,
             imagery,
             shaders,
+            render_passes,
             model_file,
         })
     }
@@ -122,6 +130,11 @@ impl DB {
 
     pub fn font(&self) -> &FontDB {
         todo!()
+    }
+
+    pub fn fetch_render_pass(&mut self, entry: &str) -> Result<Handle<RenderPass>, NorenError> {
+        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+        self.render_passes.fetch(entry, ctx)
     }
 
     pub fn fetch_model(&mut self, entry: DatabaseEntry) -> Result<HostModel, NorenError> {
@@ -564,7 +577,6 @@ mod tests {
     use std::fs::File;
     use tempfile::tempdir;
 
-    use dashi::builders::RenderPassBuilder;
     use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport};
 
     const MODEL_ENTRY: DatabaseEntry = "model/simple";
@@ -768,16 +780,6 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
 
-        let viewport = Viewport { ..layout_viewport };
-        let color_attachment = AttachmentDescription {
-            format: Format::RGBA8,
-            ..Default::default()
-        };
-        let render_pass = RenderPassBuilder::new("test_pass", viewport)
-            .add_subpass(&[color_attachment], None, &[])
-            .build(&mut ctx)
-            .expect("create render pass");
-
         let db_info = DBInfo {
             ctx: &mut ctx,
             base_dir: base_dir.to_str().expect("base dir to str"),
@@ -785,6 +787,7 @@ mod tests {
         };
 
         let mut db = DB::new(&db_info)?;
+        let render_pass = db.fetch_render_pass("render_pass/test")?;
 
         let host_model = db.fetch_model(MODEL_ENTRY)?;
         assert_eq!(host_model.name, MODEL_ENTRY);
