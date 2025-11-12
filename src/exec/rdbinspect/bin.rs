@@ -11,9 +11,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut args = env::args();
-    let program = args
-        .next()
-        .unwrap_or_else(|| "noren_rdbinspect".to_string());
+    let program = args.next().unwrap_or_else(|| "rdbinspect".to_string());
 
     let rest: Vec<String> = args.collect();
     if rest.is_empty() {
