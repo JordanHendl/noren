@@ -30,6 +30,7 @@ pub enum NorenError {
     UploadFailure(),
     DataFailure(),
     JSONError(serde_json::Error),
+    YAMLError(serde_yaml::Error),
     IOFailure(std::io::Error),
     RDBFileError(RdbErr),
 }
@@ -46,6 +47,7 @@ impl std::fmt::Display for NorenError {
             NorenError::RDBFileError(rdb_err) => write!(f, "RDB file error: {}", rdb_err),
             NorenError::IOFailure(error) => write!(f, "I/O failure: {}", error),
             NorenError::JSONError(error) => write!(f, "JSON processing error: {}", error),
+            NorenError::YAMLError(error) => write!(f, "YAML processing error: {}", error),
         }
     }
 }
@@ -59,6 +61,12 @@ impl From<RdbErr> for NorenError {
 impl From<serde_json::Error> for NorenError {
     fn from(value: serde_json::Error) -> Self {
         NorenError::JSONError(value)
+    }
+}
+
+impl From<serde_yaml::Error> for NorenError {
+    fn from(value: serde_yaml::Error) -> Self {
+        NorenError::YAMLError(value)
     }
 }
 
@@ -120,6 +128,13 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::JSONError(json_err)),
             "JSON processing error: expected ident at line 1 column 2"
+        );
+
+        let yaml_err: serde_yaml::Error =
+            serde_yaml::from_str::<serde_yaml::Value>("- not: yaml: :")
+                .expect_err("expected YAML parsing to fail");
+        assert!(
+            format!("{}", NorenError::YAMLError(yaml_err)).starts_with("YAML processing error:")
         );
     }
 
