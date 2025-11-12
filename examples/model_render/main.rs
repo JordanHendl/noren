@@ -25,8 +25,6 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut db = open_sample_db(&mut ctx)?;
 
-    let render_pass = db.fetch_render_pass("render_pass/default")?;
-
     let host_model = db.fetch_model(SAMPLE_MODEL_ENTRY)?;
     println!(
         "Host model '{}' contains {} mesh(es)",
@@ -42,7 +40,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let device_model = db.fetch_gpu_model(SAMPLE_MODEL_ENTRY, render_pass)?;
+    let device_model = db.fetch_gpu_model(SAMPLE_MODEL_ENTRY)?;
     for mesh in &device_model.meshes {
         println!(
             "Uploaded mesh with vertex buffer {:?} and index buffer {:?}",

@@ -155,15 +155,13 @@ impl DB {
                 material,
             },
             |name, meshes| HostModel { name, meshes },
-            Self::load_graphics_shader,
+            |shader_db, _render_passes, shader_key, shader_layout| {
+                Self::load_graphics_shader(shader_db, shader_key, shader_layout)
+            },
         )
     }
 
-    pub fn fetch_gpu_model(
-        &mut self,
-        entry: DatabaseEntry,
-        render_pass: Handle<RenderPass>,
-    ) -> Result<DeviceModel, NorenError> {
+    pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry) -> Result<DeviceModel, NorenError> {
         let ctx_ptr = self.ctx;
         self.assemble_model(
             entry,
@@ -173,16 +171,21 @@ impl DB {
             |_, textures, shader| DeviceMaterial::new(textures, shader),
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
             |name, meshes| DeviceModel { name, meshes },
-            move |shader_db, shader_key, shader_layout| {
+            move |shader_db, render_passes, shader_key, shader_layout| {
                 let mut shader_opt =
                     Self::load_graphics_shader(shader_db, shader_key, shader_layout)?;
                 if let Some(shader) = shader_opt.as_mut() {
                     let ctx: &mut Context = unsafe { &mut *ctx_ptr.as_ptr() };
+                    let render_pass_key = shader_layout
+                        .render_pass
+                        .as_deref()
+                        .ok_or_else(|| NorenError::MissingRenderPass(shader_key.to_string()))?;
                     Self::configure_graphics_shader_pipeline(
                         shader,
                         shader_layout,
                         ctx,
-                        render_pass,
+                        render_pass_key,
+                        render_passes,
                     )?;
                 }
                 Ok(shader_opt)
@@ -193,7 +196,6 @@ impl DB {
     pub fn fetch_graphics_shader(
         &mut self,
         entry: DatabaseEntry,
-        render_pass: Handle<RenderPass>,
     ) -> Result<GraphicsShader, NorenError> {
         let shader_layout = {
             let layout = self
@@ -207,11 +209,22 @@ impl DB {
                 .ok_or_else(|| NorenError::LookupFailure())?
         };
 
+        let render_pass_key = shader_layout
+            .render_pass
+            .as_deref()
+            .ok_or_else(|| NorenError::MissingRenderPass(entry.to_string()))?;
+
         let mut shader = Self::load_graphics_shader(&mut self.shaders, entry, &shader_layout)?
             .ok_or_else(NorenError::LookupFailure)?;
 
         let ctx: &mut Context = unsafe { self.ctx.as_mut() };
-        Self::configure_graphics_shader_pipeline(&mut shader, &shader_layout, ctx, render_pass)?;
+        Self::configure_graphics_shader_pipeline(
+            &mut shader,
+            &shader_layout,
+            ctx,
+            render_pass_key,
+            &mut self.render_passes,
+        )?;
 
         Ok(shader)
     }
@@ -251,8 +264,12 @@ impl DB {
         MakeMaterial: FnMut(String, Vec<Texture>, Option<Shader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
         MakeModel: FnMut(String, Vec<Mesh>) -> Model,
-        LoadShader:
-            FnMut(&mut ShaderDB, &str, &GraphicsShaderLayout) -> Result<Option<Shader>, NorenError>,
+        LoadShader: FnMut(
+            &mut ShaderDB,
+            &mut RenderPassDB,
+            &str,
+            &GraphicsShaderLayout,
+        ) -> Result<Option<Shader>, NorenError>,
     {
         let layout = self
             .model_file
@@ -315,7 +332,12 @@ impl DB {
                     let shader = match material_def.shader.as_ref() {
                         Some(shader_key) => {
                             if let Some(shader_layout) = layout.shaders.get(shader_key).cloned() {
-                                load_shader(&mut self.shaders, shader_key, &shader_layout)?
+                                load_shader(
+                                    &mut self.shaders,
+                                    &mut self.render_passes,
+                                    shader_key,
+                                    &shader_layout,
+                                )?
                             } else {
                                 None
                             }
@@ -400,8 +422,17 @@ impl DB {
         shader: &mut GraphicsShader,
         layout: &GraphicsShaderLayout,
         ctx: &mut Context,
-        render_pass: Handle<RenderPass>,
+        render_pass_key: &str,
+        render_passes: &mut RenderPassDB,
     ) -> Result<(), NorenError> {
+        let render_pass = match render_passes.fetch(render_pass_key, ctx) {
+            Ok(handle) => handle,
+            Err(NorenError::LookupFailure()) => {
+                return Err(NorenError::UnknownRenderPass(render_pass_key.to_string()));
+            }
+            Err(err) => return Err(err),
+        };
+
         let mut bg_handles: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
         for (index, cfg_opt) in layout.bind_group_layouts.iter().enumerate() {
             if index >= bg_handles.len() {
@@ -787,7 +818,7 @@ mod tests {
         };
 
         let mut db = DB::new(&db_info)?;
-        let render_pass = db.fetch_render_pass("render_pass/test")?;
+        let _render_pass = db.fetch_render_pass("render_pass/test")?;
 
         let host_model = db.fetch_model(MODEL_ENTRY)?;
         assert_eq!(host_model.name, MODEL_ENTRY);
@@ -817,18 +848,18 @@ mod tests {
             &[0x0723_0203, 4, 5, 6]
         );
 
-        let fetched_shader = db.fetch_graphics_shader(SHADER_PROGRAM_ENTRY, render_pass)?;
+        let fetched_shader = db.fetch_graphics_shader(SHADER_PROGRAM_ENTRY)?;
         assert_eq!(fetched_shader.name, SHADER_PROGRAM_ENTRY);
         assert!(fetched_shader.vertex.is_some());
         assert!(fetched_shader.fragment.is_some());
         assert!(fetched_shader.pipeline.is_none());
 
         assert!(matches!(
-            db.fetch_graphics_shader(SHADER_MISSING_ENTRY, render_pass),
+            db.fetch_graphics_shader(SHADER_MISSING_ENTRY),
             Err(NorenError::LookupFailure())
         ));
 
-        let device_model = db.fetch_gpu_model(MODEL_ENTRY, render_pass)?;
+        let device_model = db.fetch_gpu_model(MODEL_ENTRY)?;
         assert_eq!(device_model.name, MODEL_ENTRY);
         assert_eq!(device_model.meshes.len(), 1);
         let device_mesh = &device_model.meshes[0];
