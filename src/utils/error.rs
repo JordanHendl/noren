@@ -29,6 +29,8 @@ pub enum NorenError {
     LookupFailure(),
     UploadFailure(),
     DataFailure(),
+    MissingRenderPass(String),
+    UnknownRenderPass(String),
     JSONError(serde_json::Error),
     YAMLError(serde_yaml::Error),
     IOFailure(std::io::Error),
@@ -44,6 +46,14 @@ impl std::fmt::Display for NorenError {
             }
             NorenError::UploadFailure() => write!(f, "Failed to upload data."),
             NorenError::DataFailure() => write!(f, "Data processing failed."),
+            NorenError::MissingRenderPass(shader) => write!(
+                f,
+                "Graphics shader '{}' does not specify a render pass.",
+                shader
+            ),
+            NorenError::UnknownRenderPass(pass) => {
+                write!(f, "Render pass '{}' could not be found.", pass)
+            }
             NorenError::RDBFileError(rdb_err) => write!(f, "RDB file error: {}", rdb_err),
             NorenError::IOFailure(error) => write!(f, "I/O failure: {}", error),
             NorenError::JSONError(error) => write!(f, "JSON processing error: {}", error),
@@ -111,6 +121,14 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::DataFailure()),
             "Data processing failed."
+        );
+        assert_eq!(
+            format!("{}", NorenError::MissingRenderPass("shader".into())),
+            "Graphics shader 'shader' does not specify a render pass."
+        );
+        assert_eq!(
+            format!("{}", NorenError::UnknownRenderPass("pass".into())),
+            "Render pass 'pass' could not be found."
         );
         assert_eq!(
             format!("{}", NorenError::RDBFileError(RdbErr::BadHeader)),
