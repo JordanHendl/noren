@@ -43,14 +43,19 @@ fn run() -> Result<(), Box<dyn Error>> {
     let device_model = db.fetch_gpu_model(SAMPLE_MODEL_ENTRY)?;
     for mesh in &device_model.meshes {
         println!(
-            "Uploaded mesh '{}' with vertex buffer {:?} and index buffer {:?}",
-            mesh.name, mesh.geometry.vertices, mesh.geometry.indices
+            "Uploaded mesh with vertex buffer {:?} and index buffer {:?}",
+            mesh.geometry.vertices, mesh.geometry.indices
         );
         if let Some(material) = &mesh.material {
             for texture in &material.textures {
+                let gpu_name = {
+                    let bytes = &texture.image.info.name;
+                    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                    std::str::from_utf8(&bytes[..len]).unwrap_or("")
+                };
                 println!(
                     "   - Texture '{}' uploaded as {:?}",
-                    texture.name, texture.image
+                    gpu_name, texture.image
                 );
             }
         }
