@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::datatypes::{DeviceGeometry, DeviceImage, HostGeometry, HostImage, ShaderModule};
+use dashi::{BindGroupLayout, BindTableLayout, GraphicsPipeline, GraphicsPipelineLayout, Handle};
 
 pub const DEVICE_NAME_CAPACITY: usize = 64;
 pub const DEVICE_TEXTURE_CAPACITY: usize = 8;
@@ -162,68 +163,22 @@ impl<'a> IntoIterator for &'a DeviceTextureList {
 
 #[repr(C)]
 #[derive(Clone, Debug, Default)]
-pub struct DeviceShaderStage {
-    pub entry: DeviceName,
-    pub module: DeviceName,
-    pub present: bool,
-}
-
-impl DeviceShaderStage {
-    pub fn new(entry: impl Into<DeviceName>, module: impl Into<DeviceName>) -> Self {
-        Self {
-            entry: entry.into(),
-            module: module.into(),
-            present: true,
-        }
-    }
-
-    pub fn is_present(&self) -> bool {
-        self.present
-    }
-
-    pub fn entry_name(&self) -> String {
-        self.entry.to_string()
-    }
-
-    pub fn module_name(&self) -> String {
-        self.module.to_string()
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Debug, Default)]
-pub struct DeviceGraphicsShader {
-    pub vertex: DeviceShaderStage,
-    pub fragment: DeviceShaderStage,
-    pub geometry: DeviceShaderStage,
-    pub tessellation_control: DeviceShaderStage,
-    pub tessellation_evaluation: DeviceShaderStage,
-}
-
-impl DeviceGraphicsShader {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Debug, Default)]
 pub struct DeviceMaterial {
     pub textures: DeviceTextureList,
-    pub shader: Option<DeviceGraphicsShader>,
+    pub shader: Option<GraphicsShader>,
 }
 
 impl DeviceMaterial {
-    pub fn new(
-        textures: Vec<DeviceTexture>,
-        shader: Option<DeviceGraphicsShader>,
-    ) -> Self {
+    pub fn new(textures: Vec<DeviceTexture>, shader: Option<GraphicsShader>) -> Self {
         let mut list = DeviceTextureList::new();
         for texture in textures.into_iter().take(DEVICE_TEXTURE_CAPACITY) {
             list.push(texture);
         }
         debug_assert!(list.len() <= DEVICE_TEXTURE_CAPACITY);
-        Self { textures: list, shader }
+        Self {
+            textures: list,
+            shader,
+        }
     }
 }
 
@@ -279,6 +234,10 @@ pub struct GraphicsShader {
     pub geometry: Option<ShaderStage>,
     pub tessellation_control: Option<ShaderStage>,
     pub tessellation_evaluation: Option<ShaderStage>,
+    pub bind_group_layouts: [Option<Handle<BindGroupLayout>>; 4],
+    pub bind_table_layouts: [Option<Handle<BindTableLayout>>; 4],
+    pub pipeline_layout: Option<Handle<GraphicsPipelineLayout>>,
+    pub pipeline: Option<Handle<GraphicsPipeline>>,
 }
 
 impl GraphicsShader {

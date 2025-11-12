@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use dashi::cfg;
 use serde::{Deserialize, Serialize};
 
 fn default_geometry_path() -> String {
@@ -108,6 +109,12 @@ pub struct GraphicsShaderLayout {
     pub tessellation_control: Option<String>,
     #[serde(default, rename = "tessellation_evaluation")]
     pub tessellation_evaluation: Option<String>,
+    #[serde(default)]
+    pub bind_group_layouts: Vec<Option<cfg::BindGroupLayoutCfg>>,
+    #[serde(default)]
+    pub bind_table_layouts: Vec<Option<cfg::BindTableLayoutCfg>>,
+    #[serde(default)]
+    pub subpass: u8,
 }
 
 impl Default for DatabaseLayoutFile {

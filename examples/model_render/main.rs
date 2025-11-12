@@ -5,6 +5,8 @@
 mod common;
 
 use common::{SAMPLE_MODEL_ENTRY, init_context, open_sample_db};
+use dashi::builders::RenderPassBuilder;
+use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport};
 use std::error::Error;
 
 fn main() {
@@ -25,6 +27,30 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut db = open_sample_db(&mut ctx)?;
 
+    let viewport = Viewport {
+        area: FRect2D {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+        },
+        scissor: Rect2D {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        },
+        min_depth: 0.0,
+        max_depth: 1.0,
+    };
+    let color_attachment = AttachmentDescription {
+        format: Format::RGBA8,
+        ..Default::default()
+    };
+    let render_pass = RenderPassBuilder::new("model_render", viewport)
+        .add_subpass(&[color_attachment], None, &[])
+        .build(&mut ctx)?;
+
     let host_model = db.fetch_model(SAMPLE_MODEL_ENTRY)?;
     println!(
         "Host model '{}' contains {} mesh(es)",
@@ -40,7 +66,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let device_model = db.fetch_gpu_model(SAMPLE_MODEL_ENTRY)?;
+    let device_model = db.fetch_gpu_model(SAMPLE_MODEL_ENTRY, render_pass)?;
     for mesh in &device_model.meshes {
         println!(
             "Uploaded mesh with vertex buffer {:?} and index buffer {:?}",
