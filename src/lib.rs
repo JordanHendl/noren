@@ -13,7 +13,7 @@ use utils::*;
 
 pub use parsing::DatabaseLayoutFile;
 pub use utils::error::RdbErr;
-pub use utils::rdbfile::RDBFile;
+pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView};
 
 pub struct DBInfo<'a> {
     pub ctx: *mut dashi::Context,
