@@ -2,6 +2,7 @@ use std::{
     fs::{self, File},
     io::BufReader,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use image::DynamicImage;
@@ -14,25 +15,244 @@ use shaderc as sc;
 
 fn main() {
     let mut args = std::env::args();
-    let _ = args.next();
+    let program = args.next().unwrap_or_else(|| "dbgen".to_string());
 
-    let Some(input) = args.next() else {
-        eprintln!("Usage: noren_dbgen <staging-build.json>");
-        std::process::exit(1);
+    let command = match parse_command(&program, args) {
+        Ok(cmd) => cmd,
+        Err(err) => {
+            eprintln!("{err}");
+            print_usage(&program);
+            std::process::exit(1);
+        }
     };
 
-    if args.next().is_some() {
-        eprintln!("Usage: noren_dbgen <staging-build.json>");
-        std::process::exit(1);
-    }
+    let result = match command {
+        Command::Build { append, spec } => run_from_path(&spec, append),
+        Command::AppendGeometry(args) => append_geometry(&args),
+        Command::AppendImagery(args) => append_imagery(&args),
+        Command::AppendShader(args) => append_shader(&args),
+    };
 
-    if let Err(err) = run_from_path(Path::new(&input)) {
+    if let Err(err) = result {
         eprintln!("error: {err}");
         std::process::exit(1);
     }
 }
 
-fn run_from_path(input: &Path) -> Result<(), BuildError> {
+fn parse_command(program: &str, mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(first) = args.next() else {
+        return Err(format!("missing arguments\n\nSee '{program} --help'"));
+    };
+
+    match first.as_str() {
+        "-h" | "--help" => {
+            print_usage(program);
+            std::process::exit(0);
+        }
+        "--append" => {
+            let Some(spec) = args.next() else {
+                return Err("--append requires a build specification path".into());
+            };
+            Ok(Command::Build {
+                append: true,
+                spec: PathBuf::from(spec),
+            })
+        }
+        "append" => parse_append_command(args),
+        other if other.starts_with('-') => Err(format!("unexpected flag: {other}")),
+        path => Ok(Command::Build {
+            append: false,
+            spec: PathBuf::from(path),
+        }),
+    }
+}
+
+fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(kind) = args.next() else {
+        return Err("append requires a resource type (geometry, imagery, shader)".into());
+    };
+
+    match kind.as_str() {
+        "geometry" => parse_geometry_append(args).map(Command::AppendGeometry),
+        "imagery" => parse_imagery_append(args).map(Command::AppendImagery),
+        "shader" => parse_shader_append(args).map(Command::AppendShader),
+        other => Err(format!("unknown append resource type: {other}")),
+    }
+}
+
+fn parse_geometry_append(
+    mut args: impl Iterator<Item = String>,
+) -> Result<GeometryAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut mesh = None;
+    let mut primitive = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--gltf" => {
+                file = Some(next_value("--gltf", &mut args)?);
+            }
+            "--mesh" => {
+                mesh = Some(next_value("--mesh", &mut args)?);
+            }
+            "--primitive" => {
+                let value = next_value("--primitive", &mut args)?;
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("--primitive expects an integer, received '{value}'"))?;
+                primitive = Some(parsed);
+            }
+            other => return Err(format!("unexpected argument to append geometry: {other}")),
+        }
+    }
+
+    Ok(GeometryAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: GeometryEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--gltf is required".to_string())?),
+            mesh,
+            primitive,
+        },
+    })
+}
+
+fn parse_imagery_append(mut args: impl Iterator<Item = String>) -> Result<ImageAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut layers = None;
+    let mut format = None;
+    let mut mip_levels = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--image" => {
+                file = Some(next_value("--image", &mut args)?);
+            }
+            "--layers" => {
+                let value = next_value("--layers", &mut args)?;
+                let parsed = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("--layers expects an integer, received '{value}'"))?;
+                layers = Some(parsed);
+            }
+            "--format" => {
+                let value = next_value("--format", &mut args)?;
+                let parsed = parse_image_format(&value)
+                    .ok_or_else(|| format!("unknown image format '{value}'"))?;
+                format = Some(parsed);
+            }
+            "--mip-levels" => {
+                let value = next_value("--mip-levels", &mut args)?;
+                let parsed = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("--mip-levels expects an integer, received '{value}'"))?;
+                mip_levels = Some(parsed);
+            }
+            other => return Err(format!("unexpected argument to append imagery: {other}")),
+        }
+    }
+
+    Ok(ImageAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: ImageEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--image is required".to_string())?),
+            layers: layers.unwrap_or_else(default_layers),
+            format: format.unwrap_or_else(default_format),
+            mip_levels: mip_levels.unwrap_or_else(default_mip_levels),
+        },
+    })
+}
+
+fn parse_shader_append(mut args: impl Iterator<Item = String>) -> Result<ShaderAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut stage = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--shader" => {
+                file = Some(next_value("--shader", &mut args)?);
+            }
+            "--stage" => {
+                let value = next_value("--stage", &mut args)?;
+                stage = Some(
+                    ShaderStageKind::from_str(&value)
+                        .map_err(|_| format!("unknown shader stage '{value}'"))?,
+                );
+            }
+            other => return Err(format!("unexpected argument to append shader: {other}")),
+        }
+    }
+
+    Ok(ShaderAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: ShaderEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            stage: stage.ok_or_else(|| "--stage is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--shader is required".to_string())?),
+        },
+    })
+}
+
+fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> Result<String, String> {
+    args.next()
+        .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+#[derive(Debug)]
+enum Command {
+    Build { append: bool, spec: PathBuf },
+    AppendGeometry(GeometryAppendArgs),
+    AppendImagery(ImageAppendArgs),
+    AppendShader(ShaderAppendArgs),
+}
+
+#[derive(Debug)]
+struct GeometryAppendArgs {
+    rdb: PathBuf,
+    entry: GeometryEntry,
+}
+
+#[derive(Debug)]
+struct ImageAppendArgs {
+    rdb: PathBuf,
+    entry: ImageEntry,
+}
+
+#[derive(Debug)]
+struct ShaderAppendArgs {
+    rdb: PathBuf,
+    entry: ShaderEntry,
+}
+
+fn run_from_path(input: &Path, append: bool) -> Result<(), BuildError> {
     let file = File::open(input)?;
     let reader = BufReader::new(file);
     let spec: BuildSpec = serde_json::from_reader(reader)?;
@@ -59,9 +279,9 @@ fn run_from_path(input: &Path) -> Result<(), BuildError> {
     let shaders_path = resolve_string_path(&output_dir, &output.layout.shaders);
     let layout_path = resolve_path(&output_dir, &output.layout_file);
 
-    build_geometry(&base_dir, &geometry_path, &geometry)?;
-    build_imagery(&base_dir, &imagery_path, &imagery)?;
-    build_shaders(&base_dir, &shaders_path, &shaders)?;
+    build_geometry(&base_dir, &geometry_path, &geometry, append)?;
+    build_imagery(&base_dir, &imagery_path, &imagery, append)?;
+    build_shaders(&base_dir, &shaders_path, &shaders, append)?;
 
     if let Some(parent) = models_path.parent() {
         fs::create_dir_all(parent)?;
@@ -82,12 +302,13 @@ fn build_geometry(
     base_dir: &Path,
     output: &Path,
     entries: &[GeometryEntry],
+    append: bool,
 ) -> Result<(), BuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = RDBFile::new();
+    let mut rdb = load_rdb(output, append)?;
 
     for entry in entries {
         let host = load_geometry(base_dir, entry)?;
@@ -95,6 +316,19 @@ fn build_geometry(
     }
 
     rdb.save(output).map_err(BuildError::from)?;
+    Ok(())
+}
+
+fn append_geometry(args: &GeometryAppendArgs) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = load_rdb(&args.rdb, true)?;
+    let geometry = load_geometry(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &geometry).map_err(BuildError::from)?;
+    rdb.save(&args.rdb).map_err(BuildError::from)?;
     Ok(())
 }
 
@@ -164,12 +398,30 @@ fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry,
     Ok(HostGeometry { vertices, indices })
 }
 
-fn build_imagery(base_dir: &Path, output: &Path, entries: &[ImageEntry]) -> Result<(), BuildError> {
+fn append_imagery(args: &ImageAppendArgs) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = load_rdb(&args.rdb, true)?;
+    let image = load_image(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &image).map_err(BuildError::from)?;
+    rdb.save(&args.rdb).map_err(BuildError::from)?;
+    Ok(())
+}
+
+fn build_imagery(
+    base_dir: &Path,
+    output: &Path,
+    entries: &[ImageEntry],
+    append: bool,
+) -> Result<(), BuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = RDBFile::new();
+    let mut rdb = load_rdb(output, append)?;
 
     for entry in entries {
         let image = load_image(base_dir, entry)?;
@@ -177,6 +429,23 @@ fn build_imagery(base_dir: &Path, output: &Path, entries: &[ImageEntry]) -> Resu
     }
 
     rdb.save(output).map_err(BuildError::from)?;
+    Ok(())
+}
+
+fn append_shader(args: &ShaderAppendArgs) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = load_rdb(&args.rdb, true)?;
+    let mut compiler = sc::Compiler::new()
+        .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
+    let options = sc::CompileOptions::new()
+        .ok_or_else(|| BuildError::message("unable to initialize shader compiler options"))?;
+    let module = compile_shader(&mut compiler, &options, Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &module).map_err(BuildError::from)?;
+    rdb.save(&args.rdb).map_err(BuildError::from)?;
     Ok(())
 }
 
@@ -209,17 +478,13 @@ fn build_shaders(
     base_dir: &Path,
     output: &Path,
     entries: &[ShaderEntry],
+    append: bool,
 ) -> Result<(), BuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = RDBFile::new();
-
-    if entries.is_empty() {
-        rdb.save(output).map_err(BuildError::from)?;
-        return Ok(());
-    }
+    let mut rdb = load_rdb(output, append)?;
 
     let mut compiler = sc::Compiler::new()
         .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
@@ -233,6 +498,16 @@ fn build_shaders(
 
     rdb.save(output).map_err(BuildError::from)?;
     Ok(())
+}
+
+fn load_rdb(path: &Path, append: bool) -> Result<RDBFile, BuildError> {
+    if append && path.exists() {
+        let mut rdb = RDBFile::load(path).map_err(BuildError::from)?;
+        rdb.unmap();
+        Ok(rdb)
+    } else {
+        Ok(RDBFile::new())
+    }
 }
 
 fn compile_shader(
@@ -269,6 +544,33 @@ fn resolve_path(base: &Path, value: &Path) -> PathBuf {
 fn resolve_string_path(base: &Path, value: &str) -> PathBuf {
     let path = Path::new(value);
     resolve_path(base, path)
+}
+
+fn print_usage(program: &str) {
+    eprintln!("Usage:");
+    eprintln!("  {program} <staging-build.json>");
+    eprintln!("  {program} --append <staging-build.json>");
+    eprintln!(
+        "  {program} append geometry --rdb <geometry.rdb> --entry <name> --gltf <file> [--mesh <name>] [--primitive <index>]"
+    );
+    eprintln!(
+        "  {program} append imagery --rdb <imagery.rdb> --entry <name> --image <file> [--layers <count>] [--mip-levels <count>] [--format <format>]"
+    );
+    eprintln!(
+        "  {program} append shader --rdb <shaders.rdb> --entry <name> --stage <stage> --shader <file>"
+    );
+    eprintln!("");
+    eprintln!("Options:");
+    eprintln!("  --append        Append new entries to existing RDB files when using a JSON spec");
+    eprintln!("  -h, --help      Show this help message");
+    eprintln!("");
+    eprintln!("Formats:");
+    eprintln!("  r8uint, r8sint, rgb8, bgra8, rgba8, rgba8unorm, rgba32f, bgra8unorm, d24s8");
+    eprintln!("");
+    eprintln!("Stages:");
+    eprintln!(
+        "  vertex, fragment, geometry, tessellation_control, tessellation_evaluation, compute"
+    );
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -337,6 +639,21 @@ fn default_format() -> dashi::Format {
     dashi::Format::RGBA8
 }
 
+fn parse_image_format(value: &str) -> Option<dashi::Format> {
+    match value.to_ascii_lowercase().as_str() {
+        "r8uint" => Some(dashi::Format::R8Uint),
+        "r8sint" => Some(dashi::Format::R8Sint),
+        "rgb8" => Some(dashi::Format::RGB8),
+        "bgra8" => Some(dashi::Format::BGRA8),
+        "rgba8" => Some(dashi::Format::RGBA8),
+        "rgba8unorm" | "rgba8_unorm" => Some(dashi::Format::RGBA8Unorm),
+        "rgba32f" | "rgba32_float" | "rgba32float" => Some(dashi::Format::RGBA32F),
+        "bgra8unorm" | "bgra8_unorm" => Some(dashi::Format::BGRA8Unorm),
+        "d24s8" => Some(dashi::Format::D24S8),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ShaderEntry {
     entry: String,
@@ -364,6 +681,24 @@ impl ShaderStageKind {
             ShaderStageKind::TessellationControl => sc::ShaderKind::TessControl,
             ShaderStageKind::TessellationEvaluation => sc::ShaderKind::TessEvaluation,
             ShaderStageKind::Compute => sc::ShaderKind::Compute,
+        }
+    }
+}
+
+impl FromStr for ShaderStageKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "vertex" => Ok(Self::Vertex),
+            "fragment" | "pixel" => Ok(Self::Fragment),
+            "geometry" => Ok(Self::Geometry),
+            "tessellation_control" | "tess_control" | "hull" => Ok(Self::TessellationControl),
+            "tessellation_evaluation" | "tess_evaluation" | "domain" => {
+                Ok(Self::TessellationEvaluation)
+            }
+            "compute" => Ok(Self::Compute),
+            _ => Err(()),
         }
     }
 }
@@ -540,7 +875,7 @@ mod tests {
         let file = File::create(&build_path).unwrap();
         serde_json::to_writer_pretty(file, &build_spec).unwrap();
 
-        run_from_path(&build_path).unwrap();
+        run_from_path(&build_path, false).unwrap();
 
         let output_dir = tmp_root.join("db");
         assert!(output_dir.join("geometry.rdb").exists());
@@ -581,10 +916,150 @@ mod tests {
     fn temp_dir() -> PathBuf {
         let mut rng = rand::thread_rng();
         let id: String = (0..12).map(|_| rng.sample(Alphanumeric) as char).collect();
-        let dir = std::env::temp_dir().join(format!("noren_dbgen_{id}"));
+        let dir = std::env::temp_dir().join(format!("dbgen_{id}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn appends_to_existing_rdb_files() {
+        let tmp_root = temp_dir();
+        fs::create_dir_all(tmp_root.join("sample_pre/imagery")).unwrap();
+        fs::create_dir_all(tmp_root.join("sample_pre/gltf")).unwrap();
+
+        copy_fixture(
+            "sample/sample_pre/imagery/tulips.png",
+            tmp_root.join("sample_pre/imagery/tulips.png"),
+        );
+        copy_fixture(
+            "sample/sample_pre/gltf/quad.gltf",
+            tmp_root.join("sample_pre/gltf/quad.gltf"),
+        );
+
+        let initial_spec = BuildSpec {
+            output: OutputSpec {
+                directory: PathBuf::from("../db"),
+                layout_file: PathBuf::from("layout.json"),
+                layout: DatabaseLayoutFile {
+                    geometry: "geometry.rdb".into(),
+                    imagery: "imagery.rdb".into(),
+                    models: "models.json".into(),
+                    shaders: "shaders.rdb".into(),
+                },
+            },
+            imagery: vec![ImageEntry {
+                entry: "imagery/tulips".into(),
+                file: PathBuf::from("imagery/tulips.png"),
+                layers: 1,
+                format: dashi::Format::RGBA8,
+                mip_levels: 1,
+            }],
+            geometry: vec![GeometryEntry {
+                entry: "geometry/quad".into(),
+                file: PathBuf::from("gltf/quad.gltf"),
+                mesh: Some("Quad".into()),
+                primitive: Some(0),
+            }],
+            shaders: Vec::new(),
+            models: Vec::new(),
+        };
+
+        let build_path = tmp_root.join("sample_pre/norenbuild.json");
+        let file = File::create(&build_path).unwrap();
+        serde_json::to_writer_pretty(file, &initial_spec).unwrap();
+        run_from_path(&build_path, false).unwrap();
+
+        let append_spec = BuildSpec {
+            output: OutputSpec {
+                directory: PathBuf::from("../db"),
+                layout_file: PathBuf::from("layout.json"),
+                layout: DatabaseLayoutFile {
+                    geometry: "geometry.rdb".into(),
+                    imagery: "imagery.rdb".into(),
+                    models: "models.json".into(),
+                    shaders: "shaders.rdb".into(),
+                },
+            },
+            imagery: vec![],
+            geometry: vec![GeometryEntry {
+                entry: "geometry/quad_copy".into(),
+                file: PathBuf::from("gltf/quad.gltf"),
+                mesh: Some("Quad".into()),
+                primitive: Some(0),
+            }],
+            shaders: Vec::new(),
+            models: Vec::new(),
+        };
+
+        let append_path = tmp_root.join("sample_pre/append.json");
+        let file = File::create(&append_path).unwrap();
+        serde_json::to_writer_pretty(file, &append_spec).unwrap();
+        run_from_path(&append_path, true).unwrap();
+
+        let geometry_path = tmp_root.join("db/geometry.rdb");
+        let mut rdb = RDBFile::load(&geometry_path).unwrap();
+        let original = rdb.fetch::<HostGeometry>("geometry/quad").unwrap();
+        assert_eq!(original.vertices.len(), 4);
+
+        let copy = rdb.fetch::<HostGeometry>("geometry/quad_copy").unwrap();
+        assert_eq!(copy.vertices.len(), 4);
+    }
+
+    #[test]
+    fn appends_geometry_without_spec_file() {
+        let tmp_root = temp_dir();
+        fs::create_dir_all(tmp_root.join("sample_pre/gltf")).unwrap();
+
+        copy_fixture(
+            "sample/sample_pre/gltf/quad.gltf",
+            tmp_root.join("sample_pre/gltf/quad.gltf"),
+        );
+
+        let build_spec = BuildSpec {
+            output: OutputSpec {
+                directory: PathBuf::from("../db"),
+                layout_file: PathBuf::from("layout.json"),
+                layout: DatabaseLayoutFile {
+                    geometry: "geometry.rdb".into(),
+                    imagery: "imagery.rdb".into(),
+                    models: "models.json".into(),
+                    shaders: "shaders.rdb".into(),
+                },
+            },
+            imagery: Vec::new(),
+            geometry: vec![GeometryEntry {
+                entry: "geometry/original".into(),
+                file: PathBuf::from("gltf/quad.gltf"),
+                mesh: Some("Quad".into()),
+                primitive: Some(0),
+            }],
+            shaders: Vec::new(),
+            models: Vec::new(),
+        };
+
+        let build_path = tmp_root.join("sample_pre/norenbuild.json");
+        let file = File::create(&build_path).unwrap();
+        serde_json::to_writer_pretty(file, &build_spec).unwrap();
+        run_from_path(&build_path, false).unwrap();
+
+        let geometry_path = tmp_root.join("db/geometry.rdb");
+        append_geometry(&GeometryAppendArgs {
+            rdb: geometry_path.clone(),
+            entry: GeometryEntry {
+                entry: "geometry/appended".into(),
+                file: tmp_root.join("sample_pre/gltf/quad.gltf"),
+                mesh: Some("Quad".into()),
+                primitive: Some(0),
+            },
+        })
+        .unwrap();
+
+        let mut rdb = RDBFile::load(&geometry_path).unwrap();
+        let original = rdb.fetch::<HostGeometry>("geometry/original").unwrap();
+        assert_eq!(original.vertices.len(), 4);
+        let appended = rdb.fetch::<HostGeometry>("geometry/appended").unwrap();
+        assert_eq!(appended.vertices.len(), 4);
     }
 
     fn copy_fixture(src: &str, dst: PathBuf) {

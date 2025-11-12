@@ -25,11 +25,11 @@ serde_yaml = "0.9"
 [lib]
 
 [[bin]]
-name = "noren_dbgen"
+name = "dbgen"
 path = "src/exec/dbgen/bin.rs"
 
 [[bin]]
-name = "noren_rdbinspect"
+name = "rdbinspect"
 path = "src/exec/rdbinspect/bin.rs"
 
 [dev-dependencies]
