@@ -3,13 +3,20 @@ pub mod meta;
 mod parsing;
 mod utils;
 
-use std::io::ErrorKind;
+use std::{io::ErrorKind, ptr::NonNull};
 
+use crate::datatypes::primitives::Vertex;
 use datatypes::*;
 use error::NorenError;
 use meta::*;
 use parsing::*;
 use utils::*;
+
+use dashi::{
+    BindGroupLayout, BindTableLayout, Context, GraphicsPipelineDetails, GraphicsPipelineInfo,
+    GraphicsPipelineLayoutInfo, Handle, PipelineShaderInfo, RenderPass, ShaderPrimitiveType,
+    ShaderType, VertexDescriptionInfo, VertexEntryInfo, VertexRate,
+};
 
 pub use parsing::DatabaseLayoutFile;
 pub use utils::error::RdbErr;
@@ -22,6 +29,7 @@ pub struct DBInfo<'a> {
 }
 
 pub struct DB {
+    ctx: NonNull<Context>,
     geometry: GeometryDB,
     imagery: ImageDB,
     shaders: ShaderDB,
@@ -47,6 +55,7 @@ impl DB {
             None => Default::default(),
         };
 
+        let ctx_ptr = NonNull::new(info.ctx).expect("Null GPU Context");
         let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
@@ -59,6 +68,7 @@ impl DB {
         };
 
         Ok(Self {
+            ctx: ctx_ptr,
             geometry,
             imagery,
             shaders,
@@ -116,24 +126,41 @@ impl DB {
         )
     }
 
-    pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry) -> Result<DeviceModel, NorenError> {
+    pub fn fetch_gpu_model(
+        &mut self,
+        entry: DatabaseEntry,
+        render_pass: Handle<RenderPass>,
+    ) -> Result<DeviceModel, NorenError> {
+        let ctx_ptr = self.ctx;
         self.assemble_model(
             entry,
             |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
             |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
             |_, image| DeviceTexture::new(image),
             |_, textures, shader| DeviceMaterial::new(textures, shader),
-            |_, geometry, textures, material| {
-                DeviceMesh::new(geometry, textures, material)
-            },
+            |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
             |name, meshes| DeviceModel { name, meshes },
-            Self::load_device_graphics_shader,
+            move |shader_db, shader_key, shader_layout| {
+                let mut shader_opt =
+                    Self::load_graphics_shader(shader_db, shader_key, shader_layout)?;
+                if let Some(shader) = shader_opt.as_mut() {
+                    let ctx: &mut Context = unsafe { &mut *ctx_ptr.as_ptr() };
+                    Self::configure_graphics_shader_pipeline(
+                        shader,
+                        shader_layout,
+                        ctx,
+                        render_pass,
+                    )?;
+                }
+                Ok(shader_opt)
+            },
         )
     }
 
     pub fn fetch_graphics_shader(
         &mut self,
         entry: DatabaseEntry,
+        render_pass: Handle<RenderPass>,
     ) -> Result<GraphicsShader, NorenError> {
         let shader_layout = {
             let layout = self
@@ -147,8 +174,13 @@ impl DB {
                 .ok_or_else(|| NorenError::LookupFailure())?
         };
 
-        Self::load_graphics_shader(&mut self.shaders, entry, &shader_layout)?
-            .ok_or_else(NorenError::LookupFailure)
+        let mut shader = Self::load_graphics_shader(&mut self.shaders, entry, &shader_layout)?
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+        Self::configure_graphics_shader_pipeline(&mut shader, &shader_layout, ctx, render_pass)?;
+
+        Ok(shader)
     }
 }
 
@@ -331,57 +363,137 @@ impl DB {
         }
     }
 
-    fn load_device_graphics_shader(
-        shaders: &mut ShaderDB,
-        _shader_key: &str,
+    fn configure_graphics_shader_pipeline(
+        shader: &mut GraphicsShader,
         layout: &GraphicsShaderLayout,
-    ) -> Result<Option<DeviceGraphicsShader>, NorenError> {
-        let mut shader = DeviceGraphicsShader::new();
+        ctx: &mut Context,
+        render_pass: Handle<RenderPass>,
+    ) -> Result<(), NorenError> {
+        let mut bg_handles: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
+        for (index, cfg_opt) in layout.bind_group_layouts.iter().enumerate() {
+            if index >= bg_handles.len() {
+                break;
+            }
 
-        let mut has_stage = false;
-
-        if let Some(stage) =
-            Self::load_optional_device_shader_stage(shaders, layout.vertex.as_deref())?
-        {
-            shader.vertex = stage;
-            has_stage = true;
+            if let Some(cfg) = cfg_opt {
+                let borrowed = cfg.borrow();
+                let info = borrowed.info();
+                let handle = ctx
+                    .make_bind_group_layout(&info)
+                    .map_err(|_| NorenError::UploadFailure())?;
+                bg_handles[index] = Some(handle);
+            }
         }
 
-        if let Some(stage) =
-            Self::load_optional_device_shader_stage(shaders, layout.fragment.as_deref())?
-        {
-            shader.fragment = stage;
-            has_stage = true;
+        let mut bt_handles: [Option<Handle<BindTableLayout>>; 4] = Default::default();
+        for (index, cfg_opt) in layout.bind_table_layouts.iter().enumerate() {
+            if index >= bt_handles.len() {
+                break;
+            }
+
+            if let Some(cfg) = cfg_opt {
+                let borrowed = cfg.borrow();
+                let info = borrowed.info();
+                let handle = ctx
+                    .make_bind_table_layout(&info)
+                    .map_err(|_| NorenError::UploadFailure())?;
+                bt_handles[index] = Some(handle);
+            }
         }
 
-        if let Some(stage) =
-            Self::load_optional_device_shader_stage(shaders, layout.geometry.as_deref())?
-        {
-            shader.geometry = stage;
-            has_stage = true;
+        let mut shader_infos: Vec<PipelineShaderInfo<'_>> = Vec::new();
+        if let Some(stage) = shader.vertex.as_ref() {
+            shader_infos.push(PipelineShaderInfo {
+                stage: ShaderType::Vertex,
+                spirv: stage.module.words(),
+                specialization: &[],
+            });
         }
 
-        if let Some(stage) = Self::load_optional_device_shader_stage(
-            shaders,
-            layout.tessellation_control.as_deref(),
-        )? {
-            shader.tessellation_control = stage;
-            has_stage = true;
+        if let Some(stage) = shader.fragment.as_ref() {
+            shader_infos.push(PipelineShaderInfo {
+                stage: ShaderType::Fragment,
+                spirv: stage.module.words(),
+                specialization: &[],
+            });
         }
 
-        if let Some(stage) = Self::load_optional_device_shader_stage(
-            shaders,
-            layout.tessellation_evaluation.as_deref(),
-        )? {
-            shader.tessellation_evaluation = stage;
-            has_stage = true;
+        if shader_infos.is_empty() {
+            return Err(NorenError::LookupFailure());
         }
 
-        if has_stage {
-            Ok(Some(shader))
-        } else {
-            Ok(None)
+        if cfg!(test) {
+            shader.bind_group_layouts = bg_handles;
+            shader.bind_table_layouts = bt_handles;
+            shader.pipeline_layout = None;
+            shader.pipeline = None;
+            return Ok(());
         }
+
+        const VERTEX_ENTRIES: [VertexEntryInfo; 5] = [
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec3,
+                location: 0,
+                offset: 0,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec3,
+                location: 1,
+                offset: 12,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec4,
+                location: 2,
+                offset: 24,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec2,
+                location: 3,
+                offset: 40,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec4,
+                location: 4,
+                offset: 48,
+            },
+        ];
+
+        let vertex_info = VertexDescriptionInfo {
+            entries: &VERTEX_ENTRIES,
+            stride: std::mem::size_of::<Vertex>(),
+            rate: VertexRate::Vertex,
+        };
+
+        let layout_info = GraphicsPipelineLayoutInfo {
+            debug_name: &shader.name,
+            vertex_info,
+            bg_layouts: bg_handles,
+            bt_layouts: bt_handles,
+            shaders: &shader_infos,
+            details: GraphicsPipelineDetails::default(),
+        };
+
+        let pipeline_layout = ctx
+            .make_graphics_pipeline_layout(&layout_info)
+            .map_err(|_| NorenError::UploadFailure())?;
+
+        let pipeline_info = GraphicsPipelineInfo {
+            debug_name: &shader.name,
+            layout: pipeline_layout,
+            render_pass,
+            subpass_id: layout.subpass,
+        };
+
+        let pipeline = ctx
+            .make_graphics_pipeline(&pipeline_info)
+            .map_err(|_| NorenError::UploadFailure())?;
+
+        shader.bind_group_layouts = layout_info.bg_layouts;
+        shader.bind_table_layouts = layout_info.bt_layouts;
+        shader.pipeline_layout = Some(pipeline_layout);
+        shader.pipeline = Some(pipeline);
+
+        Ok(())
     }
 
     fn load_optional_shader_stage(
@@ -392,19 +504,6 @@ impl DB {
             Some(name) if !name.is_empty() => {
                 let stage = Self::load_shader_stage(shaders, name)?;
                 Ok(Some(stage))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn load_optional_device_shader_stage(
-        shaders: &mut ShaderDB,
-        entry: Option<&str>,
-    ) -> Result<Option<DeviceShaderStage>, NorenError> {
-        match entry {
-            Some(name) if !name.is_empty() => {
-                let _ = Self::fetch_shader_module(shaders, name)?;
-                Ok(Some(DeviceShaderStage::new(name, name)))
             }
             _ => Ok(None),
         }
@@ -444,6 +543,9 @@ mod tests {
     use crate::utils::rdbfile::RDBFile;
     use std::fs::File;
     use tempfile::tempdir;
+
+    use dashi::builders::RenderPassBuilder;
+    use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport};
 
     const MODEL_ENTRY: DatabaseEntry = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
@@ -512,6 +614,9 @@ mod tests {
                 geometry: None,
                 tessellation_control: None,
                 tessellation_evaluation: None,
+                bind_group_layouts: Vec::new(),
+                bind_table_layouts: Vec::new(),
+                subpass: 0,
             },
         );
 
@@ -585,6 +690,31 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
 
+        let viewport = Viewport {
+            area: FRect2D {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            scissor: Rect2D {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        let color_attachment = AttachmentDescription {
+            format: Format::RGBA8,
+            ..Default::default()
+        };
+        let render_pass = RenderPassBuilder::new("test_pass", viewport)
+            .add_subpass(&[color_attachment], None, &[])
+            .build(&mut ctx)
+            .expect("create render pass");
+
         let db_info = DBInfo {
             ctx: &mut ctx,
             base_dir: base_dir.to_str().expect("base dir to str"),
@@ -611,6 +741,7 @@ mod tests {
         assert_eq!(shader.name, SHADER_PROGRAM_ENTRY);
         assert!(shader.vertex.is_some());
         assert!(shader.fragment.is_some());
+        assert!(shader.pipeline.is_none());
         assert_eq!(
             shader.vertex.as_ref().unwrap().module.words(),
             &[0x0723_0203, 1, 2, 3]
@@ -620,17 +751,18 @@ mod tests {
             &[0x0723_0203, 4, 5, 6]
         );
 
-        let fetched_shader = db.fetch_graphics_shader(SHADER_PROGRAM_ENTRY)?;
+        let fetched_shader = db.fetch_graphics_shader(SHADER_PROGRAM_ENTRY, render_pass)?;
         assert_eq!(fetched_shader.name, SHADER_PROGRAM_ENTRY);
         assert!(fetched_shader.vertex.is_some());
         assert!(fetched_shader.fragment.is_some());
+        assert!(fetched_shader.pipeline.is_none());
 
         assert!(matches!(
-            db.fetch_graphics_shader(SHADER_MISSING_ENTRY),
+            db.fetch_graphics_shader(SHADER_MISSING_ENTRY, render_pass),
             Err(NorenError::LookupFailure())
         ));
 
-        let device_model = db.fetch_gpu_model(MODEL_ENTRY)?;
+        let device_model = db.fetch_gpu_model(MODEL_ENTRY, render_pass)?;
         assert_eq!(device_model.name, MODEL_ENTRY);
         assert_eq!(device_model.meshes.len(), 1);
         let device_mesh = &device_model.meshes[0];
@@ -645,16 +777,12 @@ mod tests {
             std::str::from_utf8(&bytes[..len]).unwrap().to_string()
         };
         assert_eq!(texture_name(&mesh_texture.image.info.name), IMAGE_ENTRY);
-        assert_eq!(
-            texture_name(&material_texture.image.info.name),
-            IMAGE_ENTRY
-        );
+        assert_eq!(texture_name(&material_texture.image.info.name), IMAGE_ENTRY);
         assert!(device_mat.shader.is_some());
         let device_shader = device_mat.shader.as_ref().unwrap();
-        assert!(device_shader.vertex.is_present());
-        assert!(device_shader.fragment.is_present());
-        assert_eq!(device_shader.vertex.module_name(), SHADER_VERTEX_MODULE);
-        assert_eq!(device_shader.fragment.module_name(), SHADER_FRAGMENT_MODULE);
+        assert!(device_shader.vertex.is_some());
+        assert!(device_shader.fragment.is_some());
+        assert!(device_shader.pipeline.is_none());
 
         Ok(())
     }
