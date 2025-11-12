@@ -114,6 +114,26 @@ pub struct Entry {
 
 unsafe impl Pod for Entry {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RDBEntryMeta {
+    pub name: String,
+    pub type_tag: u32,
+    pub offset: u64,
+    pub len: u64,
+}
+
+impl From<Entry> for RDBEntryMeta {
+    fn from(value: Entry) -> Self {
+        let name = stored_name_bytes(&value.name);
+        Self {
+            name: String::from_utf8_lossy(name).into_owned(),
+            type_tag: value.type_tag,
+            offset: value.offset,
+            len: value.len,
+        }
+    }
+}
+
 #[inline]
 fn entry_size() -> usize {
     std::mem::size_of::<Entry>()
@@ -302,6 +322,14 @@ impl RDBFile {
     pub fn unmap(&mut self) {
         self.mmap = None;
     }
+
+    pub fn entries(&self) -> Vec<RDBEntryMeta> {
+        self.entries
+            .iter()
+            .copied()
+            .map(RDBEntryMeta::from)
+            .collect()
+    }
 }
 
 pub struct RDBView {
@@ -364,6 +392,31 @@ impl RDBView {
             entries_start: header_sz,
             data_start: need,
         })
+    }
+
+    pub fn entries(&self) -> Vec<RDBEntryMeta> {
+        let bytes = &self.mmap[self.entries_start..self.data_start];
+        EntryIter::new(bytes).map(RDBEntryMeta::from).collect()
+    }
+
+    pub fn entry_bytes(&self, name: &str) -> Result<&[u8], RdbErr> {
+        let data = &self.mmap[self.data_start..self.mmap.len()];
+        let entries = &self.mmap[self.entries_start..self.data_start];
+
+        for entry in EntryIter::new(entries) {
+            if stored_name_bytes(&entry.name) == name.as_bytes() {
+                let start = entry.offset as usize;
+                let end = start
+                    .checked_add(entry.len as usize)
+                    .ok_or(RdbErr::BadHeader)?;
+                if end > data.len() {
+                    return Err(RdbErr::BadHeader);
+                }
+                return Ok(&data[start..end]);
+            }
+        }
+
+        Err(RdbErr::BadHeader)
     }
 }
 // ---------------------------

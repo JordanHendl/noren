@@ -28,6 +28,10 @@ serde_yaml = "0.9"
 name = "noren_dbgen"
 path = "src/exec/dbgen/bin.rs"
 
+[[bin]]
+name = "noren_rdbinspect"
+path = "src/exec/rdbinspect/bin.rs"
+
 [dev-dependencies]
 rand = "0.8"
 tempfile = "3"
