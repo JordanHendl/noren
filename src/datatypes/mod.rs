@@ -1,9 +1,13 @@
+pub mod bind_group_layout;
+pub mod bind_table_layout;
 pub mod font;
 pub mod geometry;
 pub mod imagery;
 pub mod primitives;
 pub mod shader;
 
+pub use bind_group_layout::*;
+pub use bind_table_layout::*;
 pub use font::*;
 pub use geometry::*;
 pub use imagery::*;
