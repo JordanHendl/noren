@@ -112,6 +112,7 @@ impl DB {
                 material,
             },
             |name, meshes| HostModel { name, meshes },
+            Self::load_graphics_shader,
         )
     }
 
@@ -120,19 +121,13 @@ impl DB {
             entry,
             |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
             |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
-            |name, image| DeviceTexture { name, image },
-            |name, textures, shader| DeviceMaterial {
-                name,
-                textures,
-                shader,
-            },
-            |name, geometry, textures, material| DeviceMesh {
-                name,
-                geometry,
-                textures,
-                material,
+            |_, image| DeviceTexture::new(image),
+            |_, textures, shader| DeviceMaterial::new(textures, shader),
+            |_, geometry, textures, material| {
+                DeviceMesh::new(geometry, textures, material)
             },
             |name, meshes| DeviceModel { name, meshes },
+            Self::load_device_graphics_shader,
         )
     }
 
@@ -165,12 +160,14 @@ impl DB {
         Texture,
         Geometry,
         Image,
+        Shader,
         FetchGeometry,
         FetchImage,
         MakeTexture,
         MakeMaterial,
         MakeMesh,
         MakeModel,
+        LoadShader,
     >(
         &mut self,
         entry: DatabaseEntry,
@@ -180,14 +177,17 @@ impl DB {
         mut make_material: MakeMaterial,
         mut make_mesh: MakeMesh,
         mut make_model: MakeModel,
+        mut load_shader: LoadShader,
     ) -> Result<Model, NorenError>
     where
         FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry) -> Result<Geometry, NorenError>,
         FetchImage: FnMut(&mut ImageDB, DatabaseEntry) -> Result<Image, NorenError>,
         MakeTexture: FnMut(String, Image) -> Texture,
-        MakeMaterial: FnMut(String, Vec<Texture>, Option<GraphicsShader>) -> Material,
+        MakeMaterial: FnMut(String, Vec<Texture>, Option<Shader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
         MakeModel: FnMut(String, Vec<Mesh>) -> Model,
+        LoadShader:
+            FnMut(&mut ShaderDB, &str, &GraphicsShaderLayout) -> Result<Option<Shader>, NorenError>,
     {
         let layout = self
             .model_file
@@ -250,11 +250,7 @@ impl DB {
                     let shader = match material_def.shader.as_ref() {
                         Some(shader_key) => {
                             if let Some(shader_layout) = layout.shaders.get(shader_key).cloned() {
-                                Self::load_graphics_shader(
-                                    &mut self.shaders,
-                                    shader_key,
-                                    &shader_layout,
-                                )?
+                                load_shader(&mut self.shaders, shader_key, &shader_layout)?
                             } else {
                                 None
                             }
@@ -335,6 +331,59 @@ impl DB {
         }
     }
 
+    fn load_device_graphics_shader(
+        shaders: &mut ShaderDB,
+        _shader_key: &str,
+        layout: &GraphicsShaderLayout,
+    ) -> Result<Option<DeviceGraphicsShader>, NorenError> {
+        let mut shader = DeviceGraphicsShader::new();
+
+        let mut has_stage = false;
+
+        if let Some(stage) =
+            Self::load_optional_device_shader_stage(shaders, layout.vertex.as_deref())?
+        {
+            shader.vertex = stage;
+            has_stage = true;
+        }
+
+        if let Some(stage) =
+            Self::load_optional_device_shader_stage(shaders, layout.fragment.as_deref())?
+        {
+            shader.fragment = stage;
+            has_stage = true;
+        }
+
+        if let Some(stage) =
+            Self::load_optional_device_shader_stage(shaders, layout.geometry.as_deref())?
+        {
+            shader.geometry = stage;
+            has_stage = true;
+        }
+
+        if let Some(stage) = Self::load_optional_device_shader_stage(
+            shaders,
+            layout.tessellation_control.as_deref(),
+        )? {
+            shader.tessellation_control = stage;
+            has_stage = true;
+        }
+
+        if let Some(stage) = Self::load_optional_device_shader_stage(
+            shaders,
+            layout.tessellation_evaluation.as_deref(),
+        )? {
+            shader.tessellation_evaluation = stage;
+            has_stage = true;
+        }
+
+        if has_stage {
+            Ok(Some(shader))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn load_optional_shader_stage(
         shaders: &mut ShaderDB,
         entry: Option<&str>,
@@ -343,6 +392,19 @@ impl DB {
             Some(name) if !name.is_empty() => {
                 let stage = Self::load_shader_stage(shaders, name)?;
                 Ok(Some(stage))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn load_optional_device_shader_stage(
+        shaders: &mut ShaderDB,
+        entry: Option<&str>,
+    ) -> Result<Option<DeviceShaderStage>, NorenError> {
+        match entry {
+            Some(name) if !name.is_empty() => {
+                let _ = Self::fetch_shader_module(shaders, name)?;
+                Ok(Some(DeviceShaderStage::new(name, name)))
             }
             _ => Ok(None),
         }
@@ -572,26 +634,27 @@ mod tests {
         assert_eq!(device_model.name, MODEL_ENTRY);
         assert_eq!(device_model.meshes.len(), 1);
         let device_mesh = &device_model.meshes[0];
-        assert_eq!(device_mesh.name, "Simple Mesh");
         assert!(device_mesh.material.is_some());
         let device_mat = device_mesh.material.as_ref().unwrap();
-        assert_eq!(device_mat.name, MATERIAL_ENTRY);
         assert_eq!(device_mesh.textures.len(), 1);
-        assert_eq!(device_mesh.textures[0].name, MESH_TEXTURE_ENTRY);
+        let mesh_texture = device_mesh.textures.get(0).unwrap();
         assert_eq!(device_mat.textures.len(), 1);
-        assert_eq!(device_mat.textures[0].name, MESH_TEXTURE_ENTRY);
+        let material_texture = device_mat.textures.get(0).unwrap();
+        let texture_name = |bytes: &[u8; 64]| {
+            let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            std::str::from_utf8(&bytes[..len]).unwrap().to_string()
+        };
+        assert_eq!(texture_name(&mesh_texture.image.info.name), IMAGE_ENTRY);
+        assert_eq!(
+            texture_name(&material_texture.image.info.name),
+            IMAGE_ENTRY
+        );
         assert!(device_mat.shader.is_some());
         let device_shader = device_mat.shader.as_ref().unwrap();
-        assert!(device_shader.vertex.is_some());
-        assert!(device_shader.fragment.is_some());
-        assert_eq!(
-            device_shader.vertex.as_ref().unwrap().module.words(),
-            &[0x0723_0203, 1, 2, 3]
-        );
-        assert_eq!(
-            device_shader.fragment.as_ref().unwrap().module.words(),
-            &[0x0723_0203, 4, 5, 6]
-        );
+        assert!(device_shader.vertex.is_present());
+        assert!(device_shader.fragment.is_present());
+        assert_eq!(device_shader.vertex.module_name(), SHADER_VERTEX_MODULE);
+        assert_eq!(device_shader.fragment.module_name(), SHADER_FRAGMENT_MODULE);
 
         Ok(())
     }
