@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use dashi::cfg;
+use dashi::{AttachmentDescription, SubpassDependency, Viewport, cfg};
 use serde::{Deserialize, Serialize};
 
 fn default_geometry_path() -> String {
@@ -13,6 +13,10 @@ fn default_imagery_path() -> String {
 
 fn default_model_path() -> String {
     "models.json".to_string()
+}
+
+fn default_render_pass_path() -> String {
+    "render_passes.json".to_string()
 }
 
 fn default_shader_path() -> String {
@@ -38,6 +42,8 @@ pub struct DatabaseLayoutFile {
     pub imagery: String,
     #[serde(default = "default_model_path")]
     pub models: String,
+    #[serde(default = "default_render_pass_path")]
+    pub render_passes: String,
     #[serde(default = "default_shader_path")]
     pub shaders: String,
 }
@@ -54,6 +60,34 @@ pub struct ModelLayoutFile {
     pub models: HashMap<String, ModelLayout>,
     #[serde(default)]
     pub shaders: HashMap<String, GraphicsShaderLayout>,
+    #[serde(default)]
+    pub render_passes: HashMap<String, RenderPassLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RenderPassLayoutFile {
+    #[serde(default)]
+    pub render_passes: HashMap<String, RenderPassLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RenderPassLayout {
+    #[serde(default)]
+    pub debug_name: Option<String>,
+    #[serde(default)]
+    pub viewport: Viewport,
+    #[serde(default)]
+    pub subpasses: Vec<RenderSubpassLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RenderSubpassLayout {
+    #[serde(default)]
+    pub color_attachments: Vec<AttachmentDescription>,
+    #[serde(default)]
+    pub depth_stencil_attachment: Option<AttachmentDescription>,
+    #[serde(default)]
+    pub subpass_dependencies: Vec<SubpassDependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -115,6 +149,8 @@ pub struct GraphicsShaderLayout {
     pub bind_table_layouts: Vec<Option<cfg::BindTableLayoutCfg>>,
     #[serde(default)]
     pub subpass: u8,
+    #[serde(default)]
+    pub render_pass: Option<String>,
 }
 
 impl Default for DatabaseLayoutFile {
@@ -123,6 +159,7 @@ impl Default for DatabaseLayoutFile {
             geometry: default_geometry_path(),
             imagery: default_imagery_path(),
             models: default_model_path(),
+            render_passes: default_render_pass_path(),
             shaders: default_shader_path(),
         }
     }

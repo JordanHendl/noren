@@ -60,12 +60,32 @@ impl DB {
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
         let model_path = format!("{}/{}", info.base_dir, layout.models);
-        let model_file = match std::fs::read_to_string(&model_path) {
+        let render_pass_path = format!("{}/{}", info.base_dir, layout.render_passes);
+        let mut model_file = match std::fs::read_to_string(&model_path) {
             Ok(raw) if raw.trim().is_empty() => None,
-            Ok(raw) => Some(serde_json::from_str(&raw)?),
+            Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
             Err(err) if err.kind() == ErrorKind::NotFound => None,
             Err(err) => return Err(err.into()),
         };
+        let render_pass_file = match std::fs::read_to_string(&render_pass_path) {
+            Ok(raw) if raw.trim().is_empty() => None,
+            Ok(raw) => Some(serde_json::from_str::<RenderPassLayoutFile>(&raw)?),
+            Err(err) if err.kind() == ErrorKind::NotFound => None,
+            Err(err) => return Err(err.into()),
+        };
+
+        if let Some(render_passes) = render_pass_file {
+            match model_file {
+                Some(ref mut layout) => layout
+                    .render_passes
+                    .extend(render_passes.render_passes.into_iter()),
+                None => {
+                    let mut layout = ModelLayoutFile::default();
+                    layout.render_passes = render_passes.render_passes;
+                    model_file = Some(layout);
+                }
+            }
+        }
 
         Ok(Self {
             ctx: ctx_ptr,
@@ -538,7 +558,7 @@ mod tests {
     };
     use crate::parsing::{
         GraphicsShaderLayout, MaterialLayout, MeshLayout, ModelLayout, ModelLayoutFile,
-        TextureLayout,
+        RenderPassLayout, RenderPassLayoutFile, RenderSubpassLayout, TextureLayout,
     };
     use crate::utils::rdbfile::RDBFile;
     use std::fs::File;
@@ -577,6 +597,39 @@ mod tests {
 
         let models_dst = base_dir.join("models.json");
         let mut layout = ModelLayoutFile::default();
+
+        let layout_viewport = Viewport {
+            area: FRect2D {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            scissor: Rect2D {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        let mut render_pass_layout = RenderPassLayoutFile::default();
+        render_pass_layout.render_passes.insert(
+            "render_pass/test".to_string(),
+            RenderPassLayout {
+                debug_name: Some("Test Pass".to_string()),
+                viewport: layout_viewport,
+                subpasses: vec![RenderSubpassLayout {
+                    color_attachments: vec![AttachmentDescription {
+                        format: Format::RGBA8,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            },
+        );
 
         layout.textures.insert(
             MESH_TEXTURE_ENTRY.to_string(),
@@ -617,6 +670,7 @@ mod tests {
                 bind_group_layouts: Vec::new(),
                 bind_table_layouts: Vec::new(),
                 subpass: 0,
+                render_pass: Some("render_pass/test".to_string()),
             },
         );
 
@@ -652,6 +706,30 @@ mod tests {
         );
 
         serde_json::to_writer(File::create(&models_dst)?, &layout)?;
+        let render_pass_dst = base_dir.join("render_passes.json");
+        serde_json::to_writer(File::create(&render_pass_dst)?, &render_pass_layout)?;
+
+        let parsed_layout: ModelLayoutFile = serde_json::from_reader(File::open(&models_dst)?)?;
+        let parsed_shader = parsed_layout
+            .shaders
+            .get(SHADER_PROGRAM_ENTRY)
+            .expect("shader entry");
+        assert_eq!(
+            parsed_shader.render_pass.as_deref(),
+            Some("render_pass/test")
+        );
+        let parsed_pass_layout: RenderPassLayoutFile =
+            serde_json::from_reader(File::open(&render_pass_dst)?)?;
+        let parsed_pass = parsed_pass_layout
+            .render_passes
+            .get("render_pass/test")
+            .expect("render pass entry");
+        assert_eq!(parsed_pass.debug_name.as_deref(), Some("Test Pass"));
+        assert_eq!(parsed_pass.subpasses.len(), 1);
+        assert_eq!(
+            parsed_pass.subpasses[0].color_attachments[0].format,
+            Format::RGBA8
+        );
 
         let mut geom_rdb = RDBFile::new();
         let geom = HostGeometry {
@@ -690,22 +768,7 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
 
-        let viewport = Viewport {
-            area: FRect2D {
-                x: 0.0,
-                y: 0.0,
-                w: 1.0,
-                h: 1.0,
-            },
-            scissor: Rect2D {
-                x: 0,
-                y: 0,
-                w: 1,
-                h: 1,
-            },
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
+        let viewport = Viewport { ..layout_viewport };
         let color_attachment = AttachmentDescription {
             format: Format::RGBA8,
             ..Default::default()

@@ -827,6 +827,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     models: "models.json".into(),
+                    render_passes: "render_passes.json".into(),
                     shaders: "shaders.rdb".into(),
                 },
             },
