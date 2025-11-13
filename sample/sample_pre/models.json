@@ -1,31 +1,17 @@
 {
-  "textures": {
-    "texture/simple_diffuse": {
-      "name": "Simple Diffuse",
-      "image": "imagery/sample_texture"
-    }
-  },
-  "materials": {
-    "material/simple": {
-      "name": "Sample Material",
-      "textures": [
-        "texture/simple_diffuse"
-      ]
-    }
-  },
   "meshes": {
-    "mesh/simple_mesh": {
-      "name": "Simple Mesh",
-      "geometry": "geom/simple_mesh",
-      "material": "material/simple",
+    "mesh/quad": {
+      "name": "Quad Mesh",
+      "geometry": "geometry/quad",
+      "material": "material/quad",
       "textures": []
     }
   },
   "models": {
-    "model/simple": {
-      "name": "Sample Model",
+    "model/quad": {
+      "name": "Quad",
       "meshes": [
-        "mesh/simple_mesh"
+        "mesh/quad"
       ]
     }
   }

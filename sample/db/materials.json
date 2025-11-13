@@ -1,0 +1,25 @@
+{
+  "textures": {
+    "texture/quad_diffuse": {
+      "name": "Quad Diffuse",
+      "image": "imagery/tulips"
+    }
+  },
+  "materials": {
+    "material/quad": {
+      "name": "Quad Material",
+      "textures": [
+        "texture/quad_diffuse"
+      ],
+      "shader": "shader/default"
+    }
+  },
+  "shaders": {
+    "shader/default": {
+      "name": "Default Shader",
+      "vertex": "shader/quad.vert",
+      "fragment": "shader/quad.frag",
+      "render_pass": "render_pass/default"
+    }
+  }
+}
