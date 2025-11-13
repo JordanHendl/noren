@@ -829,6 +829,7 @@ mod tests {
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
                     shaders: "shaders.rdb".into(),
+                    materials: "materials.json".into(),
                 },
             },
             imagery: vec![
@@ -948,6 +949,7 @@ mod tests {
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
                     shaders: "shaders.rdb".into(),
+                    materials: "materials.json".into(),
                 },
             },
             imagery: vec![ImageEntry {
@@ -981,6 +983,7 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
+                    materials: "materials.json".into(),
                     shaders: "shaders.rdb".into(),
                 },
             },
@@ -1028,6 +1031,7 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
+                    materials: "materials.json".into(),
                     shaders: "shaders.rdb".into(),
                 },
             },
