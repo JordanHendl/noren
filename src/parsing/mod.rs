@@ -15,6 +15,10 @@ fn default_model_path() -> String {
     "models.json".to_string()
 }
 
+fn default_material_path() -> String {
+    "materials.json".to_string()
+}
+
 fn default_render_pass_path() -> String {
     "render_passes.json".to_string()
 }
@@ -42,6 +46,8 @@ pub struct DatabaseLayoutFile {
     pub imagery: String,
     #[serde(default = "default_model_path")]
     pub models: String,
+    #[serde(default = "default_material_path")]
+    pub materials: String,
     #[serde(default = "default_render_pass_path")]
     pub render_passes: String,
     #[serde(default = "default_shader_path")]
@@ -159,6 +165,7 @@ impl Default for DatabaseLayoutFile {
             geometry: default_geometry_path(),
             imagery: default_imagery_path(),
             models: default_model_path(),
+            materials: default_material_path(),
             render_passes: default_render_pass_path(),
             shaders: default_shader_path(),
         }

@@ -61,8 +61,15 @@ impl DB {
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
         let model_path = format!("{}/{}", info.base_dir, layout.models);
+        let material_path = format!("{}/{}", info.base_dir, layout.materials);
         let render_pass_path = format!("{}/{}", info.base_dir, layout.render_passes);
         let mut model_file = match std::fs::read_to_string(&model_path) {
+            Ok(raw) if raw.trim().is_empty() => None,
+            Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
+            Err(err) if err.kind() == ErrorKind::NotFound => None,
+            Err(err) => return Err(err.into()),
+        };
+        let material_file = match std::fs::read_to_string(&material_path) {
             Ok(raw) if raw.trim().is_empty() => None,
             Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
             Err(err) if err.kind() == ErrorKind::NotFound => None,
@@ -74,6 +81,22 @@ impl DB {
             Err(err) if err.kind() == ErrorKind::NotFound => None,
             Err(err) => return Err(err.into()),
         };
+
+        if let Some(materials) = material_file {
+            match model_file {
+                Some(ref mut layout) => {
+                    layout.textures.extend(materials.textures.into_iter());
+                    layout.materials.extend(materials.materials.into_iter());
+                    layout.shaders.extend(materials.shaders.into_iter());
+                    layout
+                        .render_passes
+                        .extend(materials.render_passes.into_iter());
+                }
+                None => {
+                    model_file = Some(materials);
+                }
+            }
+        }
 
         if let Some(render_passes) = render_pass_file {
             match model_file {
