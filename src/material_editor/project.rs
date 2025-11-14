@@ -129,12 +129,27 @@ impl MaterialEditorProjectState {
         Ok(())
     }
 
+    pub fn save_blocking(&mut self) -> Result<(), ProjectSaveError> {
+        self.write_to_paths_blocking(&self.paths)?;
+        self.graph.mark_clean();
+        Ok(())
+    }
+
     pub async fn export_to(&self, root: impl AsRef<Path>) -> Result<(), ProjectSaveError> {
         let export_paths = ProjectPaths::from_layout(root, &self.layout);
         self.write_to_paths(&export_paths).await
     }
 
+    pub fn export_to_blocking(&self, root: impl AsRef<Path>) -> Result<(), ProjectSaveError> {
+        let export_paths = ProjectPaths::from_layout(root, &self.layout);
+        self.write_to_paths_blocking(&export_paths)
+    }
+
     async fn write_to_paths(&self, paths: &ProjectPaths) -> Result<(), ProjectSaveError> {
+        self.write_to_paths_blocking(paths)
+    }
+
+    fn write_to_paths_blocking(&self, paths: &ProjectPaths) -> Result<(), ProjectSaveError> {
         write_json_file_blocking(&paths.layout, &self.layout).map_err(ProjectSaveError::Layout)?;
 
         let layout_file: ModelLayoutFile = self.project.clone().into();
@@ -322,6 +337,14 @@ impl<T: Clone> EditableResource<T> {
         self.dirty = false;
         self.history.clear();
     }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +380,14 @@ impl<T: Clone> HistoryTracker<T> {
     fn clear(&mut self) {
         self.past.clear();
         self.future.clear();
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.past.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.future.is_empty()
     }
 }
 
