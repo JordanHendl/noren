@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use eframe::egui;
+use eframe::{Renderer, egui};
 use noren::material_editor::{project::MaterialEditorProjectLoader, ui::MaterialEditorApp};
 
 fn main() -> eframe::Result<()> {
@@ -17,6 +17,7 @@ fn main() -> eframe::Result<()> {
     };
 
     let options = eframe::NativeOptions {
+        renderer: preferred_renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(egui::vec2(1280.0, 800.0))
             .with_min_inner_size(egui::vec2(960.0, 600.0)),
@@ -41,4 +42,11 @@ fn parse_project_root() -> PathBuf {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("sample/db"))
+}
+
+fn preferred_renderer() -> Renderer {
+    match std::env::var("NOREN_EDITOR_RENDERER") {
+        Ok(value) if value.eq_ignore_ascii_case("wgpu") => Renderer::Wgpu,
+        _ => Renderer::Glow,
+    }
 }
