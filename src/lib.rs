@@ -1,4 +1,5 @@
 pub mod datatypes;
+pub mod material_editor_types;
 pub mod meta;
 mod parsing;
 mod utils;
