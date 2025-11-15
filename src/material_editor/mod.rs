@@ -5,5 +5,6 @@
 //! sharing serialization logic with the rest of the crate.
 
 pub mod io;
+pub mod preview;
 pub mod project;
 pub mod ui;

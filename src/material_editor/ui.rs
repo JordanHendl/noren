@@ -6,8 +6,12 @@ use std::{
 use eframe::egui::{self, Color32, RichText};
 
 use crate::{
-    material_editor::project::{
-        EditableResource, GraphMaterial, MaterialEditorProjectLoader, MaterialEditorProjectState,
+    material_editor::{
+        preview::MaterialPreviewPanel,
+        project::{
+            EditableResource, GraphMaterial, MaterialEditorProjectLoader,
+            MaterialEditorProjectState,
+        },
     },
     material_editor_types::MaterialEditorMaterial,
 };
@@ -18,17 +22,20 @@ pub struct MaterialEditorApp {
     new_material_id: String,
     status: Option<StatusMessage>,
     picker: Option<PickerDialog>,
+    preview: MaterialPreviewPanel,
 }
 
 impl MaterialEditorApp {
     pub fn new(state: MaterialEditorProjectState) -> Self {
         let selected_material = Self::initial_selection(&state);
+        let preview = MaterialPreviewPanel::new(&state);
         Self {
             state,
             selected_material,
             new_material_id: String::new(),
             status: None,
             picker: None,
+            preview,
         }
     }
 
@@ -80,6 +87,7 @@ impl MaterialEditorApp {
                 self.state = new_state;
                 self.ensure_valid_selection();
                 self.set_status(StatusKind::Info, "Reloaded project");
+                self.preview.sync_with_state(&self.state);
             }
             Err(err) => self.set_status(StatusKind::Error, format!("Failed to reload: {err}")),
         }
@@ -373,6 +381,8 @@ impl MaterialEditorApp {
                 ui.label(RichText::new(mesh).monospace());
             }
         }
+
+        self.preview.ui(ui, &self.state, &material_id, &working);
 
         if changed {
             self.persist_material_data(&material_id, working);
