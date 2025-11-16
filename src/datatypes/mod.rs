@@ -16,3 +16,7 @@ pub use render_pass::*;
 pub use shader::*;
 
 pub type DatabaseEntry = &'static str;
+
+pub fn leak_database_entry(entry: &str) -> DatabaseEntry {
+    Box::leak(entry.to_string().into_boxed_str())
+}

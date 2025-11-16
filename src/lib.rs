@@ -1,4 +1,5 @@
 pub mod datatypes;
+mod material_bindings;
 pub mod material_editor;
 pub mod material_editor_types;
 pub mod meta;
@@ -7,7 +8,7 @@ mod utils;
 
 use std::{io::ErrorKind, ptr::NonNull};
 
-use crate::datatypes::primitives::Vertex;
+use crate::{datatypes::primitives::Vertex, material_bindings::texture_binding_slots};
 use datatypes::*;
 use error::NorenError;
 use meta::*;
@@ -255,6 +256,52 @@ impl DB {
     }
 }
 
+fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
+    output: &mut Vec<Texture>,
+    keys: &[String],
+    layout: &ModelLayoutFile,
+    imagery: &mut ImageDB,
+    make_texture: &mut MakeTexture,
+    fetch_image: &mut FetchImage,
+) -> Result<(), NorenError>
+where
+    MakeTexture: FnMut(String, Image) -> Texture,
+    FetchImage: FnMut(&mut ImageDB, DatabaseEntry) -> Result<Image, NorenError>,
+{
+    for tex_key in keys {
+        if let Some(tex_def) = layout.textures.get(tex_key) {
+            if tex_def.image.is_empty() {
+                continue;
+            }
+            let tex_entry = leak_database_entry(&tex_def.image);
+            let image = fetch_image(imagery, tex_entry)?;
+            let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
+            output.push(make_texture(name, image));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_binding_entries(
+    entries: &[String],
+    slot_count: usize,
+    material_id: &str,
+) -> Result<Vec<String>, NorenError> {
+    if entries.len() > slot_count {
+        return Err(NorenError::InvalidMaterial(format!(
+            "Material '{}' declares {} texture bindings but shader exposes only {} slots",
+            material_id,
+            entries.len(),
+            slot_count
+        )));
+    }
+    let mut normalized = vec![String::new(); slot_count];
+    for (index, value) in entries.iter().enumerate() {
+        normalized[index] = value.clone();
+    }
+    Ok(normalized)
+}
+
 impl DB {
     fn assemble_model<
         Model,
@@ -319,7 +366,7 @@ impl DB {
                 continue;
             }
 
-            let geometry_entry = Self::leak_entry(&mesh_def.geometry);
+            let geometry_entry = leak_database_entry(&mesh_def.geometry);
             let geometry = fetch_geometry(&mut self.geometry, geometry_entry)?;
 
             let mesh_name = mesh_def.name.clone().unwrap_or_else(|| mesh_key.clone());
@@ -331,7 +378,7 @@ impl DB {
                         continue;
                     }
 
-                    let tex_entry = Self::leak_entry(&tex_def.image);
+                    let tex_entry = leak_database_entry(&tex_def.image);
                     let image = fetch_image(&mut self.imagery, tex_entry)?;
                     let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
                     mesh_textures.push(make_texture(name, image));
@@ -341,17 +388,71 @@ impl DB {
             let material = if let Some(material_key) = &mesh_def.material {
                 if let Some(material_def) = layout.materials.get(material_key) {
                     let mut textures = Vec::new();
-                    for tex_key in &material_def.textures {
-                        if let Some(tex_def) = layout.textures.get(tex_key) {
-                            if tex_def.image.is_empty() {
-                                continue;
+                    if let Some(shader_key) = material_def.shader.as_deref() {
+                        if let Some(shader_layout) = layout.shaders.get(shader_key) {
+                            let slots = texture_binding_slots(shader_layout);
+                            if slots.is_empty() {
+                                append_texture_bindings(
+                                    &mut textures,
+                                    &material_def.textures,
+                                    layout,
+                                    &mut self.imagery,
+                                    &mut make_texture,
+                                    &mut fetch_image,
+                                )?;
+                            } else {
+                                let normalized = normalize_binding_entries(
+                                    &material_def.textures,
+                                    slots.len(),
+                                    material_key,
+                                )?;
+                                for (slot_index, slot) in slots.iter().enumerate() {
+                                    let tex_id = normalized.get(slot_index).map(|s| s.as_str());
+                                    let Some(tex_id) = tex_id.filter(|value| !value.is_empty())
+                                    else {
+                                        if slot.required {
+                                            return Err(NorenError::InvalidMaterial(format!(
+                                                "Material '{}' is missing a texture for {:?}",
+                                                material_key, slot.kind
+                                            )));
+                                        }
+                                        continue;
+                                    };
+                                    let tex_def = layout.textures.get(tex_id).ok_or_else(|| {
+                                        NorenError::InvalidMaterial(format!(
+                                            "Material '{}' references unknown texture '{}'",
+                                            material_key, tex_id
+                                        ))
+                                    })?;
+                                    if tex_def.image.is_empty() {
+                                        continue;
+                                    }
+                                    let tex_entry = leak_database_entry(&tex_def.image);
+                                    let image = fetch_image(&mut self.imagery, tex_entry)?;
+                                    let name =
+                                        tex_def.name.clone().unwrap_or_else(|| tex_id.to_string());
+                                    textures.push(make_texture(name, image));
+                                }
                             }
-
-                            let tex_entry = Self::leak_entry(&tex_def.image);
-                            let image = fetch_image(&mut self.imagery, tex_entry)?;
-                            let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-                            textures.push(make_texture(name, image));
+                        } else {
+                            append_texture_bindings(
+                                &mut textures,
+                                &material_def.textures,
+                                layout,
+                                &mut self.imagery,
+                                &mut make_texture,
+                                &mut fetch_image,
+                            )?;
                         }
+                    } else {
+                        append_texture_bindings(
+                            &mut textures,
+                            &material_def.textures,
+                            layout,
+                            &mut self.imagery,
+                            &mut make_texture,
+                            &mut fetch_image,
+                        )?;
                     }
 
                     let shader = match material_def.shader.as_ref() {
@@ -607,12 +708,8 @@ impl DB {
         shaders: &mut ShaderDB,
         entry: &str,
     ) -> Result<ShaderModule, NorenError> {
-        let shader_entry = Self::leak_entry(entry);
+        let shader_entry = leak_database_entry(entry);
         shaders.fetch_module(shader_entry)
-    }
-
-    fn leak_entry(entry: &str) -> DatabaseEntry {
-        Box::leak(entry.to_string().into_boxed_str())
     }
 }
 
