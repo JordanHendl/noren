@@ -32,6 +32,7 @@ pub enum NorenError {
     MissingRenderPass(String),
     UnknownRenderPass(String),
     InvalidMaterial(String),
+    InvalidShaderLayout(Vec<crate::ShaderValidationError>),
     JSONError(serde_json::Error),
     YAMLError(serde_yaml::Error),
     IOFailure(std::io::Error),
@@ -57,6 +58,25 @@ impl std::fmt::Display for NorenError {
             }
             NorenError::InvalidMaterial(reason) => {
                 write!(f, "Invalid material: {}", reason)
+            }
+            NorenError::InvalidShaderLayout(errors) => {
+                let mut message = String::from("Shader layout validation failed:\n");
+                for (idx, error) in errors.iter().enumerate() {
+                    if idx > 0 {
+                        message.push('\n');
+                    }
+                    message.push_str(&format!("- {}\n", error.shader));
+                    if !error.issues.is_empty() {
+                        message.push_str(&format!("  issues: {}\n", error.issues.join(", ")));
+                    }
+                    if !error.materials.is_empty() {
+                        message.push_str(&format!("  materials: {}\n", error.materials.join(", ")));
+                    }
+                    if !error.models.is_empty() {
+                        message.push_str(&format!("  models: {}", error.models.join(", ")));
+                    }
+                }
+                write!(f, "{}", message)
             }
             NorenError::RDBFileError(rdb_err) => write!(f, "RDB file error: {}", rdb_err),
             NorenError::IOFailure(error) => write!(f, "I/O failure: {}", error),
