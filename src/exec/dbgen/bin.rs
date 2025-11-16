@@ -9,16 +9,56 @@ use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
     datatypes::{HostGeometry, HostImage, ImageInfo, ShaderModule, primitives::Vertex},
+    parsing::{MeshLayout, ModelLayout, ModelLayoutFile, TextureLayout},
     validate_database_layout,
 };
 use serde::{Deserialize, Serialize};
 use shaderc as sc;
 
+#[derive(Clone, Default)]
+struct Logger {
+    verbose: bool,
+    sink: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+}
+
+impl Logger {
+    fn stderr(verbose: bool) -> Self {
+        Self {
+            verbose,
+            sink: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_sink(
+        verbose: bool,
+        sink: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Self {
+        Self {
+            verbose,
+            sink: Some(sink),
+        }
+    }
+
+    fn log(&self, message: impl AsRef<str>) {
+        if self.verbose {
+            if let Some(sink) = &self.sink {
+                if let Ok(mut guard) = sink.lock() {
+                    guard.push(message.as_ref().to_string());
+                    return;
+                }
+            }
+
+            eprintln!("{}", message.as_ref());
+        }
+    }
+}
+
 fn main() {
     let mut args = std::env::args();
     let program = args.next().unwrap_or_else(|| "dbgen".to_string());
 
-    let command = match parse_command(&program, args) {
+    let cli = match parse_command(&program, args) {
         Ok(cmd) => cmd,
         Err(err) => {
             eprintln!("{err}");
@@ -27,12 +67,14 @@ fn main() {
         }
     };
 
-    let result = match command {
-        Command::Build { append, spec } => run_from_path(&spec, append),
-        Command::Validate(args) => run_validation(&args),
-        Command::AppendGeometry(args) => append_geometry(&args),
-        Command::AppendImagery(args) => append_imagery(&args),
-        Command::AppendShader(args) => append_shader(&args),
+    let logger = Logger::stderr(cli.verbose);
+
+    let result = match cli.command {
+        Command::Build { append, spec } => run_from_path(&spec, append, &logger, cli.write_binaries),
+        Command::Validate(args) => run_validation(&args, &logger),
+        Command::AppendGeometry(args) => append_geometry(&args, &logger, cli.write_binaries),
+        Command::AppendImagery(args) => append_imagery(&args, &logger, cli.write_binaries),
+        Command::AppendShader(args) => append_shader(&args, &logger, cli.write_binaries),
     };
 
     if let Err(err) = result {
@@ -41,33 +83,62 @@ fn main() {
     }
 }
 
-fn parse_command(program: &str, mut args: impl Iterator<Item = String>) -> Result<Command, String> {
-    let Some(first) = args.next() else {
-        return Err(format!("missing arguments\n\nSee '{program} --help'"));
-    };
+#[derive(Debug)]
+struct Cli {
+    command: Command,
+    verbose: bool,
+    write_binaries: bool,
+}
 
-    match first.as_str() {
-        "-h" | "--help" => {
-            print_usage(program);
-            std::process::exit(0);
+fn parse_command(program: &str, args: impl Iterator<Item = String>) -> Result<Cli, String> {
+    let mut verbose = false;
+    let mut write_binaries = true;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print_usage(program);
+                std::process::exit(0);
+            }
+            "-v" | "--verbose" => {
+                verbose = true;
+            }
+            "--layouts-only" => {
+                write_binaries = false;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unexpected flag: {other}"));
+            }
+            other => {
+                let command = match other {
+                    "--append" => {
+                        let Some(spec) = args.next() else {
+                            return Err("--append requires a build specification path".into());
+                        };
+                        Command::Build {
+                            append: true,
+                            spec: PathBuf::from(spec),
+                        }
+                    }
+                    "validate" => parse_validate_command(args)?,
+                    "append" => parse_append_command(args)?,
+                    path => Command::Build {
+                        append: false,
+                        spec: PathBuf::from(path),
+                    },
+                };
+
+                return Ok(Cli {
+                    command,
+                    verbose,
+                    write_binaries,
+                });
+            }
         }
-        "--append" => {
-            let Some(spec) = args.next() else {
-                return Err("--append requires a build specification path".into());
-            };
-            Ok(Command::Build {
-                append: true,
-                spec: PathBuf::from(spec),
-            })
-        }
-        "validate" => parse_validate_command(args),
-        "append" => parse_append_command(args),
-        other if other.starts_with('-') => Err(format!("unexpected flag: {other}")),
-        path => Ok(Command::Build {
-            append: false,
-            spec: PathBuf::from(path),
-        }),
     }
+
+    Err(format!("missing arguments\n\nSee '{program} --help'"))
 }
 
 fn parse_validate_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -285,7 +356,13 @@ struct ShaderAppendArgs {
     entry: ShaderEntry,
 }
 
-fn run_from_path(input: &Path, append: bool) -> Result<(), BuildError> {
+fn run_from_path(
+    input: &Path,
+    append: bool,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    logger.log(format!("building from spec: {}", input.display()));
     let file = File::open(input)?;
     let reader = BufReader::new(file);
     let spec: BuildSpec = serde_json::from_reader(reader)?;
@@ -312,15 +389,36 @@ fn run_from_path(input: &Path, append: bool) -> Result<(), BuildError> {
     let shaders_path = resolve_string_path(&output_dir, &output.layout.shaders);
     let layout_path = resolve_path(&output_dir, &output.layout_file);
 
-    build_geometry(&base_dir, &geometry_path, &geometry, append)?;
-    build_imagery(&base_dir, &imagery_path, &imagery, append)?;
-    build_shaders(&base_dir, &shaders_path, &shaders, append)?;
+    build_geometry(
+        &base_dir,
+        &geometry_path,
+        &geometry,
+        append,
+        write_binaries,
+        logger,
+    )?;
+    build_imagery(
+        &base_dir,
+        &imagery_path,
+        &imagery,
+        append,
+        write_binaries,
+        logger,
+    )?;
+    build_shaders(
+        &base_dir,
+        &shaders_path,
+        &shaders,
+        append,
+        write_binaries,
+        logger,
+    )?;
 
     if let Some(parent) = models_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let models_file = File::create(&models_path)?;
-    serde_json::to_writer_pretty(models_file, &ModelFile { models })?;
+    serde_json::to_writer_pretty(models_file, &build_model_layout(&models))?;
 
     if let Some(parent) = layout_path.parent() {
         fs::create_dir_all(parent)?;
@@ -331,7 +429,7 @@ fn run_from_path(input: &Path, append: bool) -> Result<(), BuildError> {
     Ok(())
 }
 
-fn run_validation(args: &ValidateArgs) -> Result<(), BuildError> {
+fn run_validation(args: &ValidateArgs, logger: &Logger) -> Result<(), BuildError> {
     let base_dir = args
         .base
         .clone()
@@ -346,6 +444,7 @@ fn run_validation(args: &ValidateArgs) -> Result<(), BuildError> {
         .to_str()
         .ok_or_else(|| BuildError::message("layout path is not valid UTF-8"))?;
 
+    logger.log(format!("validating layout {spec_str} against base {base_str}"));
     validate_database_layout(base_str, Some(spec_str)).map_err(BuildError::from)
 }
 
@@ -354,32 +453,58 @@ fn build_geometry(
     output: &Path,
     entries: &[GeometryEntry],
     append: bool,
+    write_binaries: bool,
+    logger: &Logger,
 ) -> Result<(), BuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = load_rdb(output, append)?;
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
 
     for entry in entries {
+        logger.log(format!(
+            "geometry: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
         let host = load_geometry(base_dir, entry)?;
         rdb.add(&entry.entry, &host).map_err(BuildError::from)?;
     }
 
-    rdb.save(output).map_err(BuildError::from)?;
+    if write_binaries {
+        logger.log(format!("geometry: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("geometry: skipping binary output (--layouts-only)");
+    }
     Ok(())
 }
 
-fn append_geometry(args: &GeometryAppendArgs) -> Result<(), BuildError> {
+fn append_geometry(args: &GeometryAppendArgs, logger: &Logger, write_binaries: bool) -> Result<(), BuildError> {
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = load_rdb(&args.rdb, true)?;
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+    logger.log(format!("append geometry: {}", args.entry.entry));
     let geometry = load_geometry(Path::new("."), &args.entry)?;
     let entry_name = args.entry.entry.clone();
     rdb.add(&entry_name, &geometry).map_err(BuildError::from)?;
-    rdb.save(&args.rdb).map_err(BuildError::from)?;
+    if write_binaries {
+        logger.log(format!("append geometry: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append geometry: skipping binary output (--layouts-only)");
+    }
     Ok(())
 }
 
@@ -449,16 +574,26 @@ fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry,
     Ok(HostGeometry { vertices, indices })
 }
 
-fn append_imagery(args: &ImageAppendArgs) -> Result<(), BuildError> {
+fn append_imagery(args: &ImageAppendArgs, logger: &Logger, write_binaries: bool) -> Result<(), BuildError> {
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = load_rdb(&args.rdb, true)?;
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+    logger.log(format!("append imagery: {}", args.entry.entry));
     let image = load_image(Path::new("."), &args.entry)?;
     let entry_name = args.entry.entry.clone();
     rdb.add(&entry_name, &image).map_err(BuildError::from)?;
-    rdb.save(&args.rdb).map_err(BuildError::from)?;
+    if write_binaries {
+        logger.log(format!("append imagery: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append imagery: skipping binary output (--layouts-only)");
+    }
     Ok(())
 }
 
@@ -467,36 +602,62 @@ fn build_imagery(
     output: &Path,
     entries: &[ImageEntry],
     append: bool,
+    write_binaries: bool,
+    logger: &Logger,
 ) -> Result<(), BuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = load_rdb(output, append)?;
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
 
     for entry in entries {
+        logger.log(format!(
+            "imagery: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
         let image = load_image(base_dir, entry)?;
         rdb.add(&entry.entry, &image).map_err(BuildError::from)?;
     }
 
-    rdb.save(output).map_err(BuildError::from)?;
+    if write_binaries {
+        logger.log(format!("imagery: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("imagery: skipping binary output (--layouts-only)");
+    }
     Ok(())
 }
 
-fn append_shader(args: &ShaderAppendArgs) -> Result<(), BuildError> {
+fn append_shader(args: &ShaderAppendArgs, logger: &Logger, write_binaries: bool) -> Result<(), BuildError> {
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = load_rdb(&args.rdb, true)?;
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
     let mut compiler = sc::Compiler::new()
         .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
     let options = sc::CompileOptions::new()
         .ok_or_else(|| BuildError::message("unable to initialize shader compiler options"))?;
+    logger.log(format!("append shader: {}", args.entry.entry));
     let module = compile_shader(&mut compiler, &options, Path::new("."), &args.entry)?;
     let entry_name = args.entry.entry.clone();
     rdb.add(&entry_name, &module).map_err(BuildError::from)?;
-    rdb.save(&args.rdb).map_err(BuildError::from)?;
+    if write_binaries {
+        logger.log(format!("append shader: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append shader: skipping binary output (--layouts-only)");
+    }
     Ok(())
 }
 
@@ -530,12 +691,18 @@ fn build_shaders(
     output: &Path,
     entries: &[ShaderEntry],
     append: bool,
+    write_binaries: bool,
+    logger: &Logger,
 ) -> Result<(), BuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut rdb = load_rdb(output, append)?;
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
 
     let mut compiler = sc::Compiler::new()
         .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
@@ -543,11 +710,21 @@ fn build_shaders(
         .ok_or_else(|| BuildError::message("unable to initialize shader compiler options"))?;
 
     for entry in entries {
+        logger.log(format!(
+            "shader: compiling {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
         let module = compile_shader(&mut compiler, &options, base_dir, entry)?;
         rdb.add(&entry.entry, &module).map_err(BuildError::from)?;
     }
 
-    rdb.save(output).map_err(BuildError::from)?;
+    if write_binaries {
+        logger.log(format!("shader: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("shader: skipping binary output (--layouts-only)");
+    }
     Ok(())
 }
 
@@ -614,6 +791,8 @@ fn print_usage(program: &str) {
     eprintln!("");
     eprintln!("Options:");
     eprintln!("  --append        Append new entries to existing RDB files when using a JSON spec");
+    eprintln!("  --layouts-only  Build JSON layout assets without writing RDB binaries");
+    eprintln!("  -v, --verbose   Emit detailed progress output");
     eprintln!("  -h, --help      Show this help message");
     eprintln!("");
     eprintln!("Formats:");
@@ -763,9 +942,52 @@ struct ModelEntry {
     textures: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct ModelFile {
-    models: Vec<ModelEntry>,
+fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
+    let mut layout = ModelLayoutFile::default();
+
+    for model in entries {
+        let model_key = normalize_entry_name(&model.name, "model/", true);
+        let mesh_key = normalize_entry_name(&model.name, "mesh/", true);
+
+        let mut mesh_textures = Vec::new();
+        for texture in &model.textures {
+            let texture_key = normalize_entry_name(texture, "texture/", false);
+            mesh_textures.push(texture_key.clone());
+
+            layout.textures.entry(texture_key.clone()).or_insert_with(|| TextureLayout {
+                image: texture.clone(),
+                name: None,
+            });
+        }
+
+        layout.meshes.insert(
+            mesh_key.clone(),
+            MeshLayout {
+                name: Some(model.name.clone()),
+                geometry: model.geometry.clone(),
+                material: None,
+                textures: mesh_textures,
+            },
+        );
+
+        layout.models.insert(
+            model_key,
+            ModelLayout {
+                name: Some(model.name.clone()),
+                meshes: vec![mesh_key],
+            },
+        );
+    }
+
+    layout
+}
+
+fn normalize_entry_name(entry: &str, prefix: &str, allow_existing_prefix: bool) -> String {
+    if entry.starts_with(prefix) || (allow_existing_prefix && entry.contains('/')) {
+        entry.to_string()
+    } else {
+        format!("{prefix}{entry}")
+    }
 }
 
 #[derive(Debug)]
@@ -847,7 +1069,10 @@ impl From<sc::Error> for BuildError {
 mod tests {
     use super::*;
     use rand::{Rng, distributions::Alphanumeric};
-    use std::io::Read;
+    use std::{
+        io::Read,
+        sync::{Arc, Mutex},
+    };
 
     #[test]
     fn builds_sample_database() {
@@ -935,7 +1160,8 @@ mod tests {
         let file = File::create(&build_path).unwrap();
         serde_json::to_writer_pretty(file, &build_spec).unwrap();
 
-        run_from_path(&build_path, false).unwrap();
+        let logger = Logger::default();
+        run_from_path(&build_path, false, &logger, true).unwrap();
 
         let output_dir = tmp_root.join("db");
         assert!(output_dir.join("geometry.rdb").exists());
@@ -943,6 +1169,29 @@ mod tests {
         assert!(output_dir.join("models.json").exists());
         assert!(output_dir.join("shaders.rdb").exists());
         assert!(output_dir.join("layout.json").exists());
+
+        let model_layout: ModelLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap())
+                .unwrap();
+
+        let model = model_layout
+            .models
+            .get("model/quad")
+            .expect("model entry exists");
+        assert_eq!(model.meshes, vec!["mesh/quad"]);
+
+        let mesh = model_layout
+            .meshes
+            .get("mesh/quad")
+            .expect("mesh entry exists");
+        assert_eq!(mesh.geometry, "geometry/quad");
+        assert_eq!(mesh.textures, vec!["texture/imagery/tulips"]);
+
+        let texture = model_layout
+            .textures
+            .get("texture/imagery/tulips")
+            .expect("texture entry exists");
+        assert_eq!(texture.image, "imagery/tulips");
 
         let mut layout_text = String::new();
         File::open(output_dir.join("layout.json"))
@@ -971,6 +1220,159 @@ mod tests {
         assert!(vert.is_spirv());
         let frag = shaders.fetch::<ShaderModule>("shader/quad.frag").unwrap();
         assert!(frag.is_spirv());
+    }
+
+    #[test]
+    fn builds_layouts_without_binaries() {
+        let tmp_root = temp_dir();
+        fs::create_dir_all(tmp_root.join("sample_pre/imagery")).unwrap();
+        fs::create_dir_all(tmp_root.join("sample_pre/gltf")).unwrap();
+
+        copy_fixture(
+            "sample/sample_pre/imagery/tulips.png",
+            tmp_root.join("sample_pre/imagery/tulips.png"),
+        );
+        copy_fixture(
+            "sample/sample_pre/gltf/quad.gltf",
+            tmp_root.join("sample_pre/gltf/quad.gltf"),
+        );
+
+        let build_spec = BuildSpec {
+            output: OutputSpec {
+                directory: PathBuf::from("../db"),
+                layout_file: PathBuf::from("layout.json"),
+                layout: DatabaseLayoutFile {
+                    geometry: "geometry.rdb".into(),
+                    imagery: "imagery.rdb".into(),
+                    models: "models.json".into(),
+                    render_passes: "render_passes.json".into(),
+                    shaders: "shaders.rdb".into(),
+                    materials: "materials.json".into(),
+                },
+            },
+            imagery: vec![ImageEntry {
+                entry: "imagery/tulips".into(),
+                file: PathBuf::from("imagery/tulips.png"),
+                layers: 1,
+                format: dashi::Format::RGBA8,
+                mip_levels: 1,
+            }],
+            geometry: vec![GeometryEntry {
+                entry: "geometry/quad".into(),
+                file: PathBuf::from("gltf/quad.gltf"),
+                mesh: Some("Quad".into()),
+                primitive: Some(0),
+            }],
+            shaders: Vec::new(),
+            models: vec![ModelEntry {
+                name: "quad".into(),
+                geometry: "geometry/quad".into(),
+                textures: vec!["imagery/tulips".into()],
+            }],
+        };
+
+        let build_path = tmp_root.join("sample_pre/norenbuild.json");
+        let file = File::create(&build_path).unwrap();
+        serde_json::to_writer_pretty(file, &build_spec).unwrap();
+
+        let logger = Logger::default();
+        run_from_path(&build_path, false, &logger, false).unwrap();
+
+        let output_dir = tmp_root.join("db");
+        assert!(!output_dir.join("geometry.rdb").exists());
+        assert!(!output_dir.join("imagery.rdb").exists());
+        assert!(!output_dir.join("shaders.rdb").exists());
+        assert!(output_dir.join("models.json").exists());
+        assert!(output_dir.join("layout.json").exists());
+
+        let model_layout: ModelLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap())
+                .unwrap();
+
+        let model = model_layout
+            .models
+            .get("model/quad")
+            .expect("model entry exists");
+        assert_eq!(model.meshes, vec!["mesh/quad"]);
+
+        let mesh = model_layout
+            .meshes
+            .get("mesh/quad")
+            .expect("mesh entry exists");
+        assert_eq!(mesh.geometry, "geometry/quad");
+        assert_eq!(mesh.textures, vec!["texture/imagery/tulips"]);
+    }
+
+    #[test]
+    fn verbose_logger_records_progress() {
+        let tmp_root = temp_dir();
+        fs::create_dir_all(tmp_root.join("sample_pre/gltf")).unwrap();
+
+        copy_fixture(
+            "sample/sample_pre/gltf/quad.gltf",
+            tmp_root.join("sample_pre/gltf/quad.gltf"),
+        );
+
+        let build_spec = BuildSpec {
+            output: OutputSpec {
+                directory: PathBuf::from("../db"),
+                layout_file: PathBuf::from("layout.json"),
+                layout: DatabaseLayoutFile {
+                    geometry: "geometry.rdb".into(),
+                    imagery: "imagery.rdb".into(),
+                    models: "models.json".into(),
+                    render_passes: "render_passes.json".into(),
+                    materials: "materials.json".into(),
+                    shaders: "shaders.rdb".into(),
+                },
+            },
+            imagery: Vec::new(),
+            geometry: vec![GeometryEntry {
+                entry: "geometry/quad".into(),
+                file: PathBuf::from("gltf/quad.gltf"),
+                mesh: Some("Quad".into()),
+                primitive: Some(0),
+            }],
+            shaders: Vec::new(),
+            models: Vec::new(),
+        };
+
+        let build_path = tmp_root.join("sample_pre/norenbuild.json");
+        let file = File::create(&build_path).unwrap();
+        serde_json::to_writer_pretty(file, &build_spec).unwrap();
+
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let logger = Logger::with_sink(true, sink.clone());
+        run_from_path(&build_path, false, &logger, false).unwrap();
+
+        let logs = sink.lock().unwrap();
+        assert!(logs.iter().any(|msg| msg.contains("building from spec")));
+        assert!(logs
+            .iter()
+            .any(|msg| msg.contains("geometry: loading geometry/quad")));
+        assert!(logs.iter().any(|msg| msg.contains("geometry: skipping binary output")));
+    }
+
+    #[test]
+    fn builds_model_layout_with_prefixed_entries() {
+        let layout = build_model_layout(&[ModelEntry {
+            name: "sample".into(),
+            geometry: "geometry/sample".into(),
+            textures: vec!["imagery/sample".into()],
+        }]);
+
+        let model = layout.models.get("model/sample").expect("model key");
+        assert_eq!(model.meshes, vec!["mesh/sample"]);
+
+        let mesh = layout.meshes.get("mesh/sample").expect("mesh key");
+        assert_eq!(mesh.geometry, "geometry/sample");
+        assert_eq!(mesh.textures, vec!["texture/imagery/sample"]);
+
+        let texture = layout
+            .textures
+            .get("texture/imagery/sample")
+            .expect("texture key");
+        assert_eq!(texture.image, "imagery/sample");
     }
 
     fn temp_dir() -> PathBuf {
@@ -1030,7 +1432,8 @@ mod tests {
         let build_path = tmp_root.join("sample_pre/norenbuild.json");
         let file = File::create(&build_path).unwrap();
         serde_json::to_writer_pretty(file, &initial_spec).unwrap();
-        run_from_path(&build_path, false).unwrap();
+        let logger = Logger::default();
+        run_from_path(&build_path, false, &logger, true).unwrap();
 
         let append_spec = BuildSpec {
             output: OutputSpec {
@@ -1059,7 +1462,7 @@ mod tests {
         let append_path = tmp_root.join("sample_pre/append.json");
         let file = File::create(&append_path).unwrap();
         serde_json::to_writer_pretty(file, &append_spec).unwrap();
-        run_from_path(&append_path, true).unwrap();
+        run_from_path(&append_path, true, &logger, true).unwrap();
 
         let geometry_path = tmp_root.join("db/geometry.rdb");
         let mut rdb = RDBFile::load(&geometry_path).unwrap();
@@ -1107,7 +1510,8 @@ mod tests {
         let build_path = tmp_root.join("sample_pre/norenbuild.json");
         let file = File::create(&build_path).unwrap();
         serde_json::to_writer_pretty(file, &build_spec).unwrap();
-        run_from_path(&build_path, false).unwrap();
+        let logger = Logger::default();
+        run_from_path(&build_path, false, &logger, true).unwrap();
 
         let geometry_path = tmp_root.join("db/geometry.rdb");
         append_geometry(&GeometryAppendArgs {
@@ -1118,8 +1522,11 @@ mod tests {
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
             },
-        })
-        .unwrap();
+        },
+        &logger,
+        true,
+    )
+    .unwrap();
 
         let mut rdb = RDBFile::load(&geometry_path).unwrap();
         let original = rdb.fetch::<HostGeometry>("geometry/original").unwrap();
