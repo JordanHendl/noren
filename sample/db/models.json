@@ -1,4 +1,6 @@
 {
+  "textures": {},
+  "materials": {},
   "meshes": {
     "mesh/quad": {
       "name": "Quad Mesh",
@@ -14,5 +16,7 @@
         "mesh/quad"
       ]
     }
-  }
+  },
+  "shaders": {},
+  "render_passes": {}
 }
