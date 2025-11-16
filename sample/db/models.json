@@ -1,22 +1,11 @@
 {
-  "textures": {},
-  "materials": {},
-  "meshes": {
-    "mesh/quad": {
-      "name": "Quad Mesh",
+  "models": [
+    {
+      "name": "quad",
       "geometry": "geometry/quad",
-      "material": "material/quad",
-      "textures": []
-    }
-  },
-  "models": {
-    "model/quad": {
-      "name": "Quad",
-      "meshes": [
-        "mesh/quad"
+      "textures": [
+        "imagery/tulips"
       ]
     }
-  },
-  "shaders": {},
-  "render_passes": {}
+  ]
 }
