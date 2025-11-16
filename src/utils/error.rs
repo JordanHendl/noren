@@ -31,6 +31,7 @@ pub enum NorenError {
     DataFailure(),
     MissingRenderPass(String),
     UnknownRenderPass(String),
+    InvalidMaterial(String),
     JSONError(serde_json::Error),
     YAMLError(serde_yaml::Error),
     IOFailure(std::io::Error),
@@ -53,6 +54,9 @@ impl std::fmt::Display for NorenError {
             ),
             NorenError::UnknownRenderPass(pass) => {
                 write!(f, "Render pass '{}' could not be found.", pass)
+            }
+            NorenError::InvalidMaterial(reason) => {
+                write!(f, "Invalid material: {}", reason)
             }
             NorenError::RDBFileError(rdb_err) => write!(f, "RDB file error: {}", rdb_err),
             NorenError::IOFailure(error) => write!(f, "I/O failure: {}", error),
@@ -129,6 +133,10 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::UnknownRenderPass("pass".into())),
             "Render pass 'pass' could not be found."
+        );
+        assert_eq!(
+            format!("{}", NorenError::InvalidMaterial("reason".into())),
+            "Invalid material: reason"
         );
         assert_eq!(
             format!("{}", NorenError::RDBFileError(RdbErr::BadHeader)),
