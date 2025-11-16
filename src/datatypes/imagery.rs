@@ -53,6 +53,7 @@ impl ImageInfo {
             layers: self.layers,
             format: self.format,
             mip_levels: self.mip_levels,
+            samples: Default::default(),
             initial_data: None,
             ..Default::default()
         }

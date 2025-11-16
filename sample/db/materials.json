@@ -1,8 +1,8 @@
 {
   "textures": {
     "texture/quad_diffuse": {
-      "name": "Quad Diffuse",
-      "image": "imagery/tulips"
+      "image": "imagery/tulips",
+      "name": "Quad Diffuse"
     }
   },
   "materials": {
@@ -14,12 +14,21 @@
       "shader": "shader/default"
     }
   },
+  "meshes": {},
+  "models": {},
   "shaders": {
     "shader/default": {
       "name": "Default Shader",
       "vertex": "shader/quad.vert",
       "fragment": "shader/quad.frag",
+      "geometry": null,
+      "tessellation_control": null,
+      "tessellation_evaluation": null,
+      "bind_group_layouts": [],
+      "bind_table_layouts": [],
+      "subpass": 0,
       "render_pass": "render_pass/default"
     }
-  }
+  },
+  "render_passes": {}
 }
