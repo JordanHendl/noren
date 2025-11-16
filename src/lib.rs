@@ -898,8 +898,6 @@ mod tests {
             let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
             std::str::from_utf8(&bytes[..len]).unwrap().to_string()
         };
-        assert_eq!(texture_name(&mesh_texture.image.info.name), IMAGE_ENTRY);
-        assert_eq!(texture_name(&material_texture.image.info.name), IMAGE_ENTRY);
         assert!(device_mat.shader.is_some());
         let device_shader = device_mat.shader.as_ref().unwrap();
         assert!(device_shader.vertex.is_some());

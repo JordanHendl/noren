@@ -17,7 +17,6 @@ const UNLOAD_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct GPUImageInfo {
-    pub name: [u8; 64],
     pub dim: [u32; 3],
     pub layers: u32,
     pub format: dashi::Format,
@@ -27,7 +26,6 @@ pub struct GPUImageInfo {
 impl Default for GPUImageInfo {
     fn default() -> Self {
         Self {
-            name: [0; 64],
             dim: Default::default(),
             layers: Default::default(),
             format: Default::default(),
@@ -60,13 +58,7 @@ impl ImageInfo {
     }
 
     pub fn gpu(&self) -> GPUImageInfo {
-        let mut bytes: [u8; 64] = [0; 64];
-        let name_bytes = self.name.as_bytes();
-        let copy_len = name_bytes.len().min(bytes.len() - 1);
-        bytes[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-        bytes[copy_len] = b'\0';
         GPUImageInfo {
-            name: bytes,
             dim: self.dim,
             layers: self.layers,
             format: self.format,
@@ -311,31 +303,5 @@ mod tests {
             format: dashi::Format::RGBA8,
             mip_levels: 1,
         }
-    }
-
-    #[test]
-    fn gpu_name_shorter_than_max() {
-        let info = build_image_with_name("short");
-        let gpu = info.gpu();
-        assert_eq!(&gpu.name[..5], b"short");
-        assert_eq!(gpu.name[5], 0);
-    }
-
-    #[test]
-    fn gpu_name_equal_to_max_length() {
-        let max_name = "a".repeat(63);
-        let info = build_image_with_name(&max_name);
-        let gpu = info.gpu();
-        assert_eq!(&gpu.name[..63], max_name.as_bytes());
-        assert_eq!(gpu.name[63], 0);
-    }
-
-    #[test]
-    fn gpu_name_longer_than_max_length_is_truncated() {
-        let long_name = "long".repeat(20); // 80 chars
-        let info = build_image_with_name(&long_name);
-        let gpu = info.gpu();
-        assert_eq!(&gpu.name[..63], &long_name.as_bytes()[..63]);
-        assert_eq!(gpu.name[63], 0);
     }
 }
