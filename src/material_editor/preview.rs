@@ -1,17 +1,29 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     f32::consts::PI,
     path::{Path, PathBuf},
 };
 
+use bytemuck::{Pod, Zeroable};
+use dashi::gpu::execution::CommandRing;
+use dashi::{
+    AspectMask, BindGroupLayout, BindGroupLayoutInfo, BindGroupVariable, BindGroupVariableType,
+    BufferInfo, BufferUsage, ClearValue, CommandQueueInfo2, Context, ContextInfo, DepthInfo,
+    Format, GraphicsPipelineDetails, GraphicsPipelineInfo, GraphicsPipelineLayoutInfo, Handle,
+    ImageInfo, ImageView, MemoryVisibility, PipelineShaderInfo, Rect2D, ShaderPrimitiveType,
+    ShaderType, VertexDescriptionInfo, VertexEntryInfo, VertexRate, Viewport,
+    builders::RenderPassBuilder,
+    driver::command::{BeginRenderPass, CopyImageBuffer, DrawIndexed},
+    gpu::CommandStream,
+};
 use eframe::egui::{self, Color32, ColorImage};
-use glam::{Mat4, Vec2, Vec3, Vec4};
+use glam::{Mat3, Mat4, Vec3};
+use shaderc::{Compiler, ShaderKind};
 
 use crate::{
-    datatypes::{imagery::HostImage, shader::ShaderModule},
+    datatypes::{DatabaseEntry, imagery::ImageDB, primitives::Vertex, shader::ShaderModule},
     material_editor::project::{GraphTexture, MaterialEditorProjectState},
     material_editor_types::{MaterialEditorDatabaseLayout, MaterialEditorMaterial},
-    utils::rdbfile::RDBView,
 };
 
 const PREVIEW_WIDTH: usize = 320;
@@ -25,18 +37,15 @@ pub struct MaterialPreviewPanel {
 
 impl MaterialPreviewPanel {
     pub fn new(state: &MaterialEditorProjectState) -> Self {
-        let mut renderer = PreviewRenderer::new();
-        renderer.ensure_project_location(state.root(), &state.layout);
         Self {
-            renderer,
+            renderer: PreviewRenderer::new(state),
             texture: None,
             texture_label: "material_preview".to_string(),
         }
     }
 
     pub fn sync_with_state(&mut self, state: &MaterialEditorProjectState) {
-        self.renderer
-            .ensure_project_location(state.root(), &state.layout);
+        self.renderer.sync_with_state(state);
         self.texture = None;
     }
 
@@ -47,9 +56,6 @@ impl MaterialPreviewPanel {
         material_id: &str,
         material: &MaterialEditorMaterial,
     ) {
-        self.renderer
-            .ensure_project_location(state.root(), &state.layout);
-
         egui::CollapsingHeader::new("Preview")
             .default_open(true)
             .show(ui, |ui| {
@@ -146,23 +152,28 @@ struct PreviewRenderer {
     mesh_cache: PreviewMeshCache,
     assets: PreviewAssetCache,
     image: ColorImage,
+    gpu: Option<PreviewGpu>,
+    gpu_error: Option<String>,
 }
 
 impl PreviewRenderer {
-    fn new() -> Self {
+    fn new(state: &MaterialEditorProjectState) -> Self {
+        let (gpu, gpu_error) = match PreviewGpu::new() {
+            Ok(gpu) => (Some(gpu), None),
+            Err(err) => (None, Some(err)),
+        };
         Self {
             config: PreviewConfig::default(),
-            mesh_cache: PreviewMeshCache::new(),
-            assets: PreviewAssetCache::default(),
-            image: ColorImage::new(
-                [PREVIEW_WIDTH, PREVIEW_HEIGHT],
-                Color32::from_rgb(30, 30, 30),
-            ),
+            mesh_cache: PreviewMeshCache::default(),
+            assets: PreviewAssetCache::new(state.root(), &state.layout),
+            image: ColorImage::new([PREVIEW_WIDTH, PREVIEW_HEIGHT], Color32::BLACK),
+            gpu,
+            gpu_error,
         }
     }
 
-    fn ensure_project_location(&mut self, root: &Path, layout: &MaterialEditorDatabaseLayout) {
-        self.assets.ensure_paths(root, layout);
+    fn sync_with_state(&mut self, state: &MaterialEditorProjectState) {
+        self.assets.reset(state.root(), &state.layout);
     }
 
     fn render(
@@ -173,20 +184,68 @@ impl PreviewRenderer {
     ) -> PreviewResult {
         let mut warnings = Vec::new();
 
-        let base_texture = self.resolve_textures(material, state, &mut warnings);
-        let shader_ready = self.ensure_shader_modules(material, state, &mut warnings);
+        if self.config.wireframe {
+            warnings.push("Wireframe preview is not available in the GPU renderer yet".into());
+        }
 
-        if base_texture.is_none() {
+        if self.gpu.is_none() {
+            if let Some(err) = &self.gpu_error {
+                warnings.push(format!("Preview renderer unavailable: {err}"));
+            } else {
+                warnings.push("Preview renderer unavailable".into());
+            }
+            return PreviewResult {
+                warnings,
+                image_changed: false,
+            };
+        }
+
+        {
+            let gpu_for_assets = self
+                .gpu
+                .as_mut()
+                .expect("gpu should be present after check");
+            self.assets
+                .ensure_imagery(state.root(), &state.layout, gpu_for_assets);
+        }
+
+        let texture = self.resolve_texture(material, state, &mut warnings);
+
+        if texture.is_none() {
             warnings.push("No previewable texture bindings; using fallback colors".to_string());
         }
-        if !shader_ready {
-            warnings.push(format!(
-                "Shader for '{}' is incomplete; rendering with default lighting",
-                material_id
-            ));
-        }
 
-        self.draw_scene(base_texture.as_ref());
+        let gpu = self
+            .gpu
+            .as_mut()
+            .expect("gpu should be present after check");
+        let mesh = self.mesh_cache.mesh(self.config.mesh_kind, gpu);
+        let background = Color32::from_rgb(
+            (self.config.background_rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
+            (self.config.background_rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
+            (self.config.background_rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
+        );
+
+        let light_dir = Vec3::new(0.3, 0.8, 0.6).normalize();
+
+        let render_result = gpu.render(
+            mesh,
+            &self.config,
+            texture,
+            background,
+            light_dir,
+            &mut self.image,
+        );
+
+        if let Err(err) = render_result {
+            warnings.push(format!(
+                "Failed to render preview for '{material_id}': {err}"
+            ));
+            return PreviewResult {
+                warnings,
+                image_changed: false,
+            };
+        }
 
         PreviewResult {
             warnings,
@@ -194,23 +253,20 @@ impl PreviewRenderer {
         }
     }
 
-    fn resolve_textures(
+    fn resolve_texture(
         &mut self,
         material: &MaterialEditorMaterial,
         state: &MaterialEditorProjectState,
         warnings: &mut Vec<String>,
-    ) -> Option<PreviewTexture> {
+    ) -> Option<PreviewTextureHandle> {
         for texture_id in &material.textures {
             let Some(GraphTexture { resource }) = state.graph.textures.get(texture_id) else {
-                warnings.push(format!("Texture '{}' is missing", texture_id));
+                warnings.push(format!("Texture '{texture_id}' is missing"));
                 continue;
             };
             let image_entry = resource.data.image.clone();
             if image_entry.is_empty() {
-                warnings.push(format!(
-                    "Texture '{}' does not reference imagery",
-                    texture_id
-                ));
+                warnings.push(format!("Texture '{texture_id}' does not reference imagery"));
                 continue;
             }
             if let Some(texture) = self.assets.texture(&image_entry) {
@@ -224,200 +280,6 @@ impl PreviewRenderer {
         None
     }
 
-    fn ensure_shader_modules(
-        &mut self,
-        material: &MaterialEditorMaterial,
-        state: &MaterialEditorProjectState,
-        warnings: &mut Vec<String>,
-    ) -> bool {
-        let Some(shader_id) = material.shader.as_ref() else {
-            warnings.push("Material does not specify a shader".to_string());
-            return false;
-        };
-        let Some(shader) = state.graph.shaders.get(shader_id) else {
-            warnings.push(format!("Shader '{}' is missing", shader_id));
-            return false;
-        };
-
-        let layout = &shader.resource.data;
-        let mut any_stage = false;
-        let mut ensure_stage = |stage: Option<&String>, label: &str| {
-            if let Some(entry) = stage {
-                if entry.is_empty() {
-                    warnings.push(format!("Shader stage '{}' is unassigned", label));
-                    return;
-                }
-                if !self.assets.ensure_shader_module(entry) {
-                    warnings.push(format!("Failed to load shader module '{}'", entry));
-                } else {
-                    any_stage = true;
-                }
-            }
-        };
-
-        ensure_stage(layout.vertex.as_ref(), "vertex");
-        ensure_stage(layout.fragment.as_ref(), "fragment");
-        ensure_stage(layout.geometry.as_ref(), "geometry");
-        ensure_stage(layout.tessellation_control.as_ref(), "tessellation control");
-        ensure_stage(
-            layout.tessellation_evaluation.as_ref(),
-            "tessellation evaluation",
-        );
-
-        any_stage
-    }
-
-    fn draw_scene(&mut self, texture: Option<&PreviewTexture>) {
-        let background = Color32::from_rgb(
-            (self.config.background_rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
-            (self.config.background_rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
-            (self.config.background_rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
-        );
-        self.image = ColorImage::new([PREVIEW_WIDTH, PREVIEW_HEIGHT], background);
-        let mut depth = vec![f32::INFINITY; PREVIEW_WIDTH * PREVIEW_HEIGHT];
-
-        let view = self.config.camera.view_matrix();
-        let aspect = PREVIEW_WIDTH as f32 / PREVIEW_HEIGHT as f32;
-        let proj = Mat4::perspective_rh_gl(45.0_f32.to_radians(), aspect, 0.1, 50.0);
-        let vp = proj * view;
-        let mesh = self.mesh_cache.mesh(self.config.mesh_kind);
-        let light_dir = Vec3::new(0.3, 0.8, 0.6).normalize();
-        let fallback_color = [0.7, 0.3, 0.8, 1.0];
-
-        for indices in mesh.indices.chunks(3) {
-            if indices.len() < 3 {
-                continue;
-            }
-            let prepared = [
-                Self::prepare_vertex(mesh, indices[0], &vp),
-                Self::prepare_vertex(mesh, indices[1], &vp),
-                Self::prepare_vertex(mesh, indices[2], &vp),
-            ];
-            if prepared.iter().any(|v| v.is_none()) {
-                continue;
-            }
-            let prepared = [
-                prepared[0].as_ref().unwrap(),
-                prepared[1].as_ref().unwrap(),
-                prepared[2].as_ref().unwrap(),
-            ];
-            Self::rasterize_triangle(
-                &mut self.image.pixels,
-                &prepared,
-                texture,
-                fallback_color,
-                &mut depth,
-                light_dir,
-                self.config.wireframe,
-            );
-        }
-    }
-
-    fn prepare_vertex(mesh: &PreviewMesh, index: u32, vp: &Mat4) -> Option<PreparedVertex> {
-        let vertex = mesh.vertices.get(index as usize)?;
-        let position = Vec4::new(vertex.position.x, vertex.position.y, vertex.position.z, 1.0);
-        let clip = *vp * position;
-        if clip.w.abs() < 1e-5 {
-            return None;
-        }
-        let ndc = clip.truncate() / clip.w;
-        let screen = Vec2::new(
-            (ndc.x * 0.5 + 0.5) * (PREVIEW_WIDTH as f32 - 1.0),
-            (1.0 - (ndc.y * 0.5 + 0.5)) * (PREVIEW_HEIGHT as f32 - 1.0),
-        );
-        Some(PreparedVertex {
-            screen,
-            depth: ndc.z,
-            normal: vertex.normal,
-            uv: vertex.uv,
-        })
-    }
-
-    fn rasterize_triangle(
-        pixels: &mut [Color32],
-        vertices: &[&PreparedVertex; 3],
-        texture: Option<&PreviewTexture>,
-        fallback: [f32; 4],
-        depth: &mut [f32],
-        light_dir: Vec3,
-        wireframe: bool,
-    ) {
-        let min_x = vertices
-            .iter()
-            .map(|v| v.screen.x)
-            .fold(f32::INFINITY, f32::min)
-            .floor()
-            .max(0.0) as i32;
-        let max_x = vertices
-            .iter()
-            .map(|v| v.screen.x)
-            .fold(f32::NEG_INFINITY, f32::max)
-            .ceil()
-            .min((PREVIEW_WIDTH - 1) as f32) as i32;
-        let min_y = vertices
-            .iter()
-            .map(|v| v.screen.y)
-            .fold(f32::INFINITY, f32::min)
-            .floor()
-            .max(0.0) as i32;
-        let max_y = vertices
-            .iter()
-            .map(|v| v.screen.y)
-            .fold(f32::NEG_INFINITY, f32::max)
-            .ceil()
-            .min((PREVIEW_HEIGHT - 1) as f32) as i32;
-
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-                if let Some(bary) = barycentric(
-                    p,
-                    vertices[0].screen,
-                    vertices[1].screen,
-                    vertices[2].screen,
-                ) {
-                    if bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0 {
-                        continue;
-                    }
-                    let depth_value = bary.x * vertices[0].depth
-                        + bary.y * vertices[1].depth
-                        + bary.z * vertices[2].depth;
-                    let idx = (y as usize) * PREVIEW_WIDTH + x as usize;
-                    if depth_value >= depth[idx] {
-                        continue;
-                    }
-                    depth[idx] = depth_value;
-
-                    let uv =
-                        bary.x * vertices[0].uv + bary.y * vertices[1].uv + bary.z * vertices[2].uv;
-                    let mut color = if let Some(texture) = texture {
-                        texture.sample(uv)
-                    } else {
-                        fallback
-                    };
-
-                    let normal = (bary.x * vertices[0].normal
-                        + bary.y * vertices[1].normal
-                        + bary.z * vertices[2].normal)
-                        .normalize();
-                    let lighting = (normal.dot(light_dir).max(0.0) * 0.75) + 0.25;
-                    color[0] *= lighting;
-                    color[1] *= lighting;
-                    color[2] *= lighting;
-
-                    if wireframe {
-                        let min_component = bary.x.min(bary.y).min(bary.z);
-                        if min_component < 0.02 {
-                            color = [0.05, 0.05, 0.05, 1.0];
-                        }
-                    }
-
-                    pixels[idx] = to_color32(color);
-                }
-            }
-        }
-    }
-
     fn image(&self) -> &ColorImage {
         &self.image
     }
@@ -428,23 +290,610 @@ struct PreviewResult {
     image_changed: bool,
 }
 
-#[derive(Clone, Copy)]
-struct PreviewConfig {
-    mesh_kind: PreviewMeshKind,
-    background_rgb: [f32; 3],
-    wireframe: bool,
-    camera: OrbitCamera,
+struct PreviewGpu {
+    ctx: Context,
+    ring: CommandRing,
+    render_pass: Handle<dashi::RenderPass>,
+    target: PreviewTarget,
+    pipeline: PreviewPipeline,
+    sampler: Handle<dashi::Sampler>,
+    bind_group_layout: Handle<BindGroupLayout>,
+    uniform_buffer: Handle<dashi::Buffer>,
+    fallback_texture: PreviewTextureHandle,
+    bind_groups: HashMap<String, Handle<dashi::BindGroup>>,
 }
 
-impl Default for PreviewConfig {
+impl PreviewGpu {
+    fn new() -> Result<Self, String> {
+        let mut ctx = Context::headless(&ContextInfo::default())
+            .map_err(|err| format!("unable to create GPU context: {err}"))?;
+        let ring = ctx
+            .make_command_ring(&CommandQueueInfo2 {
+                debug_name: "preview",
+                ..Default::default()
+            })
+            .map_err(|err| format!("unable to create command ring: {err}"))?;
+
+        let viewport = Viewport {
+            area: dashi::FRect2D {
+                x: 0.0,
+                y: 0.0,
+                w: PREVIEW_WIDTH as f32,
+                h: PREVIEW_HEIGHT as f32,
+            },
+            scissor: Rect2D {
+                x: 0,
+                y: 0,
+                w: PREVIEW_WIDTH as u32,
+                h: PREVIEW_HEIGHT as u32,
+            },
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        let color_attachment = dashi::AttachmentDescription {
+            format: Format::RGBA8,
+            ..Default::default()
+        };
+        let depth_attachment = dashi::AttachmentDescription {
+            format: Format::D24S8,
+            ..Default::default()
+        };
+
+        let render_pass = RenderPassBuilder::new("material_preview", viewport)
+            .add_subpass(&[color_attachment], Some(&depth_attachment), &[])
+            .build(&mut ctx)
+            .map_err(|_| "failed to build preview render pass".to_string())?;
+
+        let target = PreviewTarget::new(&mut ctx)?;
+        let uniform_buffer = ctx
+            .make_buffer(&BufferInfo {
+                debug_name: "preview_uniforms",
+                byte_size: std::mem::size_of::<PreviewUniforms>() as u32,
+                visibility: MemoryVisibility::CpuAndGpu,
+                usage: BufferUsage::UNIFORM,
+                initial_data: None,
+            })
+            .map_err(|_| "failed to allocate uniform buffer".to_string())?;
+
+        let sampler = ctx
+            .make_sampler(&Default::default())
+            .map_err(|_| "failed to create sampler".to_string())?;
+
+        let bind_group_layout = create_bind_group_layout(&mut ctx)?;
+        let fallback_texture = PreviewTextureHandle::solid_color(&mut ctx, [200, 120, 240, 255])?;
+        let bind_group = create_bind_group(
+            &mut ctx,
+            bind_group_layout,
+            uniform_buffer,
+            sampler,
+            fallback_texture.view,
+        )?;
+        let mut bind_groups = HashMap::new();
+        bind_groups.insert("fallback".to_string(), bind_group);
+
+        let shader = builtin_shader_modules()?;
+        let pipeline = PreviewPipeline::new(&mut ctx, render_pass, bind_group_layout, &shader)?;
+
+        Ok(Self {
+            ctx,
+            ring,
+            render_pass,
+            target,
+            pipeline,
+            sampler,
+            bind_group_layout,
+            uniform_buffer,
+            fallback_texture,
+            bind_groups,
+        })
+    }
+
+    fn render(
+        &mut self,
+        mesh: &GpuPreviewMesh,
+        config: &PreviewConfig,
+        texture: Option<PreviewTextureHandle>,
+        background: Color32,
+        light_dir: Vec3,
+        image: &mut ColorImage,
+    ) -> Result<(), String> {
+        let has_texture = texture.is_some();
+        self.update_uniforms(config, light_dir, has_texture)?;
+        let resolved_texture = match texture {
+            Some(handle) => handle,
+            None => self.fallback_texture.clone(),
+        };
+        let bind_group = self.bind_group_for(&resolved_texture)?;
+
+        let clear = ClearValue::Color([
+            background.r() as f32 / 255.0,
+            background.g() as f32 / 255.0,
+            background.b() as f32 / 255.0,
+            1.0,
+        ]);
+
+        self.ring
+            .record(|cmd| {
+                let stream = CommandStream::new().begin();
+                let begin_pass = BeginRenderPass {
+                    viewport: self.target.viewport,
+                    render_pass: self.render_pass,
+                    color_attachments: [Some(self.target.color_view), None, None, None],
+                    depth_attachment: Some(self.target.depth_view),
+                    clear_values: [Some(clear), None, None, None],
+                };
+                let pending = stream.begin_render_pass(&begin_pass);
+                let mut drawing = pending.bind_graphics_pipeline(self.pipeline.pipeline);
+                let mut draw_cmd = DrawIndexed::default();
+                draw_cmd.vertices = mesh.vertex_buffer;
+                draw_cmd.indices = mesh.index_buffer;
+                draw_cmd.index_count = mesh.index_count;
+                draw_cmd.bind_groups[0] = Some(bind_group);
+                drawing.draw_indexed(&draw_cmd);
+                let pending = drawing.unbind_graphics_pipeline();
+                let mut recording = pending.stop_drawing();
+
+                let copy = CopyImageBuffer {
+                    src: self.target.color,
+                    dst: self.target.readback,
+                    range: Default::default(),
+                    dst_offset: 0,
+                };
+                recording.copy_image_to_buffer(&copy);
+                let exec = recording.end();
+                exec.append(cmd);
+            })
+            .map_err(|err| format!("failed to record preview commands: {err}"))?;
+
+        self.ring
+            .submit(&Default::default())
+            .map_err(|err| format!("failed to submit preview commands: {err}"))?;
+        self.ring
+            .wait_all()
+            .map_err(|err| format!("failed to wait for preview commands: {err}"))?;
+
+        self.readback(image)?;
+        Ok(())
+    }
+
+    fn ctx_ptr(&mut self) -> *mut Context {
+        &mut self.ctx as *mut _
+    }
+
+    fn bind_group_for(
+        &mut self,
+        texture: &PreviewTextureHandle,
+    ) -> Result<Handle<dashi::BindGroup>, String> {
+        if let Some(handle) = self.bind_groups.get(&texture.name) {
+            return Ok(*handle);
+        }
+        let handle = create_bind_group(
+            &mut self.ctx,
+            self.bind_group_layout,
+            self.uniform_buffer,
+            self.sampler,
+            texture.view,
+        )?;
+        self.bind_groups.insert(texture.name.clone(), handle);
+        Ok(handle)
+    }
+
+    fn update_uniforms(
+        &mut self,
+        config: &PreviewConfig,
+        light_dir: Vec3,
+        has_texture: bool,
+    ) -> Result<(), String> {
+        let view = config.camera.view_matrix();
+        let aspect = PREVIEW_WIDTH as f32 / PREVIEW_HEIGHT as f32;
+        let proj = Mat4::perspective_rh_gl(45.0_f32.to_radians(), aspect, 0.1, 50.0);
+        let view_proj = proj * view;
+
+        let model = Mat4::IDENTITY;
+        let normal_matrix = Mat3::from_mat4(model).inverse().transpose();
+
+        let uniforms = PreviewUniforms {
+            view_proj: view_proj.to_cols_array_2d(),
+            normal_matrix: mat3_to_std140(normal_matrix),
+            light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
+            fallback_color: [0.7, 0.3, 0.8, 1.0],
+            flags: [if has_texture { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        };
+
+        let bytes = bytemuck::bytes_of(&uniforms);
+        let mapped: &mut [u8] = self
+            .ctx
+            .map_buffer_mut(self.uniform_buffer)
+            .map_err(|_| "failed to map uniform buffer".to_string())?;
+        mapped[..bytes.len()].copy_from_slice(bytes);
+        self.ctx
+            .unmap_buffer(self.uniform_buffer)
+            .map_err(|_| "failed to unmap uniform buffer".to_string())?;
+        Ok(())
+    }
+
+    fn readback(&mut self, image: &mut ColorImage) -> Result<(), String> {
+        let mapped: &[u8] = self
+            .ctx
+            .map_buffer(self.target.readback)
+            .map_err(|_| "failed to map readback buffer".to_string())?;
+        let mut pixels = Vec::with_capacity(PREVIEW_WIDTH * PREVIEW_HEIGHT);
+        for chunk in mapped.chunks_exact(4) {
+            let color = Color32::from_rgba_unmultiplied(chunk[0], chunk[1], chunk[2], chunk[3]);
+            pixels.push(color);
+        }
+        self.ctx
+            .unmap_buffer(self.target.readback)
+            .map_err(|_| "failed to unmap readback buffer".to_string())?;
+        image.pixels = pixels;
+        image.size = [PREVIEW_WIDTH, PREVIEW_HEIGHT];
+        Ok(())
+    }
+}
+
+struct PreviewTarget {
+    color: Handle<dashi::Image>,
+    depth: Handle<dashi::Image>,
+    color_view: ImageView,
+    depth_view: ImageView,
+    readback: Handle<dashi::Buffer>,
+    viewport: Viewport,
+}
+
+impl PreviewTarget {
+    fn new(ctx: &mut Context) -> Result<Self, String> {
+        let color = ctx
+            .make_image(&ImageInfo {
+                debug_name: "preview_color",
+                dim: [PREVIEW_WIDTH as u32, PREVIEW_HEIGHT as u32, 1],
+                layers: 1,
+                format: Format::RGBA8,
+                mip_levels: 1,
+                initial_data: None,
+            })
+            .map_err(|_| "failed to create color target".to_string())?;
+        let depth = ctx
+            .make_image(&ImageInfo {
+                debug_name: "preview_depth",
+                dim: [PREVIEW_WIDTH as u32, PREVIEW_HEIGHT as u32, 1],
+                layers: 1,
+                format: Format::D24S8,
+                mip_levels: 1,
+                initial_data: None,
+            })
+            .map_err(|_| "failed to create depth target".to_string())?;
+
+        let color_view = ImageView {
+            img: color,
+            layer: 0,
+            mip_level: 0,
+            aspect: AspectMask::Color,
+        };
+        let depth_view = ImageView {
+            img: depth,
+            layer: 0,
+            mip_level: 0,
+            aspect: AspectMask::DepthStencil,
+        };
+        let readback = ctx
+            .make_buffer(&BufferInfo {
+                debug_name: "preview_readback",
+                byte_size: (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as u32,
+                visibility: MemoryVisibility::CpuAndGpu,
+                usage: BufferUsage::ALL,
+                initial_data: None,
+            })
+            .map_err(|_| "failed to allocate readback buffer".to_string())?;
+
+        let viewport = Viewport {
+            area: dashi::FRect2D {
+                x: 0.0,
+                y: 0.0,
+                w: PREVIEW_WIDTH as f32,
+                h: PREVIEW_HEIGHT as f32,
+            },
+            scissor: Rect2D {
+                x: 0,
+                y: 0,
+                w: PREVIEW_WIDTH as u32,
+                h: PREVIEW_HEIGHT as u32,
+            },
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        Ok(Self {
+            color,
+            depth,
+            color_view,
+            depth_view,
+            readback,
+            viewport,
+        })
+    }
+}
+
+struct PreviewPipeline {
+    pipeline: Handle<dashi::GraphicsPipeline>,
+}
+
+impl PreviewPipeline {
+    fn new(
+        ctx: &mut Context,
+        render_pass: Handle<dashi::RenderPass>,
+        bind_group_layout: Handle<BindGroupLayout>,
+        shader: &BuiltinShader,
+    ) -> Result<Self, String> {
+        let vertex_info = VertexDescriptionInfo {
+            entries: &VERTEX_ENTRIES,
+            stride: std::mem::size_of::<Vertex>(),
+            rate: VertexRate::Vertex,
+        };
+
+        let shaders = [
+            PipelineShaderInfo {
+                stage: ShaderType::Vertex,
+                spirv: shader.vertex.words(),
+                specialization: &[],
+            },
+            PipelineShaderInfo {
+                stage: ShaderType::Fragment,
+                spirv: shader.fragment.words(),
+                specialization: &[],
+            },
+        ];
+
+        let mut bg_layouts: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
+        bg_layouts[0] = Some(bind_group_layout);
+
+        let layout = GraphicsPipelineLayoutInfo {
+            debug_name: "preview_pipeline",
+            vertex_info,
+            bg_layouts,
+            bt_layouts: Default::default(),
+            shaders: &shaders,
+            details: GraphicsPipelineDetails {
+                depth_test: Some(DepthInfo {
+                    should_test: true,
+                    should_write: true,
+                }),
+                ..Default::default()
+            },
+        };
+
+        let pipeline_layout = ctx
+            .make_graphics_pipeline_layout(&layout)
+            .map_err(|_| "failed to build pipeline layout".to_string())?;
+        let pipeline = ctx
+            .make_graphics_pipeline(&GraphicsPipelineInfo {
+                debug_name: "preview_pipeline",
+                layout: pipeline_layout,
+                render_pass,
+                subpass_id: 0,
+            })
+            .map_err(|_| "failed to build graphics pipeline".to_string())?;
+        Ok(Self { pipeline })
+    }
+}
+
+const VERTEX_ENTRIES: [VertexEntryInfo; 5] = [
+    VertexEntryInfo {
+        format: ShaderPrimitiveType::Vec3,
+        location: 0,
+        offset: 0,
+    },
+    VertexEntryInfo {
+        format: ShaderPrimitiveType::Vec3,
+        location: 1,
+        offset: 12,
+    },
+    VertexEntryInfo {
+        format: ShaderPrimitiveType::Vec4,
+        location: 2,
+        offset: 24,
+    },
+    VertexEntryInfo {
+        format: ShaderPrimitiveType::Vec2,
+        location: 3,
+        offset: 40,
+    },
+    VertexEntryInfo {
+        format: ShaderPrimitiveType::Vec4,
+        location: 4,
+        offset: 48,
+    },
+];
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PreviewUniforms {
+    view_proj: [[f32; 4]; 4],
+    normal_matrix: [[f32; 4]; 3],
+    light_dir: [f32; 4],
+    fallback_color: [f32; 4],
+    flags: [f32; 4],
+}
+
+fn mat3_to_std140(matrix: Mat3) -> [[f32; 4]; 3] {
+    let cols = matrix.to_cols_array_2d();
+    [
+        [cols[0][0], cols[0][1], cols[0][2], 0.0],
+        [cols[1][0], cols[1][1], cols[1][2], 0.0],
+        [cols[2][0], cols[2][1], cols[2][2], 0.0],
+    ]
+}
+
+struct PreviewMeshCache {
+    sphere: Option<GpuPreviewMesh>,
+    quad: Option<GpuPreviewMesh>,
+}
+
+impl Default for PreviewMeshCache {
     fn default() -> Self {
         Self {
-            mesh_kind: PreviewMeshKind::Sphere,
-            background_rgb: [0.2, 0.2, 0.25],
-            wireframe: false,
-            camera: OrbitCamera::default(),
+            sphere: None,
+            quad: None,
         }
     }
+}
+
+impl PreviewMeshCache {
+    fn mesh<'a>(&'a mut self, kind: PreviewMeshKind, gpu: &mut PreviewGpu) -> &'a GpuPreviewMesh {
+        match kind {
+            PreviewMeshKind::Sphere => {
+                if self.sphere.is_none() {
+                    self.sphere = Some(GpuPreviewMesh::new_sphere(&mut gpu.ctx).unwrap());
+                }
+                self.sphere.as_ref().unwrap()
+            }
+            PreviewMeshKind::Quad => {
+                if self.quad.is_none() {
+                    self.quad = Some(GpuPreviewMesh::new_quad(&mut gpu.ctx).unwrap());
+                }
+                self.quad.as_ref().unwrap()
+            }
+        }
+    }
+}
+
+struct GpuPreviewMesh {
+    vertex_buffer: Handle<dashi::Buffer>,
+    index_buffer: Handle<dashi::Buffer>,
+    index_count: u32,
+}
+
+impl GpuPreviewMesh {
+    fn new_sphere(ctx: &mut Context) -> Result<Self, String> {
+        let data = PreviewMesh::sphere();
+        Self::upload(ctx, data)
+    }
+
+    fn new_quad(ctx: &mut Context) -> Result<Self, String> {
+        let data = PreviewMesh::quad();
+        Self::upload(ctx, data)
+    }
+
+    fn upload(ctx: &mut Context, mesh: PreviewMesh) -> Result<Self, String> {
+        let vertices: Vec<Vertex> = mesh
+            .vertices
+            .into_iter()
+            .map(|v| Vertex {
+                position: [v.position.x, v.position.y, v.position.z],
+                normal: [v.normal.x, v.normal.y, v.normal.z],
+                tangent: [0.0, 0.0, 0.0, 1.0],
+                uv: [v.uv.x, v.uv.y],
+                color: [1.0, 1.0, 1.0, 1.0],
+            })
+            .collect();
+        let vertex_bytes = bytemuck::cast_slice(&vertices);
+        let vertex_buffer = ctx
+            .make_buffer(&BufferInfo {
+                debug_name: "preview_vertices",
+                byte_size: vertex_bytes.len() as u32,
+                visibility: MemoryVisibility::Gpu,
+                usage: BufferUsage::VERTEX,
+                initial_data: Some(vertex_bytes),
+            })
+            .map_err(|_| "failed to upload vertices".to_string())?;
+
+        let index_bytes = bytemuck::cast_slice(&mesh.indices);
+        let index_buffer = ctx
+            .make_buffer(&BufferInfo {
+                debug_name: "preview_indices",
+                byte_size: index_bytes.len() as u32,
+                visibility: MemoryVisibility::Gpu,
+                usage: BufferUsage::INDEX,
+                initial_data: Some(index_bytes),
+            })
+            .map_err(|_| "failed to upload indices".to_string())?;
+
+        Ok(Self {
+            vertex_buffer,
+            index_buffer,
+            index_count: mesh.indices.len() as u32,
+        })
+    }
+}
+
+struct PreviewMesh {
+    vertices: Vec<PreviewVertex>,
+    indices: Vec<u32>,
+}
+
+impl PreviewMesh {
+    fn sphere() -> Self {
+        let stacks = 24;
+        let slices = 32;
+        let mut vertices = Vec::new();
+        for stack in 0..=stacks {
+            let v = stack as f32 / stacks as f32;
+            let phi = v * PI;
+            let y = phi.cos();
+            let radius = phi.sin();
+            for slice in 0..=slices {
+                let u = slice as f32 / slices as f32;
+                let theta = u * PI * 2.0;
+                let x = radius * theta.cos();
+                let z = radius * theta.sin();
+                let normal = Vec3::new(x, y, z).normalize();
+                vertices.push(PreviewVertex {
+                    position: normal,
+                    normal,
+                    uv: glam::Vec2::new(u, 1.0 - v),
+                });
+            }
+        }
+
+        let mut indices = Vec::new();
+        for stack in 0..stacks {
+            for slice in 0..slices {
+                let first = (stack * (slices + 1) + slice) as u32;
+                let second = first + slices as u32 + 1;
+                indices.push(first);
+                indices.push(second);
+                indices.push(first + 1);
+                indices.push(second);
+                indices.push(second + 1);
+                indices.push(first + 1);
+            }
+        }
+
+        Self { vertices, indices }
+    }
+
+    fn quad() -> Self {
+        let vertices = vec![
+            PreviewVertex {
+                position: Vec3::new(-1.0, -1.0, 0.0),
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                uv: glam::Vec2::new(0.0, 1.0),
+            },
+            PreviewVertex {
+                position: Vec3::new(1.0, -1.0, 0.0),
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                uv: glam::Vec2::new(1.0, 1.0),
+            },
+            PreviewVertex {
+                position: Vec3::new(1.0, 1.0, 0.0),
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                uv: glam::Vec2::new(1.0, 0.0),
+            },
+            PreviewVertex {
+                position: Vec3::new(-1.0, 1.0, 0.0),
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                uv: glam::Vec2::new(0.0, 0.0),
+            },
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+        Self { vertices, indices }
+    }
+}
+
+struct PreviewVertex {
+    position: Vec3,
+    normal: Vec3,
+    uv: glam::Vec2,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -456,10 +905,143 @@ enum PreviewMeshKind {
 impl PreviewMeshKind {
     const ALL: [Self; 2] = [Self::Sphere, Self::Quad];
 
-    fn label(self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
             Self::Sphere => "Sphere",
             Self::Quad => "Quad",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PreviewTextureHandle {
+    name: String,
+    view: ImageView,
+}
+
+impl PreviewTextureHandle {
+    fn solid_color(ctx: &mut Context, rgba: [u8; 4]) -> Result<Self, String> {
+        let image = ctx
+            .make_image(&ImageInfo {
+                debug_name: "preview_fallback",
+                dim: [1, 1, 1],
+                layers: 1,
+                format: Format::RGBA8,
+                mip_levels: 1,
+                initial_data: Some(&rgba),
+            })
+            .map_err(|_| "failed to create fallback texture".to_string())?;
+        Ok(Self {
+            name: "fallback".into(),
+            view: ImageView {
+                img: image,
+                layer: 0,
+                mip_level: 0,
+                aspect: AspectMask::Color,
+            },
+        })
+    }
+}
+
+struct PreviewAssetCache {
+    project_root: PathBuf,
+    layout: MaterialEditorDatabaseLayout,
+    imagery: Option<ImageDB>,
+    leaks: HashMap<String, DatabaseEntry>,
+    textures: HashMap<String, PreviewTextureHandle>,
+}
+
+impl PreviewAssetCache {
+    fn new(root: &Path, layout: &MaterialEditorDatabaseLayout) -> Self {
+        Self {
+            project_root: root.to_path_buf(),
+            layout: layout.clone(),
+            imagery: None,
+            leaks: HashMap::new(),
+            textures: HashMap::new(),
+        }
+    }
+
+    fn reset(&mut self, root: &Path, layout: &MaterialEditorDatabaseLayout) {
+        self.project_root = root.to_path_buf();
+        self.layout = layout.clone();
+        self.imagery = None;
+        self.leaks.clear();
+        self.textures.clear();
+    }
+
+    fn ensure_imagery(
+        &mut self,
+        root: &Path,
+        layout: &MaterialEditorDatabaseLayout,
+        gpu: &mut PreviewGpu,
+    ) {
+        if self.project_root != root || self.layout_changed(layout) {
+            self.reset(root, layout);
+        }
+        if self.imagery.is_none() {
+            let path = self.project_root.join(&self.layout.imagery);
+            if let Some(str_path) = path.to_str() {
+                let ptr = gpu.ctx_ptr();
+                self.imagery = Some(ImageDB::new(ptr, str_path));
+            }
+        }
+    }
+
+    fn texture(&mut self, entry: &str) -> Option<PreviewTextureHandle> {
+        if let Some(handle) = self.textures.get(entry) {
+            return Some(handle.clone());
+        }
+        let leaked = self.leak_entry(entry);
+        let imagery = self.imagery.as_mut()?;
+        let device = imagery.fetch_gpu_image(leaked).ok()?;
+        let handle = PreviewTextureHandle {
+            name: entry.to_string(),
+            view: ImageView {
+                img: device.img,
+                layer: 0,
+                mip_level: 0,
+                aspect: AspectMask::Color,
+            },
+        };
+        self.textures.insert(entry.to_string(), handle.clone());
+        Some(handle)
+    }
+
+    fn leak_entry(&mut self, entry: &str) -> DatabaseEntry {
+        if let Some(existing) = self.leaks.get(entry) {
+            return *existing;
+        }
+        let leaked: DatabaseEntry = Box::leak(entry.to_string().into_boxed_str());
+        self.leaks.insert(entry.to_string(), leaked);
+        leaked
+    }
+
+    fn layout_changed(&self, layout: &MaterialEditorDatabaseLayout) -> bool {
+        self.layout.geometry != layout.geometry
+            || self.layout.imagery != layout.imagery
+            || self.layout.models != layout.models
+            || self.layout.materials != layout.materials
+            || self.layout.render_passes != layout.render_passes
+            || self.layout.shaders != layout.shaders
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PreviewConfig {
+    mesh_kind: PreviewMeshKind,
+    camera: OrbitCamera,
+    background_rgb: [f32; 3],
+    wireframe: bool,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self {
+            mesh_kind: PreviewMeshKind::Sphere,
+            camera: OrbitCamera::default(),
+            background_rgb: [0.12, 0.12, 0.12],
+            wireframe: false,
         }
     }
 }
@@ -492,294 +1074,90 @@ impl Default for OrbitCamera {
     }
 }
 
-struct PreviewMesh {
-    vertices: Vec<PreviewVertex>,
-    indices: Vec<u32>,
+struct BuiltinShader {
+    vertex: ShaderModule,
+    fragment: ShaderModule,
 }
 
-impl PreviewMesh {
-    fn sphere() -> Self {
-        let stacks = 24;
-        let slices = 32;
-        let mut vertices = Vec::new();
-        for stack in 0..=stacks {
-            let v = stack as f32 / stacks as f32;
-            let phi = v * PI;
-            let y = phi.cos();
-            let radius = phi.sin();
-            for slice in 0..=slices {
-                let u = slice as f32 / slices as f32;
-                let theta = u * PI * 2.0;
-                let x = radius * theta.cos();
-                let z = radius * theta.sin();
-                let normal = Vec3::new(x, y, z).normalize();
-                vertices.push(PreviewVertex {
-                    position: normal,
-                    normal,
-                    uv: Vec2::new(u, 1.0 - v),
-                });
-            }
-        }
-
-        let mut indices = Vec::new();
-        for stack in 0..stacks {
-            for slice in 0..slices {
-                let first = (stack * (slices + 1) + slice) as u32;
-                let second = first + slices as u32 + 1;
-                indices.push(first);
-                indices.push(second);
-                indices.push(first + 1);
-                indices.push(second);
-                indices.push(second + 1);
-                indices.push(first + 1);
-            }
-        }
-
-        Self { vertices, indices }
-    }
-
-    fn quad() -> Self {
-        let vertices = vec![
-            PreviewVertex {
-                position: Vec3::new(-1.0, -1.0, 0.0),
-                normal: Vec3::new(0.0, 0.0, 1.0),
-                uv: Vec2::new(0.0, 1.0),
-            },
-            PreviewVertex {
-                position: Vec3::new(1.0, -1.0, 0.0),
-                normal: Vec3::new(0.0, 0.0, 1.0),
-                uv: Vec2::new(1.0, 1.0),
-            },
-            PreviewVertex {
-                position: Vec3::new(1.0, 1.0, 0.0),
-                normal: Vec3::new(0.0, 0.0, 1.0),
-                uv: Vec2::new(1.0, 0.0),
-            },
-            PreviewVertex {
-                position: Vec3::new(-1.0, 1.0, 0.0),
-                normal: Vec3::new(0.0, 0.0, 1.0),
-                uv: Vec2::new(0.0, 0.0),
-            },
-        ];
-        let indices = vec![0, 1, 2, 0, 2, 3];
-        Self { vertices, indices }
-    }
+fn builtin_shader_modules() -> Result<BuiltinShader, String> {
+    let vertex_src = include_str!("../shaders/preview.vert.glsl");
+    let fragment_src = include_str!("../shaders/preview.frag.glsl");
+    let compiler = Compiler::new().ok_or_else(|| "shader compiler unavailable".to_string())?;
+    let vertex = compiler
+        .compile_into_spirv(vertex_src, ShaderKind::Vertex, "preview.vert", "main", None)
+        .map_err(|err| format!("failed to compile preview vertex shader: {err}"))?;
+    let fragment = compiler
+        .compile_into_spirv(
+            fragment_src,
+            ShaderKind::Fragment,
+            "preview.frag",
+            "main",
+            None,
+        )
+        .map_err(|err| format!("failed to compile preview fragment shader: {err}"))?;
+    Ok(BuiltinShader {
+        vertex: ShaderModule::from_words(vertex.as_binary().to_vec()),
+        fragment: ShaderModule::from_words(fragment.as_binary().to_vec()),
+    })
 }
 
-struct PreviewVertex {
-    position: Vec3,
-    normal: Vec3,
-    uv: Vec2,
+fn create_bind_group_layout(ctx: &mut Context) -> Result<Handle<BindGroupLayout>, String> {
+    let vertex_vars = [BindGroupVariable {
+        var_type: BindGroupVariableType::Uniform,
+        binding: 0,
+        count: 1,
+    }];
+    let fragment_vars = [
+        BindGroupVariable {
+            var_type: BindGroupVariableType::Uniform,
+            binding: 0,
+            count: 1,
+        },
+        BindGroupVariable {
+            var_type: BindGroupVariableType::SampledImage,
+            binding: 1,
+            count: 1,
+        },
+    ];
+    let shader_info = [
+        dashi::ShaderInfo {
+            shader_type: ShaderType::Vertex,
+            variables: &vertex_vars,
+        },
+        dashi::ShaderInfo {
+            shader_type: ShaderType::Fragment,
+            variables: &fragment_vars,
+        },
+    ];
+    ctx.make_bind_group_layout(&BindGroupLayoutInfo {
+        debug_name: "preview_bind_group",
+        shaders: &shader_info,
+    })
+    .map_err(|_| "failed to create bind group layout".to_string())
 }
 
-struct PreparedVertex {
-    screen: Vec2,
-    depth: f32,
-    normal: Vec3,
-    uv: Vec2,
-}
-
-struct PreviewMeshCache {
-    sphere: PreviewMesh,
-    quad: PreviewMesh,
-}
-
-impl PreviewMeshCache {
-    fn new() -> Self {
-        Self {
-            sphere: PreviewMesh::sphere(),
-            quad: PreviewMesh::quad(),
-        }
-    }
-
-    fn mesh(&self, kind: PreviewMeshKind) -> &PreviewMesh {
-        match kind {
-            PreviewMeshKind::Sphere => &self.sphere,
-            PreviewMeshKind::Quad => &self.quad,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct PreviewTexture {
-    width: usize,
-    height: usize,
-    data: Vec<[f32; 4]>,
-}
-
-impl PreviewTexture {
-    fn sample(&self, uv: Vec2) -> [f32; 4] {
-        if self.width == 0 || self.height == 0 {
-            return [1.0, 0.0, 1.0, 1.0];
-        }
-        let u = uv.x.fract();
-        let v = uv.y.fract();
-        let u = if u < 0.0 { u + 1.0 } else { u };
-        let v = if v < 0.0 { v + 1.0 } else { v };
-        let x = ((self.width - 1) as f32 * u).round() as usize;
-        let y = ((self.height - 1) as f32 * (1.0 - v)).round() as usize;
-        self.data[y * self.width + x]
-    }
-
-    fn from_host_image(image: HostImage) -> Option<Self> {
-        let width = image.info.dim[0] as usize;
-        let height = image.info.dim[1] as usize;
-        if width == 0 || height == 0 {
-            return None;
-        }
-        let format = image.info.format;
-        let pixels = match format {
-            dashi::Format::RGBA8 | dashi::Format::RGBA8Unorm => {
-                convert_rgba8(&image.data, width, height, false)
-            }
-            dashi::Format::BGRA8 | dashi::Format::BGRA8Unorm => {
-                convert_rgba8(&image.data, width, height, true)
-            }
-            dashi::Format::RGBA32F => convert_rgba32f(&image.data, width, height),
-            _ => return None,
-        };
-        Some(Self {
-            width,
-            height,
-            data: pixels,
-        })
-    }
-}
-
-#[derive(Default)]
-struct PreviewAssetCache {
-    project_root: PathBuf,
-    layout: MaterialEditorDatabaseLayout,
-    imagery_view: Option<RDBView>,
-    shader_view: Option<RDBView>,
-    textures: HashMap<String, PreviewTexture>,
-    shader_modules: HashSet<String>,
-}
-
-impl PreviewAssetCache {
-    fn ensure_paths(&mut self, root: &Path, layout: &MaterialEditorDatabaseLayout) {
-        if self.project_root != root || self.layout_paths_changed(layout) {
-            self.project_root = root.to_path_buf();
-            self.layout = layout.clone();
-            self.imagery_view = None;
-            self.shader_view = None;
-            self.textures.clear();
-            self.shader_modules.clear();
-        }
-    }
-
-    fn layout_paths_changed(&self, layout: &MaterialEditorDatabaseLayout) -> bool {
-        self.layout.geometry != layout.geometry
-            || self.layout.imagery != layout.imagery
-            || self.layout.materials != layout.materials
-            || self.layout.models != layout.models
-            || self.layout.render_passes != layout.render_passes
-            || self.layout.shaders != layout.shaders
-    }
-
-    fn texture(&mut self, entry: &str) -> Option<PreviewTexture> {
-        if let Some(texture) = self.textures.get(entry) {
-            return Some(texture.clone());
-        }
-        let view = self.imagery_view(entry).ok()?;
-        let host: HostImage = view.fetch(entry).ok()?;
-        let texture = PreviewTexture::from_host_image(host)?;
-        self.textures.insert(entry.to_string(), texture.clone());
-        Some(texture)
-    }
-
-    fn imagery_view(&mut self, entry: &str) -> Result<&mut RDBView, ()> {
-        if self.imagery_view.is_none() {
-            let path = self.project_root.join(&self.layout.imagery);
-            self.imagery_view = RDBView::load(&path).ok();
-        }
-        self.imagery_view
-            .as_mut()
-            .ok_or_else(|| log_missing(&self.layout.imagery, entry))
-    }
-
-    fn ensure_shader_module(&mut self, entry: &str) -> bool {
-        if self.shader_modules.contains(entry) {
-            return true;
-        }
-        let Some(view) = self.shader_view(entry) else {
-            return false;
-        };
-        if view.fetch::<ShaderModule>(entry).is_ok() {
-            self.shader_modules.insert(entry.to_string());
-            true
-        } else {
-            false
-        }
-    }
-
-    fn shader_view(&mut self, entry: &str) -> Option<&mut RDBView> {
-        if self.shader_view.is_none() {
-            let path = self.project_root.join(&self.layout.shaders);
-            self.shader_view = RDBView::load(&path).ok();
-        }
-        if self.shader_view.is_none() {
-            log_missing(&self.layout.shaders, entry);
-        }
-        self.shader_view.as_mut()
-    }
-}
-
-fn log_missing(_path: &str, _entry: &str) -> () {
-    ()
-}
-
-fn convert_rgba8(data: &[u8], width: usize, height: usize, bgra: bool) -> Vec<[f32; 4]> {
-    let mut pixels = vec![[0.0; 4]; width * height];
-    for (i, chunk) in data.chunks_exact(4).take(width * height).enumerate() {
-        let (r, g, b, a) = if bgra {
-            (chunk[2], chunk[1], chunk[0], chunk[3])
-        } else {
-            (chunk[0], chunk[1], chunk[2], chunk[3])
-        };
-        pixels[i] = [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
-        ];
-    }
-    pixels
-}
-
-fn convert_rgba32f(data: &[u8], width: usize, height: usize) -> Vec<[f32; 4]> {
-    let mut pixels = vec![[0.0; 4]; width * height];
-    let floats: &[f32] = bytemuck::cast_slice(data);
-    for (i, chunk) in floats.chunks_exact(4).take(width * height).enumerate() {
-        pixels[i] = [chunk[0], chunk[1], chunk[2], chunk[3]];
-    }
-    pixels
-}
-
-fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> Option<Vec3> {
-    let v0 = b - a;
-    let v1 = c - a;
-    let v2 = p - a;
-    let d00 = v0.dot(v0);
-    let d01 = v0.dot(v1);
-    let d11 = v1.dot(v1);
-    let d20 = v2.dot(v0);
-    let d21 = v2.dot(v1);
-    let denom = d00 * d11 - d01 * d01;
-    if denom.abs() < f32::EPSILON {
-        return None;
-    }
-    let v = (d11 * d20 - d01 * d21) / denom;
-    let w = (d00 * d21 - d01 * d20) / denom;
-    let u = 1.0 - v - w;
-    Some(Vec3::new(u, v, w))
-}
-
-fn to_color32(color: [f32; 4]) -> Color32 {
-    Color32::from_rgba_unmultiplied(
-        (color[0].clamp(0.0, 1.0) * 255.0) as u8,
-        (color[1].clamp(0.0, 1.0) * 255.0) as u8,
-        (color[2].clamp(0.0, 1.0) * 255.0) as u8,
-        (color[3].clamp(0.0, 1.0) * 255.0) as u8,
-    )
+fn create_bind_group(
+    ctx: &mut Context,
+    layout: Handle<BindGroupLayout>,
+    uniform_buffer: Handle<dashi::Buffer>,
+    sampler: Handle<dashi::Sampler>,
+    view: ImageView,
+) -> Result<Handle<dashi::BindGroup>, String> {
+    let bindings = [
+        dashi::BindingInfo {
+            resource: dashi::ShaderResource::ConstBuffer(dashi::BufferView::new(uniform_buffer)),
+            binding: 0,
+        },
+        dashi::BindingInfo {
+            resource: dashi::ShaderResource::SampledImage(view, sampler),
+            binding: 1,
+        },
+    ];
+    ctx.make_bind_group(&dashi::BindGroupInfo {
+        debug_name: "preview_bind_group",
+        layout,
+        bindings: &bindings,
+        set: 0,
+    })
+    .map_err(|_| "failed to create bind group".to_string())
 }
