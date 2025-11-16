@@ -54,6 +54,7 @@ impl ImageInfo {
             format: self.format,
             mip_levels: self.mip_levels,
             initial_data: None,
+            ..Default::default()
         }
     }
 

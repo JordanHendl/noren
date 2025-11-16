@@ -413,6 +413,11 @@ impl PreviewGpu {
             1.0,
         ]);
 
+        let depthclear = ClearValue::DepthStencil {
+            depth: 1.0,
+            stencil: 0,
+        };
+
         self.ring
             .record(|cmd| {
                 let stream = CommandStream::new().begin();
@@ -421,7 +426,7 @@ impl PreviewGpu {
                     render_pass: self.render_pass,
                     color_attachments: [Some(self.target.color_view), None, None, None],
                     depth_attachment: Some(self.target.depth_view),
-                    clear_values: [Some(clear), None, None, None],
+                    clear_values: [Some(clear), Some(depthclear), None, None],
                 };
                 let pending = stream.begin_render_pass(&begin_pass);
                 let mut drawing = pending.bind_graphics_pipeline(self.pipeline.pipeline);
@@ -551,6 +556,7 @@ impl PreviewTarget {
                 format: Format::RGBA8,
                 mip_levels: 1,
                 initial_data: None,
+                ..Default::default()
             })
             .map_err(|_| "failed to create color target".to_string())?;
         let depth = ctx
@@ -561,19 +567,18 @@ impl PreviewTarget {
                 format: Format::D24S8,
                 mip_levels: 1,
                 initial_data: None,
+                ..Default::default()
             })
             .map_err(|_| "failed to create depth target".to_string())?;
 
         let color_view = ImageView {
             img: color,
-            layer: 0,
-            mip_level: 0,
+            range: Default::default(),
             aspect: AspectMask::Color,
         };
         let depth_view = ImageView {
             img: depth,
-            layer: 0,
-            mip_level: 0,
+            range: Default::default(),
             aspect: AspectMask::DepthStencil,
         };
         let readback = ctx
@@ -929,14 +934,14 @@ impl PreviewTextureHandle {
                 format: Format::RGBA8,
                 mip_levels: 1,
                 initial_data: Some(&rgba),
+                ..Default::default()
             })
             .map_err(|_| "failed to create fallback texture".to_string())?;
         Ok(Self {
             name: "fallback".into(),
             view: ImageView {
                 img: image,
-                layer: 0,
-                mip_level: 0,
+                range: Default::default(),
                 aspect: AspectMask::Color,
             },
         })
@@ -999,8 +1004,7 @@ impl PreviewAssetCache {
             name: entry.to_string(),
             view: ImageView {
                 img: device.img,
-                layer: 0,
-                mip_level: 0,
+                range: Default::default(),
                 aspect: AspectMask::Color,
             },
         };
