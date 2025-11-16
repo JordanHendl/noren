@@ -33,10 +33,6 @@ path = "src/exec/dbgen/bin.rs"
 name = "rdbinspect"
 path = "src/exec/rdbinspect/bin.rs"
 
-[[bin]]
-name = "material_editor"
-path = "src/exec/material_editor/bin.rs"
-
 [dev-dependencies]
 rand = "0.8"
 tempfile = "3"
