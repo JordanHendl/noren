@@ -1,8 +1,8 @@
 pub mod datatypes;
+mod material_bindings;
 pub mod meta;
 pub mod parsing;
 mod utils;
-mod material_bindings;
 use std::{io::ErrorKind, ptr::NonNull};
 
 use crate::{datatypes::primitives::Vertex, material_bindings::texture_binding_slots};
@@ -177,7 +177,11 @@ impl DB {
                 textures,
                 material,
             },
-            |name, meshes| HostModel { name, meshes },
+            |name, render_passes, meshes| HostModel {
+                name,
+                render_passes,
+                meshes,
+            },
             |shader_db, _render_passes, shader_key, shader_layout| {
                 Self::load_graphics_shader(shader_db, shader_key, shader_layout)
             },
@@ -193,7 +197,11 @@ impl DB {
             |_, image| DeviceTexture::new(image),
             |_, textures, shader| DeviceMaterial::new(textures, shader),
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
-            |name, meshes| DeviceModel { name, meshes },
+            |name, render_passes, meshes| DeviceModel {
+                name,
+                render_passes,
+                meshes,
+            },
             move |shader_db, render_passes, shader_key, shader_layout| {
                 let mut shader_opt =
                     Self::load_graphics_shader(shader_db, shader_key, shader_layout)?;
@@ -251,6 +259,20 @@ impl DB {
 
         Ok(shader)
     }
+
+    pub fn model_render_passes(&self, entry: DatabaseEntry) -> Result<Vec<String>, NorenError> {
+        let layout = self
+            .model_file
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let model = layout
+            .models
+            .get(entry)
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        Ok(collect_model_render_passes(layout, model))
+    }
 }
 
 fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
@@ -277,6 +299,30 @@ where
         }
     }
     Ok(())
+}
+
+fn collect_model_render_passes(layout: &ModelLayoutFile, model: &ModelLayout) -> Vec<String> {
+    let mut passes = Vec::new();
+
+    for mesh_key in &model.meshes {
+        if let Some(mesh) = layout.meshes.get(mesh_key) {
+            if let Some(material_key) = mesh.material.as_ref() {
+                if let Some(material) = layout.materials.get(material_key) {
+                    if let Some(shader_key) = material.shader.as_ref() {
+                        if let Some(shader_layout) = layout.shaders.get(shader_key) {
+                            if let Some(render_pass) = shader_layout.render_pass.as_ref() {
+                                if !passes.contains(render_pass) {
+                                    passes.push(render_pass.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    passes
 }
 
 fn normalize_binding_entries(
@@ -332,7 +378,7 @@ impl DB {
         MakeTexture: FnMut(String, Image) -> Texture,
         MakeMaterial: FnMut(String, Vec<Texture>, Option<Shader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
-        MakeModel: FnMut(String, Vec<Mesh>) -> Model,
+        MakeModel: FnMut(String, Vec<String>, Vec<Mesh>) -> Model,
         LoadShader: FnMut(
             &mut ShaderDB,
             &mut RenderPassDB,
@@ -351,6 +397,7 @@ impl DB {
             .ok_or_else(|| NorenError::LookupFailure())?;
 
         let model_name = model.name.clone().unwrap_or_else(|| entry.to_string());
+        let mut model_render_passes = collect_model_render_passes(layout, model);
         let mut meshes = Vec::new();
 
         for mesh_key in &model.meshes {
@@ -387,6 +434,11 @@ impl DB {
                     let mut textures = Vec::new();
                     if let Some(shader_key) = material_def.shader.as_deref() {
                         if let Some(shader_layout) = layout.shaders.get(shader_key) {
+                            if let Some(render_pass) = shader_layout.render_pass.as_ref() {
+                                if !model_render_passes.contains(render_pass) {
+                                    model_render_passes.push(render_pass.clone());
+                                }
+                            }
                             let slots = texture_binding_slots(shader_layout);
                             if slots.is_empty() {
                                 append_texture_bindings(
@@ -486,7 +538,7 @@ impl DB {
             meshes.push(make_mesh(mesh_name, geometry, mesh_textures, material));
         }
 
-        Ok(make_model(model_name, meshes))
+        Ok(make_model(model_name, model_render_passes, meshes))
     }
 
     fn load_graphics_shader(
