@@ -2,19 +2,24 @@ pub mod datatypes;
 mod material_bindings;
 pub mod meta;
 pub mod parsing;
+pub mod render_graph;
 mod utils;
 use std::{io::ErrorKind, ptr::NonNull};
 
-use crate::{datatypes::primitives::Vertex, material_bindings::texture_binding_slots};
+use crate::{
+    datatypes::primitives::Vertex,
+    material_bindings::texture_binding_slots,
+    render_graph::{PipelineFactory, RenderGraph, RenderGraphRequest},
+};
 use datatypes::*;
 use meta::*;
 use parsing::*;
 use utils::*;
 
 use dashi::{
-    BindGroupLayout, BindTableLayout, Context, GraphicsPipelineDetails, GraphicsPipelineInfo,
-    GraphicsPipelineLayoutInfo, Handle, PipelineShaderInfo, RenderPass, ShaderPrimitiveType,
-    ShaderType, VertexDescriptionInfo, VertexEntryInfo, VertexRate,
+    BindGroupLayout, BindTableLayout, Context, GraphicsPipelineDetails, GraphicsPipelineLayoutInfo,
+    Handle, PipelineShaderInfo, RenderPass, ShaderPrimitiveType, ShaderType, VertexDescriptionInfo,
+    VertexEntryInfo, VertexRate,
 };
 
 pub use parsing::DatabaseLayoutFile;
@@ -290,6 +295,43 @@ impl DB {
         )?;
 
         Ok(shader)
+    }
+
+    pub fn create_render_graph(
+        &mut self,
+        request: RenderGraphRequest,
+    ) -> Result<RenderGraph, NorenError> {
+        let layout = self
+            .model_file
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+        let mut factory = PipelineFactory::new(ctx, &mut self.shaders, &mut self.render_passes);
+
+        let mut graph = RenderGraph::default();
+        for shader_key in request.shaders {
+            let shader_layout = layout
+                .shaders
+                .get(&shader_key)
+                .ok_or_else(|| NorenError::LookupFailure())?;
+
+            let render_pass_key = shader_layout
+                .render_pass
+                .as_deref()
+                .ok_or_else(|| NorenError::MissingRenderPass(shader_key.clone()))?;
+
+            let (render_pass, binding) =
+                factory.make_pipeline(&shader_key, shader_layout, render_pass_key)?;
+
+            graph
+                .render_passes
+                .entry(render_pass_key.to_string())
+                .or_insert(render_pass);
+            graph.pipelines.insert(shader_key, binding);
+        }
+
+        Ok(graph)
     }
 }
 
@@ -674,7 +716,7 @@ impl DB {
         Ok(make_model(model_name, meshes))
     }
 
-    fn load_graphics_shader(
+    pub(crate) fn load_graphics_shader(
         shaders: &mut ShaderDB,
         shader_key: &str,
         layout: &GraphicsShaderLayout,
@@ -726,21 +768,13 @@ impl DB {
         }
     }
 
-    fn configure_graphics_shader_pipeline(
+    pub(crate) fn configure_graphics_shader_pipeline(
         shader: &mut GraphicsShader,
         layout: &GraphicsShaderLayout,
         ctx: &mut Context,
         render_pass_key: &str,
         render_passes: &mut RenderPassDB,
     ) -> Result<(), NorenError> {
-        let render_pass = match render_passes.fetch(render_pass_key, ctx) {
-            Ok(handle) => handle,
-            Err(NorenError::LookupFailure()) => {
-                return Err(NorenError::UnknownRenderPass(render_pass_key.to_string()));
-            }
-            Err(err) => return Err(err),
-        };
-
         let mut bg_handles: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
         for (index, cfg_opt) in layout.bind_group_layouts.iter().enumerate() {
             if index >= bg_handles.len() {
@@ -849,11 +883,18 @@ impl DB {
             .make_graphics_pipeline_layout(&layout_info)
             .map_err(|_| NorenError::UploadFailure())?;
 
-        let pipeline_info = GraphicsPipelineInfo {
-            debug_name: &shader.name,
-            layout: pipeline_layout,
-            render_pass,
-            subpass_id: layout.subpass,
+        let pipeline_info = match render_passes.pipeline_info(
+            render_pass_key,
+            layout.subpass,
+            pipeline_layout,
+            &shader.name,
+            ctx,
+        ) {
+            Ok(info) => info,
+            Err(NorenError::LookupFailure()) => {
+                return Err(NorenError::UnknownRenderPass(render_pass_key.to_string()));
+            }
+            Err(err) => return Err(err),
         };
 
         let pipeline = ctx
@@ -868,7 +909,7 @@ impl DB {
         Ok(())
     }
 
-    fn load_optional_shader_stage(
+    pub(crate) fn load_optional_shader_stage(
         shaders: &mut ShaderDB,
         entry: Option<&str>,
     ) -> Result<Option<ShaderStage>, NorenError> {
@@ -881,12 +922,15 @@ impl DB {
         }
     }
 
-    fn load_shader_stage(shaders: &mut ShaderDB, entry: &str) -> Result<ShaderStage, NorenError> {
+    pub(crate) fn load_shader_stage(
+        shaders: &mut ShaderDB,
+        entry: &str,
+    ) -> Result<ShaderStage, NorenError> {
         let module = Self::fetch_shader_module(shaders, entry)?;
         Ok(ShaderStage::new(entry.to_string(), module))
     }
 
-    fn fetch_shader_module(
+    pub(crate) fn fetch_shader_module(
         shaders: &mut ShaderDB,
         entry: &str,
     ) -> Result<ShaderModule, NorenError> {

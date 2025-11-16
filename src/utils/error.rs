@@ -31,6 +31,7 @@ pub enum NorenError {
     DataFailure(),
     MissingRenderPass(String),
     UnknownRenderPass(String),
+    InvalidRenderPass(String),
     InvalidMaterial(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
     JSONError(serde_json::Error),
@@ -55,6 +56,9 @@ impl std::fmt::Display for NorenError {
             ),
             NorenError::UnknownRenderPass(pass) => {
                 write!(f, "Render pass '{}' could not be found.", pass)
+            }
+            NorenError::InvalidRenderPass(reason) => {
+                write!(f, "Invalid render pass configuration: {}", reason)
             }
             NorenError::InvalidMaterial(reason) => {
                 write!(f, "Invalid material: {}", reason)
@@ -153,6 +157,10 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::UnknownRenderPass("pass".into())),
             "Render pass 'pass' could not be found."
+        );
+        assert_eq!(
+            format!("{}", NorenError::InvalidRenderPass("bad subpass".into())),
+            "Invalid render pass configuration: bad subpass"
         );
         assert_eq!(
             format!("{}", NorenError::InvalidMaterial("reason".into())),
