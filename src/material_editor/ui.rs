@@ -6,6 +6,7 @@ use std::{
 use eframe::egui::{self, Color32, RichText};
 
 use crate::{
+    material_bindings::{TextureBindingKind, TextureBindingSlot, texture_binding_slots},
     material_editor::{
         preview::MaterialPreviewPanel,
         project::{
@@ -14,6 +15,7 @@ use crate::{
         },
     },
     material_editor_types::MaterialEditorMaterial,
+    parsing::GraphicsShaderLayout,
 };
 
 pub struct MaterialEditorApp {
@@ -309,6 +311,10 @@ impl MaterialEditorApp {
         });
 
         let mut changed = false;
+        let (schema, normalized) = self.normalize_material(&mut working);
+        if normalized {
+            changed = true;
+        }
         ui.separator();
         ui.label("Display name");
         let mut display_name = working.name.clone().unwrap_or_default();
@@ -338,40 +344,42 @@ impl MaterialEditorApp {
 
         ui.separator();
         ui.label("Texture bindings");
-        let mut removal: Option<usize> = None;
-        for (index, texture) in working.textures.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("Slot {}", index + 1));
-                let label = if texture.is_empty() {
-                    "<unassigned>".to_string()
-                } else {
-                    texture.clone()
-                };
-                ui.label(RichText::new(label).monospace());
-                if ui.small_button("Pick").clicked() {
-                    let initial = if texture.is_empty() {
-                        None
-                    } else {
-                        Some(texture.clone())
-                    };
-                    self.open_picker(PickerKind::Texture { slot: index }, initial);
+        if let Some(slots) = &schema {
+            if slots.is_empty() {
+                ui.label("Selected shader does not expose texture bindings");
+            } else {
+                for (index, slot) in slots.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(self.binding_slot_label(slot));
+                        let texture = working
+                            .textures
+                            .get_mut(index)
+                            .expect("binding slots sync ensures length");
+                        let label = if texture.trim().is_empty() {
+                            "<default>".to_string()
+                        } else {
+                            texture.clone()
+                        };
+                        ui.label(RichText::new(label).monospace());
+                        if ui.small_button("Pick").clicked() {
+                            let initial = if texture.trim().is_empty() {
+                                None
+                            } else {
+                                Some(texture.clone())
+                            };
+                            self.open_picker(PickerKind::Texture { slot: index }, initial);
+                        }
+                        if !matches!(slot.kind, TextureBindingKind::BindGroup { .. })
+                            && ui.small_button("Clear").clicked()
+                        {
+                            texture.clear();
+                            changed = true;
+                        }
+                    });
                 }
-                if ui.small_button("Remove").clicked() {
-                    removal = Some(index);
-                }
-            });
-        }
-        if let Some(index) = removal {
-            if index < working.textures.len() {
-                working.textures.remove(index);
-                changed = true;
             }
-        }
-        if ui.button("Add texture binding").clicked() {
-            working.textures.push(String::new());
-            let slot = working.textures.len() - 1;
-            self.open_picker(PickerKind::Texture { slot }, None);
-            changed = true;
+        } else {
+            ui.label("Assign a shader to configure texture bindings");
         }
 
         if !preview_meshes.is_empty() {
@@ -423,28 +431,36 @@ impl MaterialEditorApp {
             None => messages.push("Material does not reference a shader".to_string()),
         }
 
-        if data.textures.is_empty() {
-            messages.push("No textures are bound to this material".to_string());
-        }
-
-        let mut seen: HashSet<String> = HashSet::new();
-        for (index, texture) in data.textures.iter().enumerate() {
-            if texture.trim().is_empty() {
-                messages.push(format!("Texture slot {} is unassigned", index + 1));
-                continue;
+        if let Some(slots) = self.binding_schema(data) {
+            let mut seen: HashSet<String> = HashSet::new();
+            for (index, slot) in slots.iter().enumerate() {
+                let value = data
+                    .textures
+                    .get(index)
+                    .map(|entry| entry.trim())
+                    .unwrap_or("");
+                if value.is_empty() {
+                    if matches!(slot.kind, TextureBindingKind::BindGroup { .. }) {
+                        messages.push(format!("{} is unassigned", self.binding_slot_label(slot)));
+                    }
+                    continue;
+                }
+                if !self.state.graph.textures.contains_key(value) {
+                    messages.push(format!("Texture '{}' is missing", value));
+                }
+                if !seen.insert(value.to_string()) {
+                    messages.push(format!("Texture '{}' is bound multiple times", value));
+                }
             }
-            if !self.state.graph.textures.contains_key(texture) {
-                messages.push(format!("Texture '{}' is missing", texture));
-            }
-            if !seen.insert(texture.clone()) {
-                messages.push(format!("Texture '{}' is bound multiple times", texture));
-            }
+        } else if data.shader.is_some() {
+            messages.push("Unable to derive texture bindings for the selected shader".to_string());
         }
 
         messages
     }
 
-    fn persist_material_data(&mut self, id: &str, data: MaterialEditorMaterial) {
+    fn persist_material_data(&mut self, id: &str, mut data: MaterialEditorMaterial) {
+        let _ = self.normalize_material(&mut data);
         let snapshot = if let Some(graph_material) = self.state.graph.materials.get_mut(id) {
             graph_material.resource.update(data);
             graph_material.referenced_textures = graph_material.resource.data.textures.clone();
@@ -565,40 +581,88 @@ impl MaterialEditorApp {
         let Some(material_id) = self.selected_material.clone() else {
             return;
         };
-        self.update_material_data(&material_id, |material| match kind {
-            PickerKind::Shader => {
-                material.shader = choice.filter(|value| !value.is_empty());
-                true
-            }
-            PickerKind::Texture { slot } => {
-                if slot >= material.textures.len() {
-                    return false;
-                }
-                if let Some(value) = choice.filter(|value| !value.is_empty()) {
-                    material.textures[slot] = value;
-                } else {
-                    material.textures.remove(slot);
-                }
-                true
-            }
-        });
-    }
-
-    fn update_material_data<F>(&mut self, material_id: &str, edit: F)
-    where
-        F: FnOnce(&mut MaterialEditorMaterial) -> bool,
-    {
-        let Some(mut working) = self
+        let Some(mut material) = self
             .state
             .graph
             .materials
-            .get(material_id)
-            .map(|material| material.resource.data.clone())
+            .get(&material_id)
+            .map(|mat| mat.resource.data.clone())
         else {
             return;
         };
-        if edit(&mut working) {
-            self.persist_material_data(material_id, working);
+        let mut changed = false;
+        match kind {
+            PickerKind::Shader => {
+                let new_value = choice.filter(|value| !value.is_empty());
+                if material.shader != new_value {
+                    material.shader = new_value;
+                    changed = true;
+                }
+            }
+            PickerKind::Texture { slot } => {
+                if slot >= material.textures.len() {
+                    return;
+                }
+                if let Some(value) = choice.filter(|value| !value.is_empty()) {
+                    if material.textures[slot] != value {
+                        material.textures[slot] = value;
+                        changed = true;
+                    }
+                } else if !material.textures[slot].is_empty() {
+                    material.textures[slot].clear();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist_material_data(&material_id, material);
+        }
+    }
+
+    fn binding_schema(&self, material: &MaterialEditorMaterial) -> Option<Vec<TextureBindingSlot>> {
+        let shader_id = material.shader.as_ref()?;
+        let graph_shader = self.state.graph.shaders.get(shader_id)?;
+        let layout: GraphicsShaderLayout = graph_shader.resource.data.clone().into();
+        Some(texture_binding_slots(&layout))
+    }
+
+    fn normalize_material(
+        &self,
+        material: &mut MaterialEditorMaterial,
+    ) -> (Option<Vec<TextureBindingSlot>>, bool) {
+        let schema = self.binding_schema(material);
+        let changed = self.sync_binding_slots(material, schema.as_ref());
+        (schema, changed)
+    }
+
+    fn sync_binding_slots(
+        &self,
+        material: &mut MaterialEditorMaterial,
+        schema: Option<&Vec<TextureBindingSlot>>,
+    ) -> bool {
+        let Some(slots) = schema else {
+            return false;
+        };
+        let mut changed = false;
+        if material.textures.len() > slots.len() {
+            material.textures.truncate(slots.len());
+            changed = true;
+        }
+        while material.textures.len() < slots.len() {
+            material.textures.push(String::new());
+            changed = true;
+        }
+        changed
+    }
+
+    fn binding_slot_label(&self, slot: &TextureBindingSlot) -> String {
+        match slot.kind {
+            TextureBindingKind::BindGroup { group, binding } => {
+                format!("Set {} binding {} [{}]", group, binding, slot.element)
+            }
+            TextureBindingKind::BindTable { table, binding } => {
+                format!("Table {} binding {} [{}]", table, binding, slot.element)
+            }
         }
     }
 

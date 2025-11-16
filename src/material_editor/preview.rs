@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     f32::consts::PI,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
 };
 
@@ -21,9 +22,15 @@ use glam::{Mat3, Mat4, Vec3};
 use shaderc::{Compiler, ShaderKind};
 
 use crate::{
-    datatypes::{DatabaseEntry, imagery::ImageDB, primitives::Vertex, shader::ShaderModule},
+    datatypes::{
+        DatabaseEntry, ImageDB, ShaderDB, ShaderModule, leak_database_entry, primitives::Vertex,
+    },
+    material_bindings::{TextureBindingKind, TextureBindingSlot, texture_binding_slots},
     material_editor::project::{GraphTexture, MaterialEditorProjectState},
-    material_editor_types::{MaterialEditorDatabaseLayout, MaterialEditorMaterial},
+    material_editor_types::{
+        MaterialEditorDatabaseLayout, MaterialEditorGraphicsShader, MaterialEditorMaterial,
+    },
+    parsing::GraphicsShaderLayout,
 };
 
 const PREVIEW_WIDTH: usize = 320;
@@ -208,12 +215,46 @@ impl PreviewRenderer {
             self.assets
                 .ensure_imagery(state.root(), &state.layout, gpu_for_assets);
         }
+        self.assets.ensure_shaders(state.root(), &state.layout);
 
-        let texture = self.resolve_texture(material, state, &mut warnings);
+        let (_slots, textures) = match self.resolve_textures(material, state, &mut warnings) {
+            Some(result) => result,
+            None => {
+                warnings.push(
+                    "Shader information unavailable; preview will use fallback colors".into(),
+                );
+                (Vec::new(), Vec::new())
+            }
+        };
 
+        let texture = textures.iter().flatten().next().cloned();
         if texture.is_none() {
             warnings.push("No previewable texture bindings; using fallback colors".to_string());
         }
+
+        let shader_label = material
+            .shader
+            .as_deref()
+            .unwrap_or("builtin_preview")
+            .to_string();
+        let shader_modules = match material.shader.as_deref() {
+            Some(shader_id) => match state.graph.shaders.get(shader_id) {
+                Some(shader) => {
+                    match self.assets.shader_modules(shader_id, &shader.resource.data) {
+                        Ok(mods) => Some(mods),
+                        Err(err) => {
+                            warnings.push(err);
+                            None
+                        }
+                    }
+                }
+                None => {
+                    warnings.push(format!("Shader '{shader_id}' is missing"));
+                    None
+                }
+            },
+            None => None,
+        };
 
         let gpu = self
             .gpu
@@ -235,6 +276,10 @@ impl PreviewRenderer {
             background,
             light_dir,
             &mut self.image,
+            &shader_label,
+            shader_modules
+                .as_ref()
+                .map(|modules| (&modules.vertex, &modules.fragment)),
         );
 
         if let Err(err) = render_result {
@@ -253,31 +298,66 @@ impl PreviewRenderer {
         }
     }
 
-    fn resolve_texture(
+    fn resolve_textures(
         &mut self,
         material: &MaterialEditorMaterial,
         state: &MaterialEditorProjectState,
         warnings: &mut Vec<String>,
-    ) -> Option<PreviewTextureHandle> {
-        for texture_id in &material.textures {
-            let Some(GraphTexture { resource }) = state.graph.textures.get(texture_id) else {
-                warnings.push(format!("Texture '{texture_id}' is missing"));
+    ) -> Option<(Vec<TextureBindingSlot>, Vec<Option<PreviewTextureHandle>>)> {
+        let shader_id = material.shader.as_ref()?;
+        let shader = state.graph.shaders.get(shader_id)?;
+        let layout: GraphicsShaderLayout = shader.resource.data.clone().into();
+        let slots = texture_binding_slots(&layout);
+        let mut handles = Vec::with_capacity(slots.len());
+        for (index, slot) in slots.iter().enumerate() {
+            let value = material
+                .textures
+                .get(index)
+                .map(|entry| entry.trim())
+                .unwrap_or("");
+            if value.is_empty() {
+                if matches!(slot.kind, TextureBindingKind::BindGroup { .. }) {
+                    warnings.push(format!(
+                        "{} is unassigned; preview will use fallback colors",
+                        Self::describe_slot(slot)
+                    ));
+                }
+                handles.push(None);
+                continue;
+            }
+            let Some(GraphTexture { resource }) = state.graph.textures.get(value) else {
+                warnings.push(format!("Texture '{value}' is missing"));
+                handles.push(None);
                 continue;
             };
             let image_entry = resource.data.image.clone();
             if image_entry.is_empty() {
-                warnings.push(format!("Texture '{texture_id}' does not reference imagery"));
+                warnings.push(format!("Texture '{value}' does not reference imagery"));
+                handles.push(None);
                 continue;
             }
             if let Some(texture) = self.assets.texture(&image_entry) {
-                return Some(texture);
+                handles.push(Some(texture));
+            } else {
+                warnings.push(format!(
+                    "Failed to load imagery '{}' for texture '{}'",
+                    image_entry, value
+                ));
+                handles.push(None);
             }
-            warnings.push(format!(
-                "Failed to load imagery '{}' for texture '{}'",
-                image_entry, texture_id
-            ));
         }
-        None
+        Some((slots, handles))
+    }
+
+    fn describe_slot(slot: &TextureBindingSlot) -> String {
+        match slot.kind {
+            TextureBindingKind::BindGroup { group, binding } => {
+                format!("Set {} binding {} [{}]", group, binding, slot.element)
+            }
+            TextureBindingKind::BindTable { table, binding } => {
+                format!("Table {} binding {} [{}]", table, binding, slot.element)
+            }
+        }
     }
 
     fn image(&self) -> &ColorImage {
@@ -295,12 +375,14 @@ struct PreviewGpu {
     ring: CommandRing,
     render_pass: Handle<dashi::RenderPass>,
     target: PreviewTarget,
-    pipeline: PreviewPipeline,
+    pipeline: Option<PreviewPipeline>,
+    pipeline_signature: Option<PreviewShaderSignature>,
     sampler: Handle<dashi::Sampler>,
     bind_group_layout: Handle<BindGroupLayout>,
     uniform_buffer: Handle<dashi::Buffer>,
     fallback_texture: PreviewTextureHandle,
     bind_groups: HashMap<String, Handle<dashi::BindGroup>>,
+    builtin_shader: BuiltinShader,
 }
 
 impl PreviewGpu {
@@ -372,20 +454,21 @@ impl PreviewGpu {
         let mut bind_groups = HashMap::new();
         bind_groups.insert("fallback".to_string(), bind_group);
 
-        let shader = builtin_shader_modules()?;
-        let pipeline = PreviewPipeline::new(&mut ctx, render_pass, bind_group_layout, &shader)?;
+        let builtin_shader = builtin_shader_modules()?;
 
         Ok(Self {
             ctx,
             ring,
             render_pass,
             target,
-            pipeline,
+            pipeline: None,
+            pipeline_signature: None,
             sampler,
             bind_group_layout,
             uniform_buffer,
             fallback_texture,
             bind_groups,
+            builtin_shader,
         })
     }
 
@@ -397,7 +480,15 @@ impl PreviewGpu {
         background: Color32,
         light_dir: Vec3,
         image: &mut ColorImage,
+        shader_label: &str,
+        shader_modules: Option<(&ShaderModule, &ShaderModule)>,
     ) -> Result<(), String> {
+        self.ensure_pipeline(shader_label, shader_modules)?;
+        let pipeline_handle = self
+            .pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.pipeline)
+            .ok_or_else(|| "preview pipeline unavailable".to_string())?;
         let has_texture = texture.is_some();
         self.update_uniforms(config, light_dir, has_texture)?;
         let resolved_texture = match texture {
@@ -429,7 +520,7 @@ impl PreviewGpu {
                     clear_values: [Some(clear), Some(depthclear), None, None],
                 };
                 let pending = stream.begin_render_pass(&begin_pass);
-                let mut drawing = pending.bind_graphics_pipeline(self.pipeline.pipeline);
+                let mut drawing = pending.bind_graphics_pipeline(pipeline_handle);
                 let mut draw_cmd = DrawIndexed::default();
                 draw_cmd.vertices = mesh.vertex_buffer;
                 draw_cmd.indices = mesh.index_buffer;
@@ -464,6 +555,36 @@ impl PreviewGpu {
 
     fn ctx_ptr(&mut self) -> *mut Context {
         &mut self.ctx as *mut _
+    }
+
+    fn ensure_pipeline(
+        &mut self,
+        shader_label: &str,
+        shader_modules: Option<(&ShaderModule, &ShaderModule)>,
+    ) -> Result<(), String> {
+        let (vertex, fragment, label) = match shader_modules {
+            Some((vertex, fragment)) => (vertex, fragment, shader_label),
+            None => (
+                &self.builtin_shader.vertex,
+                &self.builtin_shader.fragment,
+                "builtin_preview",
+            ),
+        };
+
+        let signature = PreviewShaderSignature::from_modules(label, vertex, fragment);
+        if self.pipeline_signature.as_ref() != Some(&signature) {
+            let pipeline = PreviewPipeline::new(
+                &mut self.ctx,
+                self.render_pass,
+                self.bind_group_layout,
+                vertex,
+                fragment,
+                label,
+            )?;
+            self.pipeline = Some(pipeline);
+            self.pipeline_signature = Some(signature);
+        }
+        Ok(())
     }
 
     fn bind_group_for(
@@ -539,7 +660,6 @@ impl PreviewGpu {
 
 struct PreviewTarget {
     color: Handle<dashi::Image>,
-    depth: Handle<dashi::Image>,
     color_view: ImageView,
     depth_view: ImageView,
     readback: Handle<dashi::Buffer>,
@@ -610,12 +730,28 @@ impl PreviewTarget {
 
         Ok(Self {
             color,
-            depth,
             color_view,
             depth_view,
             readback,
             viewport,
         })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PreviewShaderSignature {
+    key: String,
+    vertex_hash: u64,
+    fragment_hash: u64,
+}
+
+impl PreviewShaderSignature {
+    fn from_modules(label: &str, vertex: &ShaderModule, fragment: &ShaderModule) -> Self {
+        Self {
+            key: label.to_string(),
+            vertex_hash: hash_words(vertex.words()),
+            fragment_hash: hash_words(fragment.words()),
+        }
     }
 }
 
@@ -628,7 +764,9 @@ impl PreviewPipeline {
         ctx: &mut Context,
         render_pass: Handle<dashi::RenderPass>,
         bind_group_layout: Handle<BindGroupLayout>,
-        shader: &BuiltinShader,
+        vertex: &ShaderModule,
+        fragment: &ShaderModule,
+        label: &str,
     ) -> Result<Self, String> {
         let vertex_info = VertexDescriptionInfo {
             entries: &VERTEX_ENTRIES,
@@ -639,12 +777,12 @@ impl PreviewPipeline {
         let shaders = [
             PipelineShaderInfo {
                 stage: ShaderType::Vertex,
-                spirv: shader.vertex.words(),
+                spirv: vertex.words(),
                 specialization: &[],
             },
             PipelineShaderInfo {
                 stage: ShaderType::Fragment,
-                spirv: shader.fragment.words(),
+                spirv: fragment.words(),
                 specialization: &[],
             },
         ];
@@ -653,7 +791,7 @@ impl PreviewPipeline {
         bg_layouts[0] = Some(bind_group_layout);
 
         let layout = GraphicsPipelineLayoutInfo {
-            debug_name: "preview_pipeline",
+            debug_name: label,
             vertex_info,
             bg_layouts,
             bt_layouts: Default::default(),
@@ -672,7 +810,7 @@ impl PreviewPipeline {
             .map_err(|_| "failed to build pipeline layout".to_string())?;
         let pipeline = ctx
             .make_graphics_pipeline(&GraphicsPipelineInfo {
-                debug_name: "preview_pipeline",
+                debug_name: label,
                 layout: pipeline_layout,
                 render_pass,
                 subpass_id: 0,
@@ -680,6 +818,12 @@ impl PreviewPipeline {
             .map_err(|_| "failed to build graphics pipeline".to_string())?;
         Ok(Self { pipeline })
     }
+}
+
+fn hash_words(words: &[u32]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    words.hash(&mut hasher);
+    hasher.finish()
 }
 
 const VERTEX_ENTRIES: [VertexEntryInfo; 5] = [
@@ -948,10 +1092,16 @@ impl PreviewTextureHandle {
     }
 }
 
+struct PreviewShaderModules {
+    vertex: ShaderModule,
+    fragment: ShaderModule,
+}
+
 struct PreviewAssetCache {
     project_root: PathBuf,
     layout: MaterialEditorDatabaseLayout,
     imagery: Option<ImageDB>,
+    shaders: Option<ShaderDB>,
     leaks: HashMap<String, DatabaseEntry>,
     textures: HashMap<String, PreviewTextureHandle>,
 }
@@ -962,6 +1112,7 @@ impl PreviewAssetCache {
             project_root: root.to_path_buf(),
             layout: layout.clone(),
             imagery: None,
+            shaders: None,
             leaks: HashMap::new(),
             textures: HashMap::new(),
         }
@@ -971,6 +1122,7 @@ impl PreviewAssetCache {
         self.project_root = root.to_path_buf();
         self.layout = layout.clone();
         self.imagery = None;
+        self.shaders = None;
         self.leaks.clear();
         self.textures.clear();
     }
@@ -991,6 +1143,50 @@ impl PreviewAssetCache {
                 self.imagery = Some(ImageDB::new(ptr, str_path));
             }
         }
+    }
+
+    fn ensure_shaders(&mut self, root: &Path, layout: &MaterialEditorDatabaseLayout) {
+        if self.project_root != root || self.layout_changed(layout) {
+            self.reset(root, layout);
+        }
+        if self.shaders.is_none() {
+            let path = self.project_root.join(&self.layout.shaders);
+            if let Some(str_path) = path.to_str() {
+                self.shaders = Some(ShaderDB::new(str_path));
+            }
+        }
+    }
+
+    fn shader_modules(
+        &mut self,
+        shader_id: &str,
+        shader: &MaterialEditorGraphicsShader,
+    ) -> Result<PreviewShaderModules, String> {
+        let vertex_entry = shader
+            .vertex
+            .as_deref()
+            .ok_or_else(|| format!("Shader '{shader_id}' is missing a vertex stage entry"))?;
+        let fragment_entry = shader
+            .fragment
+            .as_deref()
+            .ok_or_else(|| format!("Shader '{shader_id}' is missing a fragment stage entry"))?;
+
+        let vertex_handle = self.leak_entry(vertex_entry);
+        let fragment_handle = self.leak_entry(fragment_entry);
+
+        let shader_db = self
+            .shaders
+            .as_mut()
+            .ok_or_else(|| "shader database unavailable".to_string())?;
+
+        let vertex = shader_db
+            .fetch_module(vertex_handle)
+            .map_err(|err| format!("Failed to load vertex module for '{shader_id}': {err}"))?;
+        let fragment = shader_db
+            .fetch_module(fragment_handle)
+            .map_err(|err| format!("Failed to load fragment module for '{shader_id}': {err}"))?;
+
+        Ok(PreviewShaderModules { vertex, fragment })
     }
 
     fn texture(&mut self, entry: &str) -> Option<PreviewTextureHandle> {
@@ -1016,7 +1212,7 @@ impl PreviewAssetCache {
         if let Some(existing) = self.leaks.get(entry) {
             return *existing;
         }
-        let leaked: DatabaseEntry = Box::leak(entry.to_string().into_boxed_str());
+        let leaked: DatabaseEntry = leak_database_entry(entry);
         self.leaks.insert(entry.to_string(), leaked);
         leaked
     }
