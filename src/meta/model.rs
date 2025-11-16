@@ -86,6 +86,7 @@ pub struct HostMesh {
 #[derive(Clone, Debug)]
 pub struct HostModel {
     pub name: String,
+    pub render_passes: Vec<String>,
     pub meshes: Vec<HostMesh>,
 }
 
@@ -211,6 +212,7 @@ impl DeviceMesh {
 #[derive(Clone, Debug)]
 pub struct DeviceModel {
     pub name: String,
+    pub render_passes: Vec<String>,
     pub meshes: Vec<DeviceMesh>,
 }
 
