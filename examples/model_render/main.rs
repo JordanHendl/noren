@@ -5,6 +5,7 @@
 mod common;
 
 use common::{SAMPLE_MODEL_ENTRY, init_context, open_sample_db};
+use noren::render_graph::RenderGraphRequest;
 use std::error::Error;
 
 fn main() {
@@ -46,6 +47,21 @@ fn run() -> Result<(), Box<dyn Error>> {
             "Uploaded mesh with vertex buffer {:?} and index buffer {:?}",
             mesh.geometry.vertices, mesh.geometry.indices
         );
+    }
+
+    let graph = db.create_render_graph(RenderGraphRequest {
+        shaders: vec!["shader/default".to_string()],
+    })?;
+
+    if let Some(binding) = graph.pipelines.get("shader/default") {
+        println!(
+            "Prepared graphics pipeline {:?} with layout {:?}",
+            binding.pipeline, binding.pipeline_layout
+        );
+    }
+
+    if let Some(pass) = graph.render_passes.get("render_pass/default") {
+        println!("Render pass handle: {:?}", pass);
     }
 
     // Should render to a display, with a camera.
