@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use dashi::{BindGroupVariable, BindGroupVariableType, cfg};
 use crate::parsing::GraphicsShaderLayout;
+use dashi::{BindGroupVariable, BindGroupVariableType, cfg};
 
 /// Indicates where a texture binding originates from inside the shader layout.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

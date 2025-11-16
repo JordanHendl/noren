@@ -7,8 +7,9 @@ use std::{
 
 use image::DynamicImage;
 use noren::{
-    DatabaseLayoutFile, RDBFile, RdbErr,
+    DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
     datatypes::{HostGeometry, HostImage, ImageInfo, ShaderModule, primitives::Vertex},
+    validate_database_layout,
 };
 use serde::{Deserialize, Serialize};
 use shaderc as sc;
@@ -28,6 +29,7 @@ fn main() {
 
     let result = match command {
         Command::Build { append, spec } => run_from_path(&spec, append),
+        Command::Validate(args) => run_validation(&args),
         Command::AppendGeometry(args) => append_geometry(&args),
         Command::AppendImagery(args) => append_imagery(&args),
         Command::AppendShader(args) => append_shader(&args),
@@ -58,6 +60,7 @@ fn parse_command(program: &str, mut args: impl Iterator<Item = String>) -> Resul
                 spec: PathBuf::from(spec),
             })
         }
+        "validate" => parse_validate_command(args),
         "append" => parse_append_command(args),
         other if other.starts_with('-') => Err(format!("unexpected flag: {other}")),
         path => Ok(Command::Build {
@@ -65,6 +68,29 @@ fn parse_command(program: &str, mut args: impl Iterator<Item = String>) -> Resul
             spec: PathBuf::from(path),
         }),
     }
+}
+
+fn parse_validate_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let mut spec: Option<PathBuf> = None;
+    let mut base: Option<PathBuf> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--base" => {
+                base = Some(PathBuf::from(next_value("--base", &mut args)?));
+            }
+            other => {
+                if spec.is_none() {
+                    spec = Some(PathBuf::from(other));
+                } else {
+                    return Err(format!("unexpected argument to validate: {other}"));
+                }
+            }
+        }
+    }
+
+    let spec = spec.ok_or_else(|| "validate requires a database layout file".to_string())?;
+    Ok(Command::Validate(ValidateArgs { spec, base }))
 }
 
 fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -229,9 +255,16 @@ fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> Result<Str
 #[derive(Debug)]
 enum Command {
     Build { append: bool, spec: PathBuf },
+    Validate(ValidateArgs),
     AppendGeometry(GeometryAppendArgs),
     AppendImagery(ImageAppendArgs),
     AppendShader(ShaderAppendArgs),
+}
+
+#[derive(Debug)]
+struct ValidateArgs {
+    spec: PathBuf,
+    base: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -296,6 +329,24 @@ fn run_from_path(input: &Path, append: bool) -> Result<(), BuildError> {
     serde_json::to_writer_pretty(layout_file, &output.layout)?;
 
     Ok(())
+}
+
+fn run_validation(args: &ValidateArgs) -> Result<(), BuildError> {
+    let base_dir = args
+        .base
+        .clone()
+        .or_else(|| args.spec.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let base_str = base_dir
+        .to_str()
+        .ok_or_else(|| BuildError::message("base directory is not valid UTF-8"))?;
+    let spec_str = args
+        .spec
+        .to_str()
+        .ok_or_else(|| BuildError::message("layout path is not valid UTF-8"))?;
+
+    validate_database_layout(base_str, Some(spec_str)).map_err(BuildError::from)
 }
 
 fn build_geometry(
@@ -550,6 +601,7 @@ fn print_usage(program: &str) {
     eprintln!("Usage:");
     eprintln!("  {program} <staging-build.json>");
     eprintln!("  {program} --append <staging-build.json>");
+    eprintln!("  {program} validate <layout.json> [--base <db root>]");
     eprintln!(
         "  {program} append geometry --rdb <geometry.rdb> --entry <name> --gltf <file> [--mesh <name>] [--primitive <index>]"
     );
@@ -776,6 +828,12 @@ impl From<gltf::Error> for BuildError {
 impl From<RdbErr> for BuildError {
     fn from(value: RdbErr) -> Self {
         BuildError::Rdb(value)
+    }
+}
+
+impl From<NorenError> for BuildError {
+    fn from(value: NorenError) -> Self {
+        BuildError::Message(value.to_string())
     }
 }
 

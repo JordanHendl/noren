@@ -1,13 +1,12 @@
 pub mod datatypes;
+mod material_bindings;
 pub mod meta;
 pub mod parsing;
 mod utils;
-mod material_bindings;
 use std::{io::ErrorKind, ptr::NonNull};
 
 use crate::{datatypes::primitives::Vertex, material_bindings::texture_binding_slots};
 use datatypes::*;
-use error::NorenError;
 use meta::*;
 use parsing::*;
 use utils::*;
@@ -19,13 +18,21 @@ use dashi::{
 };
 
 pub use parsing::DatabaseLayoutFile;
-pub use utils::error::RdbErr;
+pub use utils::error::{NorenError, RdbErr};
 pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView};
 
 pub struct DBInfo<'a> {
     pub ctx: *mut dashi::Context,
     pub base_dir: &'a str,
     pub layout_file: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderValidationError {
+    pub shader: String,
+    pub issues: Vec<String>,
+    pub materials: Vec<String>,
+    pub models: Vec<String>,
 }
 
 pub struct DB {
@@ -35,6 +42,87 @@ pub struct DB {
     shaders: ShaderDB,
     render_passes: RenderPassDB,
     model_file: Option<ModelLayoutFile>,
+}
+
+fn read_database_layout(layout_file: Option<&str>) -> Result<DatabaseLayoutFile, NorenError> {
+    let layout: DatabaseLayoutFile = match layout_file {
+        Some(f) => serde_json::from_str(&std::fs::read_to_string(f.to_string())?)?,
+        None => Default::default(),
+    };
+    Ok(layout)
+}
+
+fn load_model_layout(
+    base_dir: &str,
+    layout: &DatabaseLayoutFile,
+) -> Result<Option<ModelLayoutFile>, NorenError> {
+    let model_path = format!("{}/{}", base_dir, layout.models);
+    let material_path = format!("{}/{}", base_dir, layout.materials);
+    let render_pass_path = format!("{}/{}", base_dir, layout.render_passes);
+
+    let mut model_file = match std::fs::read_to_string(&model_path) {
+        Ok(raw) if raw.trim().is_empty() => None,
+        Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    let material_file = match std::fs::read_to_string(&material_path) {
+        Ok(raw) if raw.trim().is_empty() => None,
+        Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    let render_pass_file = match std::fs::read_to_string(&render_pass_path) {
+        Ok(raw) if raw.trim().is_empty() => None,
+        Ok(raw) => Some(serde_json::from_str::<RenderPassLayoutFile>(&raw)?),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    if let Some(materials) = material_file {
+        match model_file {
+            Some(ref mut layout) => {
+                layout.textures.extend(materials.textures.into_iter());
+                layout.materials.extend(materials.materials.into_iter());
+                layout.shaders.extend(materials.shaders.into_iter());
+                layout
+                    .render_passes
+                    .extend(materials.render_passes.into_iter());
+            }
+            None => {
+                model_file = Some(materials);
+            }
+        }
+    }
+
+    if let Some(render_passes) = render_pass_file {
+        match model_file {
+            Some(ref mut layout) => layout
+                .render_passes
+                .extend(render_passes.render_passes.into_iter()),
+            None => {
+                let mut layout = ModelLayoutFile::default();
+                layout.render_passes = render_passes.render_passes;
+                model_file = Some(layout);
+            }
+        }
+    }
+
+    Ok(model_file)
+}
+
+pub fn validate_database_layout(
+    base_dir: &str,
+    layout_file: Option<&str>,
+) -> Result<(), NorenError> {
+    let layout = read_database_layout(layout_file)?;
+    let Some(model_layout) = load_model_layout(base_dir, &layout)? else {
+        return Ok(());
+    };
+
+    validate_shader_layouts(&model_layout)
 }
 
 ////////////////////////////////////////////////
@@ -51,64 +139,16 @@ pub struct DB {
 
 impl DB {
     pub fn new(info: &DBInfo) -> Result<Self, NorenError> {
-        let layout: DatabaseLayoutFile = match info.layout_file {
-            Some(f) => serde_json::from_str(&std::fs::read_to_string(f.to_string())?)?,
-            None => Default::default(),
-        };
+        let layout = read_database_layout(info.layout_file)?;
 
         let ctx_ptr = NonNull::new(info.ctx).expect("Null GPU Context");
         let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
-        let model_path = format!("{}/{}", info.base_dir, layout.models);
-        let material_path = format!("{}/{}", info.base_dir, layout.materials);
-        let render_pass_path = format!("{}/{}", info.base_dir, layout.render_passes);
-        let mut model_file = match std::fs::read_to_string(&model_path) {
-            Ok(raw) if raw.trim().is_empty() => None,
-            Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
-            Err(err) if err.kind() == ErrorKind::NotFound => None,
-            Err(err) => return Err(err.into()),
-        };
-        let material_file = match std::fs::read_to_string(&material_path) {
-            Ok(raw) if raw.trim().is_empty() => None,
-            Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
-            Err(err) if err.kind() == ErrorKind::NotFound => None,
-            Err(err) => return Err(err.into()),
-        };
-        let render_pass_file = match std::fs::read_to_string(&render_pass_path) {
-            Ok(raw) if raw.trim().is_empty() => None,
-            Ok(raw) => Some(serde_json::from_str::<RenderPassLayoutFile>(&raw)?),
-            Err(err) if err.kind() == ErrorKind::NotFound => None,
-            Err(err) => return Err(err.into()),
-        };
+        let mut model_file = load_model_layout(info.base_dir, &layout)?;
 
-        if let Some(materials) = material_file {
-            match model_file {
-                Some(ref mut layout) => {
-                    layout.textures.extend(materials.textures.into_iter());
-                    layout.materials.extend(materials.materials.into_iter());
-                    layout.shaders.extend(materials.shaders.into_iter());
-                    layout
-                        .render_passes
-                        .extend(materials.render_passes.into_iter());
-                }
-                None => {
-                    model_file = Some(materials);
-                }
-            }
-        }
-
-        if let Some(render_passes) = render_pass_file {
-            match model_file {
-                Some(ref mut layout) => layout
-                    .render_passes
-                    .extend(render_passes.render_passes.into_iter()),
-                None => {
-                    let mut layout = ModelLayoutFile::default();
-                    layout.render_passes = render_passes.render_passes;
-                    model_file = Some(layout);
-                }
-            }
+        if let Some(layout) = model_file.as_ref() {
+            validate_shader_layouts(layout)?;
         }
 
         let render_passes = if let Some(layout) = model_file.as_mut() {
@@ -297,6 +337,151 @@ fn normalize_binding_entries(
         normalized[index] = value.clone();
     }
     Ok(normalized)
+}
+
+fn validate_shader_layouts(layout: &ModelLayoutFile) -> Result<(), NorenError> {
+    use std::collections::HashMap;
+
+    let mut shader_to_materials: HashMap<&str, Vec<String>> = HashMap::new();
+    for (material_key, material) in &layout.materials {
+        if let Some(shader) = material.shader.as_deref() {
+            shader_to_materials
+                .entry(shader)
+                .or_default()
+                .push(material_key.clone());
+        }
+    }
+
+    let mut material_to_models: HashMap<String, Vec<String>> = HashMap::new();
+    for (model_key, model) in &layout.models {
+        for mesh_key in &model.meshes {
+            let Some(mesh) = layout.meshes.get(mesh_key) else {
+                continue;
+            };
+            if let Some(material_key) = &mesh.material {
+                material_to_models
+                    .entry(material_key.clone())
+                    .or_default()
+                    .push(model_key.clone());
+            }
+        }
+    }
+
+    let mut errors = Vec::new();
+
+    for (shader_key, shader_layout) in &layout.shaders {
+        let mut issues = Vec::new();
+        let mut render_pass_name = None;
+
+        match shader_layout.render_pass.as_deref() {
+            Some(pass) => {
+                render_pass_name = Some(pass);
+                if !layout.render_passes.contains_key(pass) {
+                    issues.push(format!("unknown render pass '{pass}'"));
+                }
+            }
+            None => issues.push("render pass not specified".to_string()),
+        }
+
+        if let Some(pass_name) = render_pass_name {
+            if let Some(pass_layout) = layout.render_passes.get(pass_name) {
+                if shader_layout.subpass as usize >= pass_layout.subpasses.len() {
+                    issues.push(format!(
+                        "subpass index {} is out of range ({} available)",
+                        shader_layout.subpass,
+                        pass_layout.subpasses.len()
+                    ));
+                } else {
+                    let subpass = &pass_layout.subpasses[shader_layout.subpass as usize];
+                    if subpass.color_attachments.is_empty()
+                        && subpass.depth_stencil_attachment.is_none()
+                    {
+                        issues.push("referenced subpass declares no attachments".to_string());
+                    }
+                    let attachment_count = subpass.color_attachments.len()
+                        + usize::from(subpass.depth_stencil_attachment.is_some());
+                    if attachment_count > 0
+                        && shader_layout.bind_table_layouts.len() < attachment_count
+                    {
+                        issues.push(format!(
+                            "bind_table_layouts defines {} entries but subpass requires {} attachments",
+                            shader_layout.bind_table_layouts.len(),
+                            attachment_count
+                        ));
+                    }
+                }
+            }
+        }
+
+        let missing_bg: Vec<String> = shader_layout
+            .bind_group_layouts
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                if entry.is_none() {
+                    Some(format!("bind_group_layouts[{idx}] missing"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let missing_bt: Vec<String> = shader_layout
+            .bind_table_layouts
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                if entry.is_none() {
+                    Some(format!("bind_table_layouts[{idx}] missing"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if shader_layout.bind_group_layouts.len() > 4 {
+            issues.push(format!(
+                "bind_group_layouts defines {} entries but only 4 are supported",
+                shader_layout.bind_group_layouts.len()
+            ));
+        }
+
+        if shader_layout.bind_table_layouts.len() > 4 {
+            issues.push(format!(
+                "bind_table_layouts defines {} entries but only 4 are supported",
+                shader_layout.bind_table_layouts.len()
+            ));
+        }
+
+        issues.extend(missing_bg);
+        issues.extend(missing_bt);
+
+        if !issues.is_empty() {
+            let materials = shader_to_materials
+                .get(shader_key.as_str())
+                .cloned()
+                .unwrap_or_default();
+            let mut models = Vec::new();
+            for material_key in &materials {
+                if let Some(model_list) = material_to_models.get(material_key) {
+                    models.extend(model_list.iter().cloned());
+                }
+            }
+
+            errors.push(ShaderValidationError {
+                shader: shader_key.clone(),
+                issues,
+                materials,
+                models,
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(NorenError::InvalidShaderLayout(errors))
+    }
 }
 
 impl DB {
@@ -727,7 +912,7 @@ mod tests {
     use std::fs::File;
     use tempfile::tempdir;
 
-    use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport};
+    use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport, cfg};
 
     const MODEL_ENTRY: DatabaseEntry = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
@@ -829,8 +1014,14 @@ mod tests {
                 geometry: None,
                 tessellation_control: None,
                 tessellation_evaluation: None,
-                bind_group_layouts: Vec::new(),
-                bind_table_layouts: Vec::new(),
+                bind_group_layouts: vec![Some(
+                    cfg::BindGroupLayoutCfg::from_json("{\"debug_name\":\"mat\",\"entries\":[]}")
+                        .expect("bind group layout"),
+                )],
+                bind_table_layouts: vec![Some(
+                    cfg::BindTableLayoutCfg::from_json("{\"debug_name\":\"tbl\",\"entries\":[]}")
+                        .expect("bind table layout"),
+                )],
                 subpass: 0,
                 render_pass: Some("render_pass/test".to_string()),
             },
@@ -999,5 +1190,154 @@ mod tests {
         assert!(device_shader.pipeline.is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn validate_layouts_with_render_pass() -> Result<(), NorenError> {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path();
+
+        let mut render_passes = RenderPassLayoutFile::default();
+        render_passes.render_passes.insert(
+            "render/test".into(),
+            RenderPassLayout {
+                viewport: Viewport::default(),
+                subpasses: vec![RenderSubpassLayout {
+                    color_attachments: vec![AttachmentDescription {
+                        format: Format::RGBA8,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let mut layout = ModelLayoutFile::default();
+        layout.meshes.insert(
+            "mesh".into(),
+            MeshLayout {
+                material: Some("mat".into()),
+                ..Default::default()
+            },
+        );
+        layout.models.insert(
+            "model".into(),
+            ModelLayout {
+                meshes: vec!["mesh".into()],
+                ..Default::default()
+            },
+        );
+        layout.materials.insert(
+            "mat".into(),
+            MaterialLayout {
+                shader: Some("shader".into()),
+                ..Default::default()
+            },
+        );
+        layout.shaders.insert(
+            "shader".into(),
+            GraphicsShaderLayout {
+                bind_group_layouts: vec![Some(
+                    cfg::BindGroupLayoutCfg::from_json(
+                        "{\"debug_name\":\"shader\",\"entries\":[]}",
+                    )
+                    .expect("bind group cfg"),
+                )],
+                bind_table_layouts: vec![Some(
+                    cfg::BindTableLayoutCfg::from_json(
+                        "{\"debug_name\":\"shader\",\"entries\":[]}",
+                    )
+                    .expect("bind table cfg"),
+                )],
+                render_pass: Some("render/test".into()),
+                ..Default::default()
+            },
+        );
+
+        std::fs::write(
+            base.join("render_passes.json"),
+            serde_json::to_vec(&render_passes)?,
+        )?;
+        std::fs::write(base.join("models.json"), serde_json::to_vec(&layout)?)?;
+
+        validate_database_layout(base.to_str().unwrap(), None)
+    }
+
+    #[test]
+    fn validation_reports_incompatible_shader() {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path();
+
+        let mut render_passes = RenderPassLayoutFile::default();
+        render_passes.render_passes.insert(
+            "render/test".into(),
+            RenderPassLayout {
+                viewport: Viewport::default(),
+                subpasses: vec![RenderSubpassLayout::default()],
+                ..Default::default()
+            },
+        );
+
+        let mut layout = ModelLayoutFile::default();
+        layout.meshes.insert(
+            "mesh".into(),
+            MeshLayout {
+                material: Some("mat".into()),
+                ..Default::default()
+            },
+        );
+        layout.models.insert(
+            "model".into(),
+            ModelLayout {
+                meshes: vec!["mesh".into()],
+                ..Default::default()
+            },
+        );
+        layout.materials.insert(
+            "mat".into(),
+            MaterialLayout {
+                shader: Some("shader".into()),
+                ..Default::default()
+            },
+        );
+        layout.shaders.insert(
+            "shader".into(),
+            GraphicsShaderLayout {
+                subpass: 1,
+                render_pass: Some("render/test".into()),
+                ..Default::default()
+            },
+        );
+
+        std::fs::write(
+            base.join("render_passes.json"),
+            serde_json::to_vec(&render_passes).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("models.json"),
+            serde_json::to_vec(&layout).unwrap(),
+        )
+        .unwrap();
+
+        let error = validate_database_layout(base.to_str().unwrap(), None)
+            .expect_err("validation should fail");
+
+        match error {
+            NorenError::InvalidShaderLayout(errors) => {
+                assert_eq!(errors.len(), 1);
+                let diag = &errors[0];
+                assert_eq!(diag.shader, "shader");
+                assert!(
+                    diag.issues
+                        .iter()
+                        .any(|issue| issue.contains("subpass index"))
+                );
+                assert_eq!(diag.materials, vec!["mat".to_string()]);
+                assert_eq!(diag.models, vec!["model".to_string()]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
