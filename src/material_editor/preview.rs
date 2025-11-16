@@ -1102,38 +1102,31 @@ fn builtin_shader_modules() -> Result<BuiltinShader, String> {
 }
 
 fn create_bind_group_layout(ctx: &mut Context) -> Result<Handle<BindGroupLayout>, String> {
-    let vertex_vars = [BindGroupVariable {
+    let uniform_vars = [BindGroupVariable {
         var_type: BindGroupVariableType::Uniform,
         binding: 0,
         count: 1,
     }];
-    let fragment_vars = [
-        BindGroupVariable {
-            var_type: BindGroupVariableType::Uniform,
-            binding: 0,
-            count: 1,
-        },
-        BindGroupVariable {
-            var_type: BindGroupVariableType::SampledImage,
-            binding: 1,
-            count: 1,
-        },
-    ];
+    let sampler_vars = [BindGroupVariable {
+        var_type: BindGroupVariableType::SampledImage,
+        binding: 1,
+        count: 1,
+    }];
     let shader_info = [
         dashi::ShaderInfo {
-            shader_type: ShaderType::Vertex,
-            variables: &vertex_vars,
+            shader_type: ShaderType::All,
+            variables: &uniform_vars,
         },
         dashi::ShaderInfo {
             shader_type: ShaderType::Fragment,
-            variables: &fragment_vars,
+            variables: &sampler_vars,
         },
     ];
     ctx.make_bind_group_layout(&BindGroupLayoutInfo {
         debug_name: "preview_bind_group",
         shaders: &shader_info,
     })
-    .map_err(|_| "failed to create bind group layout".to_string())
+    .map_err(|err| format!("failed to create bind group layout: {err}"))
 }
 
 fn create_bind_group(
@@ -1159,5 +1152,5 @@ fn create_bind_group(
         bindings: &bindings,
         set: 0,
     })
-    .map_err(|_| "failed to create bind group".to_string())
+    .map_err(|err| format!("failed to create bind group: {err}"))
 }
