@@ -2,7 +2,7 @@ pub mod datatypes;
 pub mod material_editor;
 pub mod material_editor_types;
 pub mod meta;
-mod parsing;
+pub mod parsing;
 mod utils;
 
 use std::{io::ErrorKind, ptr::NonNull};

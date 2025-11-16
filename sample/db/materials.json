@@ -8,9 +8,7 @@
   "materials": {
     "material/quad": {
       "name": "Quad Material",
-      "textures": [
-        "texture/quad_diffuse"
-      ],
+      "textures": [],
       "shader": "shader/default"
     }
   },
