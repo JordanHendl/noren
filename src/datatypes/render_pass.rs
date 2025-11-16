@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use dashi::{
-    AttachmentDescription, Context, Handle, RenderPass, SubpassDependency, Viewport,
-    builders::RenderPassBuilder,
+    AttachmentDescription, Context, GraphicsPipelineInfo, GraphicsPipelineLayout, Handle,
+    RenderPass, SubpassDependency, Viewport, builders::RenderPassBuilder,
 };
 
 use crate::{
@@ -57,6 +57,43 @@ impl RenderPassDB {
         entry.handle = Some(handle);
         Ok(handle)
     }
+
+    pub fn pipeline_info<'a>(
+        &'a mut self,
+        key: &str,
+        subpass: u8,
+        layout: Handle<GraphicsPipelineLayout>,
+        debug_name: &'a str,
+        ctx: &mut Context,
+    ) -> Result<GraphicsPipelineInfo<'a>, NorenError> {
+        let entry = self
+            .passes
+            .get_mut(key)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if subpass as usize >= entry.recipe.subpass_count {
+            return Err(NorenError::InvalidRenderPass(format!(
+                "subpass {} is out of range for '{}'",
+                subpass, key
+            )));
+        }
+
+        let render_pass = match entry.handle {
+            Some(handle) => handle,
+            None => {
+                let handle = entry.recipe.build(ctx)?;
+                entry.handle = Some(handle);
+                handle
+            }
+        };
+
+        Ok(GraphicsPipelineInfo {
+            debug_name,
+            layout,
+            render_pass,
+            subpass_id: subpass,
+        })
+    }
 }
 
 struct RenderPassEntry {
@@ -68,11 +105,13 @@ struct RenderPassRecipe {
     debug_name: String,
     viewport: Viewport,
     subpasses: Vec<RenderPassSubpassRecipe>,
+    subpass_count: usize,
 }
 
 impl RenderPassRecipe {
     fn from_layout(key: &str, layout: RenderPassLayout) -> Self {
         let debug_name = layout.debug_name.unwrap_or_else(|| key.to_string());
+        let subpass_count = layout.subpasses.len();
         let subpasses = layout
             .subpasses
             .into_iter()
@@ -83,6 +122,7 @@ impl RenderPassRecipe {
             debug_name,
             viewport: layout.viewport,
             subpasses,
+            subpass_count,
         }
     }
 
