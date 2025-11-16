@@ -1,11 +1,8 @@
 pub mod datatypes;
-mod material_bindings;
-pub mod material_editor;
-pub mod material_editor_types;
 pub mod meta;
 pub mod parsing;
 mod utils;
-
+mod material_bindings;
 use std::{io::ErrorKind, ptr::NonNull};
 
 use crate::{datatypes::primitives::Vertex, material_bindings::texture_binding_slots};
