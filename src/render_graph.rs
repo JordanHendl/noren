@@ -36,6 +36,7 @@ pub struct PipelineBinding {
 }
 
 impl<'a> PipelineFactory<'a> {
+    /// Creates a factory that can build pipelines using the provided context and databases.
     pub fn new(
         ctx: &'a mut Context,
         shaders: &'a mut crate::datatypes::shader::ShaderDB,
@@ -48,6 +49,7 @@ impl<'a> PipelineFactory<'a> {
         }
     }
 
+    /// Builds a graphics pipeline for the specified shader and render pass layout.
     pub fn make_pipeline(
         &mut self,
         shader_key: &str,

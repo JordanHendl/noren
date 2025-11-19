@@ -58,6 +58,7 @@ impl RenderPassDB {
         Ok(handle)
     }
 
+    /// Returns pipeline creation info for the requested subpass, creating the render pass if needed.
     pub fn pipeline_info<'a>(
         &'a mut self,
         key: &str,
