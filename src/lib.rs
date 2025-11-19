@@ -440,17 +440,6 @@ fn validate_shader_layouts(layout: &ModelLayoutFile) -> Result<(), NorenError> {
                     {
                         issues.push("referenced subpass declares no attachments".to_string());
                     }
-                    let attachment_count = subpass.color_attachments.len()
-                        + usize::from(subpass.depth_stencil_attachment.is_some());
-                    if attachment_count > 0
-                        && shader_layout.bind_table_layouts.len() < attachment_count
-                    {
-                        issues.push(format!(
-                            "bind_table_layouts defines {} entries but subpass requires {} attachments",
-                            shader_layout.bind_table_layouts.len(),
-                            attachment_count
-                        ));
-                    }
                 }
             }
         }
