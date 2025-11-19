@@ -63,6 +63,31 @@ Run the unit test suite with:
 cargo test
 ```
 
+## Packaging installers
+
+Platform-specific packages are available for the two tooling binaries (`dbgen`
+and `rdbinspect`). The scripts auto-detect the host and emit the matching
+format:
+
+- **Debian / Ubuntu** – `.deb` generated via `bash dist/package.sh` (requires
+  `fakeroot` and `dpkg-deb`).
+- **Red Hat / Fedora** – `.rpm` generated via `bash dist/package.sh` (requires
+  `rpmbuild`).
+- **Windows** – self-extracting installer generated via PowerShell:
+
+  ```pwsh
+  pwsh -File dist/package.ps1
+  ```
+
+  The Windows script uses `7z.exe` when available to produce
+  `noren-tools-installer.exe`; otherwise it falls back to a `.zip` archive. Both
+  outputs include an `install.bat` helper that copies the binaries into
+  `%ProgramFiles%\NorenTools\bin`.
+
+If the platform is not detected (for example, macOS), `bash dist/package.sh`
+defaults to a `tar.gz` payload containing the two binaries under
+`usr/local/bin`.
+
 ## License
 
 This repository does not currently declare an explicit license. Please contact
