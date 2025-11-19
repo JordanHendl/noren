@@ -6,6 +6,8 @@ use std::{
 use dashi::{ContextInfo, gpu};
 use noren::{DB, DBInfo, datatypes::DatabaseEntry};
 
+pub mod display;
+
 /// Absolute path to the bundled sample database directory.
 pub fn sample_db_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sample/db")
