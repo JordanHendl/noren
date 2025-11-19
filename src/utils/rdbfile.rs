@@ -188,6 +188,7 @@ pub struct RDBFile {
 }
 
 impl RDBFile {
+    /// Creates an empty RDB file builder with no entries or data.
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -196,6 +197,7 @@ impl RDBFile {
         }
     }
 
+    /// Adds a serializable object to the in-memory RDB under the provided name.
     pub fn add<T: Serialize>(&mut self, name: &str, obj: &T) -> Result<(), RdbErr> {
         let nameb = name64(name)?;
 
@@ -212,6 +214,7 @@ impl RDBFile {
         Ok(())
     }
 
+    /// Retrieves a deserialized object that was previously added by name.
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
         let name_bytes = name.as_bytes();
         if let Some(entry) = self
@@ -235,6 +238,8 @@ impl RDBFile {
     /// Save using MmapMut for zero-copy struct writes.
     /// (This writes header + entries only; blobs should be appended separately
     /// and their offsets/lengths filled beforehand.)
+    ///
+    /// This writes the file to disk so it can later be consumed via [`RDBView`].
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), RdbErr> {
         // Write header
         let hdr = Header {
@@ -319,10 +324,12 @@ impl RDBFile {
         })
     }
 
+    /// Releases the memory map used by this file, if any.
     pub fn unmap(&mut self) {
         self.mmap = None;
     }
 
+    /// Returns metadata for all entries contained in the file.
     pub fn entries(&self) -> Vec<RDBEntryMeta> {
         self.entries
             .iter()
@@ -340,6 +347,7 @@ pub struct RDBView {
 }
 
 impl RDBView {
+    /// Fetches a deserialized value from the mapped file by entry name.
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
         let data = &self.mmap[self.data_start..self.mmap.len()];
         let name_bytes = name.as_bytes();
@@ -366,6 +374,8 @@ impl RDBView {
     }
 
     /// Load by mmap, then cast header/entries directly from the mapped bytes.
+    ///
+    /// Use this for fast read-only access to an existing RDB file without copying data.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, RdbErr> {
         let f = File::open(path)?;
         let map = unsafe { Mmap::map(&f)? };
@@ -394,11 +404,13 @@ impl RDBView {
         })
     }
 
+    /// Returns metadata for every entry stored in the mapped file.
     pub fn entries(&self) -> Vec<RDBEntryMeta> {
         let bytes = &self.mmap[self.entries_start..self.data_start];
         EntryIter::new(bytes).map(RDBEntryMeta::from).collect()
     }
 
+    /// Returns the raw byte contents for a named entry.
     pub fn entry_bytes(&self, name: &str) -> Result<&[u8], RdbErr> {
         let data = &self.mmap[self.data_start..self.mmap.len()];
         let entries = &self.mmap[self.entries_start..self.data_start];

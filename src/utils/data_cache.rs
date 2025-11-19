@@ -11,6 +11,7 @@ pub struct CacheEntry<T> {
 }
 
 impl<T> CacheEntry<T> {
+    /// Creates a cache entry with an initial reference count of one.
     pub fn new(payload: T) -> Self {
         Self {
             payload,
@@ -19,10 +20,12 @@ impl<T> CacheEntry<T> {
         }
     }
 
+    /// Marks the cache entry for unloading at the specified time.
     pub fn mark_for_unload(&mut self, when: Instant) {
         self.unload_at = Some(when);
     }
 
+    /// Cancels any pending unload for the entry.
     pub fn clear_unload(&mut self) {
         self.unload_at = None;
     }
@@ -34,20 +37,24 @@ pub struct DataCache<T> {
 }
 
 impl<T> DataCache<T> {
+    /// Creates an empty cache.
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
         }
     }
 
+    /// Returns an immutable reference to a cached entry by key.
     pub fn get(&self, key: &str) -> Option<&CacheEntry<T>> {
         self.data.get(key)
     }
 
+    /// Returns a mutable reference to a cached entry by key.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut CacheEntry<T>> {
         self.data.get_mut(key)
     }
 
+    /// Inserts a new entry or increments the reference count on an existing one.
     pub fn insert_or_increment<F>(&mut self, key: &str, create: F) -> &mut CacheEntry<T>
     where
         F: FnOnce() -> T,
@@ -65,6 +72,7 @@ impl<T> DataCache<T> {
         }
     }
 
+    /// Decrements the reference count for a key and schedules unload when it reaches zero.
     pub fn decrement(&mut self, key: &str, unload_at: Instant) -> Option<&mut CacheEntry<T>> {
         if let Some(entry) = self.data.get_mut(key) {
             if entry.refcount > 0 {
@@ -81,6 +89,7 @@ impl<T> DataCache<T> {
         }
     }
 
+    /// Removes and returns any entries whose unload time has expired.
     pub fn drain_expired(&mut self, now: Instant) -> Vec<(String, CacheEntry<T>)> {
         let expired_keys: Vec<String> = self
             .data

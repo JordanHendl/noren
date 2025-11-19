@@ -35,6 +35,7 @@ pub struct GeometryDB {
 }
 
 impl GeometryDB {
+    /// Creates a geometry database loader for the provided GPU context and module path.
     pub fn new(ctx: *mut Context, module_path: &str) -> Self {
         let data = match RDBView::load(module_path) {
             Ok(d) => Some(d),
@@ -48,6 +49,7 @@ impl GeometryDB {
         }
     }
 
+    /// Uploads host geometry into GPU buffers and caches the result.
     pub fn enter_gpu_geometry(
         &mut self,
         entry: DatabaseEntry,
@@ -102,10 +104,12 @@ impl GeometryDB {
         Ok(cache_entry.payload.clone())
     }
 
+    /// Returns whether the requested geometry entry is already cached on the GPU.
     pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
         self.cache.get(*entry).is_some()
     }
 
+    /// Retrieves host geometry data directly from the backing database file.
     pub fn fetch_raw_geometry(&mut self, entry: DatabaseEntry) -> Result<HostGeometry, NorenError> {
         if let Some(rdb) = &mut self.data {
             return Ok(rdb.fetch::<HostGeometry>(entry)?);
@@ -114,6 +118,7 @@ impl GeometryDB {
         return Err(NorenError::DataFailure());
     }
 
+    /// Ensures the geometry is loaded on the GPU and increments its reference count.
     pub fn fetch_gpu_geometry(
         &mut self,
         entry: DatabaseEntry,
@@ -130,6 +135,7 @@ impl GeometryDB {
         Ok(cache_entry.payload.clone())
     }
 
+    /// Decrements a geometry reference, scheduling it for unloading after a delay.
     pub fn unref_entry(&mut self, entry: DatabaseEntry) -> Result<(), NorenError> {
         let unload_at = Instant::now() + UNLOAD_DELAY;
         match self.cache.decrement(entry, unload_at) {
@@ -139,6 +145,7 @@ impl GeometryDB {
     }
 
     // Checks whether any geometry needs to be unloaded, and does so.
+    /// Removes expired geometry buffers from the GPU and cache.
     pub fn unload_pulse(&mut self) {
         let expired = self.cache.drain_expired(Instant::now());
 

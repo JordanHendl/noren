@@ -13,12 +13,14 @@ pub struct DeviceName {
 }
 
 impl DeviceName {
+    /// Creates an empty device-friendly name filled with null bytes.
     pub fn new() -> Self {
         Self {
             bytes: [0; DEVICE_NAME_CAPACITY],
         }
     }
 
+    /// Converts a UTF-8 string into a fixed-size device name, truncating if necessary.
     pub fn from_str(name: &str) -> Self {
         let mut bytes = [0u8; DEVICE_NAME_CAPACITY];
         let name_bytes = name.as_bytes();
@@ -28,6 +30,7 @@ impl DeviceName {
         Self { bytes }
     }
 
+    /// Converts the fixed-size name back into a trimmed `String`.
     pub fn to_string(&self) -> String {
         let nul_pos = self
             .bytes
@@ -96,6 +99,7 @@ pub struct DeviceTexture {
 }
 
 impl DeviceTexture {
+    /// Wraps a loaded device image for GPU usage.
     pub fn new(image: DeviceImage) -> Self {
         Self { image }
     }
@@ -109,6 +113,7 @@ pub struct DeviceTextureList {
 }
 
 impl DeviceTextureList {
+    /// Creates an empty texture list with reserved capacity for device uploads.
     pub fn new() -> Self {
         Self {
             len: 0,
@@ -116,6 +121,7 @@ impl DeviceTextureList {
         }
     }
 
+    /// Adds a texture to the list until the device capacity is reached.
     pub fn push(&mut self, texture: DeviceTexture) {
         if (self.len as usize) < DEVICE_TEXTURE_CAPACITY {
             self.textures[self.len as usize] = texture;
@@ -125,18 +131,22 @@ impl DeviceTextureList {
         }
     }
 
+    /// Returns the number of textures currently stored in the list.
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
+    /// Returns `true` when no textures have been added.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Provides a slice of only the populated texture entries.
     pub fn as_slice(&self) -> &[DeviceTexture] {
         &self.textures[..self.len()]
     }
 
+    /// Retrieves a texture by index if it is within the populated range.
     pub fn get(&self, index: usize) -> Option<&DeviceTexture> {
         if index < self.len() {
             Some(&self.textures[index])
@@ -169,6 +179,7 @@ pub struct DeviceMaterial {
 }
 
 impl DeviceMaterial {
+    /// Builds a material from the provided textures and optional graphics shader.
     pub fn new(textures: Vec<DeviceTexture>, shader: Option<GraphicsShader>) -> Self {
         let mut list = DeviceTextureList::new();
         for texture in textures.into_iter().take(DEVICE_TEXTURE_CAPACITY) {
@@ -191,6 +202,7 @@ pub struct DeviceMesh {
 }
 
 impl DeviceMesh {
+    /// Creates a GPU-ready mesh with geometry, textures, and an optional material.
     pub fn new(
         geometry: DeviceGeometry,
         textures: Vec<DeviceTexture>,
@@ -221,6 +233,7 @@ pub struct ShaderStage {
 }
 
 impl ShaderStage {
+    /// Constructs a shader stage from an entry point and compiled module.
     pub fn new(entry: String, module: ShaderModule) -> Self {
         Self { entry, module }
     }
@@ -241,6 +254,7 @@ pub struct GraphicsShader {
 }
 
 impl GraphicsShader {
+    /// Creates an empty graphics shader container with the provided display name.
     pub fn new(name: String) -> Self {
         Self {
             name,

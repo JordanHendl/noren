@@ -118,6 +118,7 @@ fn load_model_layout(
     Ok(model_file)
 }
 
+/// Validates that shader, material, and render pass references in the layout are consistent.
 pub fn validate_database_layout(
     base_dir: &str,
     layout_file: Option<&str>,
@@ -143,6 +144,7 @@ pub fn validate_database_layout(
 ////////////////////////////////////////////////
 
 impl DB {
+    /// Creates a database handle that can load assets using the provided configuration.
     pub fn new(info: &DBInfo) -> Result<Self, NorenError> {
         let layout = read_database_layout(info.layout_file)?;
 
@@ -172,39 +174,48 @@ impl DB {
         })
     }
 
+    /// Returns an immutable reference to the geometry database.
     pub fn geometry(&self) -> &GeometryDB {
         &self.geometry
     }
 
+    /// Returns a mutable reference to the geometry database.
     pub fn geometry_mut(&mut self) -> &mut GeometryDB {
         &mut self.geometry
     }
 
+    /// Returns an immutable reference to the imagery database.
     pub fn imagery(&self) -> &ImageDB {
         &self.imagery
     }
 
+    /// Returns a mutable reference to the imagery database.
     pub fn imagery_mut(&mut self) -> &mut ImageDB {
         &mut self.imagery
     }
 
+    /// Returns an immutable reference to the shader database.
     pub fn shaders(&self) -> &ShaderDB {
         &self.shaders
     }
 
+    /// Returns a mutable reference to the shader database.
     pub fn shaders_mut(&mut self) -> &mut ShaderDB {
         &mut self.shaders
     }
 
+    /// Placeholder for accessing font assets.
     pub fn font(&self) -> &FontDB {
         todo!()
     }
 
+    /// Loads or retrieves a cached render pass by name.
     pub fn fetch_render_pass(&mut self, entry: &str) -> Result<Handle<RenderPass>, NorenError> {
         let ctx: &mut Context = unsafe { self.ctx.as_mut() };
         self.render_passes.fetch(entry, ctx)
     }
 
+    /// Builds a CPU-side model composed of host geometry, textures, and materials.
     pub fn fetch_model(&mut self, entry: DatabaseEntry) -> Result<HostModel, NorenError> {
         self.assemble_model(
             entry,
@@ -229,6 +240,7 @@ impl DB {
         )
     }
 
+    /// Loads a GPU-ready model with device buffers, textures, and pipelines.
     pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry) -> Result<DeviceModel, NorenError> {
         let ctx_ptr = self.ctx;
         self.assemble_model(
@@ -261,6 +273,7 @@ impl DB {
         )
     }
 
+    /// Fetches and configures a graphics shader for a specific render pass.
     pub fn fetch_graphics_shader(
         &mut self,
         entry: DatabaseEntry,
@@ -297,6 +310,7 @@ impl DB {
         Ok(shader)
     }
 
+    /// Creates a render graph that links shaders to their render passes and pipelines.
     pub fn create_render_graph(
         &mut self,
         request: RenderGraphRequest,

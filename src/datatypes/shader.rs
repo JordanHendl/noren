@@ -12,14 +12,17 @@ pub struct ShaderModule {
 }
 
 impl ShaderModule {
+    /// Creates a shader module from raw SPIR-V words.
     pub fn from_words(words: Vec<u32>) -> Self {
         Self { words }
     }
 
+    /// Returns the raw SPIR-V words backing the module.
     pub fn words(&self) -> &[u32] {
         &self.words
     }
 
+    /// Checks whether the module data is valid SPIR-V.
     pub fn is_spirv(&self) -> bool {
         matches!(self.words.first(), Some(&word) if word == SPIRV_MAGIC_WORD)
     }
@@ -31,6 +34,7 @@ pub struct ShaderDB {
 }
 
 impl ShaderDB {
+    /// Loads shader modules from the given `.rdb` file path, if it exists.
     pub fn new(module_path: &str) -> Self {
         let data = match RDBView::load(module_path) {
             Ok(d) => Some(d),
@@ -40,6 +44,7 @@ impl ShaderDB {
         Self { data }
     }
 
+    /// Fetches a shader module by entry name, ensuring it contains SPIR-V data.
     pub fn fetch_module(&mut self, entry: DatabaseEntry) -> Result<ShaderModule, NorenError> {
         if let Some(rdb) = &mut self.data {
             let module = rdb.fetch::<ShaderModule>(entry)?;

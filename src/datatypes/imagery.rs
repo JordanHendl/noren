@@ -44,6 +44,7 @@ pub struct ImageInfo {
 }
 
 impl ImageInfo {
+    /// Builds a dashi image description suitable for GPU allocation.
     pub fn dashi(&self) -> dashi::ImageInfo<'_> {
         dashi::ImageInfo {
             debug_name: &self.name,
@@ -57,6 +58,7 @@ impl ImageInfo {
         }
     }
 
+    /// Returns a simplified GPU metadata struct without raw pixel data.
     pub fn gpu(&self) -> GPUImageInfo {
         GPUImageInfo {
             dim: self.dim,
@@ -75,14 +77,17 @@ pub struct HostImage {
 }
 
 impl HostImage {
+    /// Creates a new host-side image with metadata and pixel data.
     pub fn new(info: ImageInfo, data: Vec<u8>) -> Self {
         Self { info, data }
     }
 
+    /// Returns the image metadata.
     pub fn info(&self) -> &ImageInfo {
         &self.info
     }
 
+    /// Returns the raw pixel contents for the host image.
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -102,6 +107,7 @@ pub struct ImageDB {
 }
 
 impl ImageDB {
+    /// Creates an image database helper for the provided GPU context and backing module.
     pub fn new(ctx: *mut Context, module_path: &str) -> Self {
         let data = match RDBView::load(module_path) {
             Ok(d) => Some(d),
@@ -115,6 +121,7 @@ impl ImageDB {
         }
     }
 
+    /// Uploads a host image to the GPU and returns its handle and metadata.
     pub fn enter_gpu_image(
         &mut self,
         entry: DatabaseEntry,
@@ -139,10 +146,12 @@ impl ImageDB {
         })
     }
 
+    /// Returns whether the specified image is already cached on the GPU.
     pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
         self.cache.get(*entry).is_some()
     }
 
+    /// Retrieves host image data from the backing database file.
     pub fn fetch_raw_image(&mut self, entry: DatabaseEntry) -> Result<HostImage, NorenError> {
         if let Some(rdb) = &mut self.data {
             return Ok(rdb.fetch::<HostImage>(entry)?);
@@ -151,6 +160,7 @@ impl ImageDB {
         return Err(NorenError::DataFailure());
     }
 
+    /// Loads an image into GPU memory if needed and bumps its reference count.
     pub fn fetch_gpu_image(&mut self, entry: DatabaseEntry) -> Result<DeviceImage, NorenError> {
         if let Some(entry) = self.cache.get_mut(entry) {
             entry.refcount += 1;
@@ -180,6 +190,7 @@ impl ImageDB {
     }
 
     // Checks whether any imagery needs to be unloaded, and does so.
+    /// Destroys expired GPU images whose unload delay has elapsed.
     pub fn unload_pulse(&mut self) {
         let expired = self.cache.drain_expired(Instant::now());
         if expired.is_empty() {
