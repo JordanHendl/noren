@@ -4,9 +4,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_MODEL_ENTRY, init_context, open_sample_db};
+use common::{SAMPLE_MODEL_ENTRY, display::blit_image_to_display, init_context, open_sample_db};
 use noren::render_graph::RenderGraphRequest;
-use std::error::Error;
+use std::{error::Error, io};
 
 fn main() {
     if let Err(err) = run() {
@@ -64,8 +64,28 @@ fn run() -> Result<(), Box<dyn Error>> {
         println!("Render pass handle: {:?}", pass);
     }
 
-    // Should render to a display, with a camera.
-    todo!();
+    let preview = pick_preview_texture(&device_model).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "Model contains no GPU textures to preview",
+        )
+    })?;
+    blit_image_to_display(
+        &mut ctx,
+        preview.image.img,
+        [preview.image.info.dim[0], preview.image.info.dim[1]],
+        "model_render",
+    )?;
 
     Ok(())
+}
+
+fn pick_preview_texture(
+    model: &noren::meta::model::DeviceModel,
+) -> Option<&noren::meta::model::DeviceTexture> {
+    model
+        .meshes
+        .iter()
+        .flat_map(|mesh| mesh.textures.as_slice().iter())
+        .next()
 }

@@ -4,7 +4,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_TEXTURE_ENTRY, init_context, open_sample_db};
+use common::{SAMPLE_TEXTURE_ENTRY, display::blit_image_to_display, init_context, open_sample_db};
 use dashi::builders::{BindTableBuilder, BindTableLayoutBuilder};
 use dashi::{
     BindGroupVariable, BindGroupVariableType, ImageView, IndexedResource, SamplerInfo, ShaderInfo,
@@ -71,8 +71,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         "Created bindless table {:?} containing texture '{}'",
         table, SAMPLE_TEXTURE_ENTRY
     );
-    
-    // Should render to a display, with a camera.
-    todo!();
+
+    blit_image_to_display(
+        &mut ctx,
+        gpu_texture,
+        [image_info.dim[0], image_info.dim[1]],
+        "bindless_render",
+    )?;
     Ok(())
 }
