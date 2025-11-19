@@ -165,6 +165,9 @@
         }
       ],
       "bind_table_layouts": [
+        null,
+        null,
+        null,
         {
           "debug_name": "bindless_lookup",
           "shaders": [
