@@ -458,32 +458,6 @@ fn validate_shader_layouts(layout: &ModelLayoutFile) -> Result<(), NorenError> {
             }
         }
 
-        let missing_bg: Vec<String> = shader_layout
-            .bind_group_layouts
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, entry)| {
-                if entry.is_none() {
-                    Some(format!("bind_group_layouts[{idx}] missing"))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let missing_bt: Vec<String> = shader_layout
-            .bind_table_layouts
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, entry)| {
-                if entry.is_none() {
-                    Some(format!("bind_table_layouts[{idx}] missing"))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
         if shader_layout.bind_group_layouts.len() > 4 {
             issues.push(format!(
                 "bind_group_layouts defines {} entries but only 4 are supported",
@@ -497,9 +471,6 @@ fn validate_shader_layouts(layout: &ModelLayoutFile) -> Result<(), NorenError> {
                 shader_layout.bind_table_layouts.len()
             ));
         }
-
-        issues.extend(missing_bg);
-        issues.extend(missing_bt);
 
         if !issues.is_empty() {
             let materials = shader_to_materials
