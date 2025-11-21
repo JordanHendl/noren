@@ -7,6 +7,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use common::{SAMPLE_GEOMETRY_ENTRY, display::blit_image_to_display, init_context, open_sample_db};
 use dashi::builders::{BindGroupBuilder, BindTableBuilder};
 use dashi::driver::command::{BeginDrawing, DrawIndexed};
@@ -17,14 +18,24 @@ use dashi::{
     ImageView, IndexedResource, MemoryVisibility, Rect2D, SamplerInfo, ShaderResource, SubmitInfo,
     Viewport,
 };
-use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use glam::Mat4;
 use noren::meta::model::DeviceMaterial;
-use noren::parsing::{DatabaseLayoutFile, GraphicsShaderLayout, ModelLayoutFile};
+use noren::parsing::{
+    DatabaseLayoutFile, GraphicsShaderLayout, MaterialBindingType, MaterialLayout,
+    MaterialMetadata, ModelLayoutFile,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::error::Error;
 use std::path::PathBuf;
 
 const FALLBACK_DIM: u32 = 2;
+const RESERVED_CAMERA: &str = "noren_camera";
+const RESERVED_INSTANCES: &str = "noren_instances";
+const RESERVED_LIGHTS: &str = "noren_lights";
+const RESERVED_POST_SETTINGS: &str = "noren_post_settings";
+const RESERVED_EXPOSURE: &str = "noren_exposure";
+const RESERVED_INDICES: &str = "noren_indices";
+const RESERVED_BINDLESS_LAYERS: &str = "bindless_layers";
 
 fn main() {
     if let Err(err) = run() {
@@ -100,9 +111,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         shader,
         shader_layout,
         &device_material,
+        material_layout,
         shader_key,
         &material_entry,
     )?;
+
+    print_binding_recipes(&material_bindings);
 
     render_quad_with_material(
         &mut ctx,
@@ -199,6 +213,7 @@ struct MaterialBindings {
     samplers: Vec<Handle<dashi::Sampler>>,
     dynamic_allocator: Option<DynamicAllocator>,
     dynamic_buffers: Vec<DynamicBuffer>,
+    recipes: Vec<BindingRecipe>,
 }
 
 impl Default for MaterialBindings {
@@ -211,8 +226,25 @@ impl Default for MaterialBindings {
             samplers: Vec::new(),
             dynamic_allocator: None,
             dynamic_buffers: Vec::new(),
+            recipes: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct BindingRecipe {
+    set: u32,
+    binding: u32,
+    binding_type: MaterialBindingType,
+    name: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct SampledImageDefaults {
+    #[serde(default)]
+    count: Option<usize>,
+    #[serde(default)]
+    slots: Vec<u32>,
 }
 
 fn build_material_bindings(
@@ -220,12 +252,21 @@ fn build_material_bindings(
     shader: &noren::meta::model::GraphicsShader,
     shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
+    material_layout: &MaterialLayout,
     shader_key: &str,
     material_entry: &str,
 ) -> Result<MaterialBindings, Box<dyn Error>> {
     match shader_key {
-        "shader/multi_bind" => build_multi_bind_bindings(ctx, shader, shader_layout, material),
-        "shader/bind_table" => build_bind_table_material_bindings(ctx, shader, shader_layout, material),
+        "shader/multi_bind" => {
+            build_multi_bind_bindings(ctx, shader, shader_layout, material, material_layout)
+        }
+        "shader/bind_table" => build_bind_table_material_bindings(
+            ctx,
+            shader,
+            shader_layout,
+            material,
+            material_layout,
+        ),
         _ => {
             if shader_layout
                 .bind_group_layouts
@@ -256,8 +297,10 @@ fn build_multi_bind_bindings(
     shader: &noren::meta::model::GraphicsShader,
     shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
+    material_layout: &MaterialLayout,
 ) -> Result<MaterialBindings, Box<dyn Error>> {
     let mut bindings = MaterialBindings::default();
+    bindings.recipes = binding_recipes_from_layout(shader_layout, &material_layout.metadata);
 
     let sampler = ctx.make_sampler(&SamplerInfo::default())?;
     bindings.samplers.push(sampler);
@@ -273,11 +316,7 @@ fn build_multi_bind_bindings(
     bindings.images.push(fallback);
 
     if let Some(layout) = shader.bind_group_layouts.get(0).and_then(|opt| *opt) {
-        let camera = CameraData {
-            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            eye: [0.0, 0.0, 3.0],
-            exposure: 1.0,
-        };
+        let camera: CameraData = binding_defaults(&material_layout.metadata, RESERVED_CAMERA, 0, 0);
         let buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_camera",
             byte_size: std::mem::size_of::<CameraData>() as u32,
@@ -296,8 +335,9 @@ fn build_multi_bind_bindings(
     }
 
     if let Some(layout) = shader.bind_group_layouts.get(1).and_then(|opt| *opt) {
-        let transforms = InstanceTransforms::default();
-        let lights = Lights::default();
+        let transforms: InstanceTransforms =
+            binding_defaults(&material_layout.metadata, RESERVED_INSTANCES, 1, 0);
+        let lights: Lights = binding_defaults(&material_layout.metadata, RESERVED_LIGHTS, 1, 1);
 
         let transform_buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_instances",
@@ -325,7 +365,10 @@ fn build_multi_bind_bindings(
                 0,
                 ShaderResource::ConstBuffer(BufferView::new(transform_buffer)),
             )
-            .binding(1, ShaderResource::ConstBuffer(BufferView::new(lights_buffer)))
+            .binding(
+                1,
+                ShaderResource::ConstBuffer(BufferView::new(lights_buffer)),
+            )
             .build(ctx)?;
         bindings.bind_groups[1] = Some(group);
     }
@@ -335,7 +378,11 @@ fn build_multi_bind_bindings(
         builder = builder.layout(layout).set(2);
 
         let mut slot = 0;
-        if let Some(cfg) = shader_layout.bind_group_layouts.get(2).and_then(|c| c.as_ref()) {
+        if let Some(cfg) = shader_layout
+            .bind_group_layouts
+            .get(2)
+            .and_then(|c| c.as_ref())
+        {
             let borrowed = cfg.borrow();
             let info = borrowed.info();
             for shader_info in info.shaders {
@@ -343,10 +390,7 @@ fn build_multi_bind_bindings(
                     if variable.var_type == BindGroupVariableType::SampledImage {
                         let count = variable.count.max(1);
                         for _ in 0..count {
-                            let tex = textures
-                                .get(slot)
-                                .copied()
-                                .unwrap_or(fallback);
+                            let tex = textures.get(slot).copied().unwrap_or(fallback);
                             builder = builder.binding(
                                 variable.binding,
                                 ShaderResource::SampledImage(
@@ -370,28 +414,52 @@ fn build_multi_bind_bindings(
     if let Some(layout) = shader.bind_table_layouts.get(0).and_then(|opt| *opt) {
         let mut binding_sets: Vec<(u32, Vec<IndexedResource>)> = Vec::new();
 
-        if let Some(cfg) = shader_layout.bind_table_layouts.get(0).and_then(|c| c.as_ref()) {
+        if let Some(cfg) = shader_layout
+            .bind_table_layouts
+            .get(0)
+            .and_then(|c| c.as_ref())
+        {
             let borrowed = cfg.borrow();
             let info = borrowed.info();
             for shader_info in info.shaders {
                 for variable in shader_info.variables {
                     if variable.var_type == BindGroupVariableType::SampledImage {
-                        let count = variable.count.max(1) as usize;
-                        let resources: Vec<IndexedResource> = (0..count)
-                            .map(|element| IndexedResource {
-                                slot: element as u32,
+                        let defaults: SampledImageDefaults = binding_defaults(
+                            &material_layout.metadata,
+                            RESERVED_BINDLESS_LAYERS,
+                            0,
+                            variable.binding,
+                        );
+                        let mut count = defaults
+                            .count
+                            .unwrap_or_else(|| variable.count.max(1) as usize);
+                        count = count.max(variable.count.max(1) as usize);
+
+                        let mut resources: Vec<IndexedResource> = (0..count)
+                            .map(|slot| IndexedResource {
+                                slot: slot as u32,
                                 resource: ShaderResource::SampledImage(
                                     ImageView {
-                                        img: textures
-                                            .get(element)
-                                            .copied()
-                                            .unwrap_or(fallback),
+                                        img: fallback,
                                         ..Default::default()
                                     },
                                     sampler,
                                 ),
                             })
                             .collect();
+
+                        for (tex_idx, slot) in defaults.slots.iter().enumerate() {
+                            if (*slot as usize) < resources.len() {
+                                resources[*slot as usize].resource = ShaderResource::SampledImage(
+                                    ImageView {
+                                        img: textures.get(tex_idx).copied().unwrap_or(fallback),
+                                        ..Default::default()
+                                    },
+                                    sampler,
+                                );
+                            }
+                        }
+
                         binding_sets.push((variable.binding, resources));
                     }
                 }
@@ -415,8 +483,10 @@ fn build_bind_table_material_bindings(
     shader: &noren::meta::model::GraphicsShader,
     shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
+    material_layout: &MaterialLayout,
 ) -> Result<MaterialBindings, Box<dyn Error>> {
     let mut bindings = MaterialBindings::default();
+    bindings.recipes = binding_recipes_from_layout(shader_layout, &material_layout.metadata);
 
     let sampler = ctx.make_sampler(&SamplerInfo::default())?;
     bindings.samplers.push(sampler);
@@ -438,13 +508,12 @@ fn build_bind_table_material_bindings(
             ..Default::default()
         })?;
         let mut settings = allocator.bump().ok_or("allocate dynamic settings buffer")?;
-        settings.slice::<PostSettings>()[0] = PostSettings::default();
+        let defaults: PostSettings =
+            binding_defaults(&material_layout.metadata, RESERVED_POST_SETTINGS, 0, 0);
+        settings.slice::<PostSettings>()[0] = defaults;
 
-        let exposure = ExposureData {
-            exposure: 2.0,
-            gamma: 2.2,
-            _padding: [0.0; 2],
-        };
+        let exposure: ExposureData =
+            binding_defaults(&material_layout.metadata, RESERVED_EXPOSURE, 0, 1);
 
         let exposure_buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_exposure",
@@ -473,7 +542,13 @@ fn build_bind_table_material_bindings(
     if let Some(layout) = shader.bind_table_layouts.get(3).and_then(|opt| *opt) {
         let mut binding_sets: Vec<(u32, Vec<IndexedResource>)> = Vec::new();
 
-        let indices = [0u32, 1u32];
+        let index_defaults: IndexDefaults =
+            binding_defaults(&material_layout.metadata, RESERVED_INDICES, 3, 1);
+        let indices = if index_defaults.indices.is_empty() {
+            vec![0u32, 1u32]
+        } else {
+            index_defaults.indices
+        };
         let indices_buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_indices",
             byte_size: (indices.len() * std::mem::size_of::<u32>()) as u32,
@@ -483,29 +558,57 @@ fn build_bind_table_material_bindings(
         })?;
         bindings.buffers.push(indices_buffer);
 
-        if let Some(cfg) = shader_layout.bind_table_layouts.get(3).and_then(|c| c.as_ref()) {
+        if let Some(cfg) = shader_layout
+            .bind_table_layouts
+            .get(3)
+            .and_then(|c| c.as_ref())
+        {
             let borrowed = cfg.borrow();
             let info = borrowed.info();
             for shader_info in info.shaders {
                 for variable in shader_info.variables {
                     match variable.var_type {
                         BindGroupVariableType::SampledImage => {
-                            let count = variable.count.max(1) as usize;
-                            let resources: Vec<IndexedResource> = (0..count)
-                                .map(|element| IndexedResource {
-                                    slot: element as u32,
+                            let defaults: SampledImageDefaults = binding_defaults(
+                                &material_layout.metadata,
+                                RESERVED_BINDLESS_LAYERS,
+                                3,
+                                variable.binding,
+                            );
+                            let mut count = defaults
+                                .count
+                                .unwrap_or_else(|| variable.count.max(1) as usize);
+                            count = count.max(variable.count.max(1) as usize);
+
+                            let mut resources: Vec<IndexedResource> = (0..count)
+                                .map(|slot| IndexedResource {
+                                    slot: slot as u32,
                                     resource: ShaderResource::SampledImage(
                                         ImageView {
-                                            img: textures
-                                                .get(element)
-                                                .copied()
-                                                .unwrap_or(fallback),
+                                            img: fallback,
                                             ..Default::default()
                                         },
                                         sampler,
                                     ),
                                 })
                                 .collect();
+
+                            for (tex_idx, slot) in defaults.slots.iter().enumerate() {
+                                if (*slot as usize) < resources.len() {
+                                    resources[*slot as usize].resource =
+                                        ShaderResource::SampledImage(
+                                            ImageView {
+                                                img: textures
+                                                    .get(tex_idx)
+                                                    .copied()
+                                                    .unwrap_or(fallback),
+                                                ..Default::default()
+                                            },
+                                            sampler,
+                                        );
+                                }
+                            }
+
                             binding_sets.push((variable.binding, resources));
                         }
                         BindGroupVariableType::Storage => {
@@ -522,16 +625,6 @@ fn build_bind_table_material_bindings(
                 }
             }
         }
-
-        let indices = [0u32, 1u32];
-        let indices_buffer = ctx.make_buffer(&BufferInfo {
-            debug_name: "material_indices",
-            byte_size: (indices.len() * std::mem::size_of::<u32>()) as u32,
-            visibility: MemoryVisibility::CpuAndGpu,
-            usage: BufferUsage::STORAGE,
-            initial_data: Some(cast_slice(&indices)),
-        })?;
-        bindings.buffers.push(indices_buffer);
 
         let mut builder = BindTableBuilder::new("material_bind_table");
         builder = builder.layout(layout).set(3);
@@ -558,6 +651,112 @@ fn make_fallback_texture(ctx: &mut gpu::Context) -> Result<Handle<Image>, Box<dy
     Ok(ctx.make_image(&info)?)
 }
 
+fn binding_recipes_from_layout(
+    shader_layout: &GraphicsShaderLayout,
+    metadata: &MaterialMetadata,
+) -> Vec<BindingRecipe> {
+    let mut recipes = Vec::new();
+
+    for (set, cfg_opt) in shader_layout.bind_group_layouts.iter().enumerate() {
+        if let Some(cfg) = cfg_opt {
+            let borrowed = cfg.borrow();
+            let info = borrowed.info();
+            for shader_info in info.shaders {
+                for variable in shader_info.variables {
+                    recipes.push(BindingRecipe {
+                        set: set as u32,
+                        binding: variable.binding,
+                        binding_type: binding_type_from_variable(variable.var_type.clone()),
+                        name: metadata_name(metadata, set as u32, variable.binding),
+                    });
+                }
+            }
+        }
+    }
+
+    for (set, cfg_opt) in shader_layout.bind_table_layouts.iter().enumerate() {
+        if let Some(cfg) = cfg_opt {
+            let borrowed = cfg.borrow();
+            let info = borrowed.info();
+            for shader_info in info.shaders {
+                for variable in shader_info.variables {
+                    recipes.push(BindingRecipe {
+                        set: set as u32,
+                        binding: variable.binding,
+                        binding_type: binding_type_from_variable(variable.var_type.clone()),
+                        name: metadata_name(metadata, set as u32, variable.binding),
+                    });
+                }
+            }
+        }
+    }
+
+    recipes
+}
+
+fn binding_type_from_variable(var_type: BindGroupVariableType) -> MaterialBindingType {
+    match var_type {
+        BindGroupVariableType::Uniform => MaterialBindingType::Uniform,
+        BindGroupVariableType::Storage => MaterialBindingType::Storage,
+        BindGroupVariableType::SampledImage => MaterialBindingType::SampledImage,
+        BindGroupVariableType::StorageImage => MaterialBindingType::StorageImage,
+        BindGroupVariableType::DynamicUniform => MaterialBindingType::DynamicUniform,
+        _ => MaterialBindingType::Unknown,
+    }
+}
+
+fn metadata_name(metadata: &MaterialMetadata, set: u32, binding: u32) -> Option<String> {
+    metadata
+        .bindings
+        .iter()
+        .find(|meta| meta.set == set && meta.binding == binding)
+        .and_then(|meta| meta.name.clone())
+}
+
+fn binding_defaults<T: DeserializeOwned + Default>(
+    metadata: &MaterialMetadata,
+    name: &str,
+    set: u32,
+    binding: u32,
+) -> T {
+    if let Some(meta) = metadata
+        .bindings
+        .iter()
+        .find(|meta| meta.name.as_deref() == Some(name))
+    {
+        if !meta.defaults.is_null() {
+            return serde_json::from_value(meta.defaults.clone()).unwrap_or_default();
+        }
+    }
+
+    if let Some(meta) = metadata
+        .bindings
+        .iter()
+        .find(|meta| meta.set == set && meta.binding == binding)
+    {
+        if !meta.defaults.is_null() {
+            return serde_json::from_value(meta.defaults.clone()).unwrap_or_default();
+        }
+    }
+
+    T::default()
+}
+
+fn print_binding_recipes(bindings: &MaterialBindings) {
+    if bindings.recipes.is_empty() {
+        return;
+    }
+
+    println!("Material binding recipe:");
+    for recipe in &bindings.recipes {
+        let name = recipe.name.as_deref().unwrap_or("<unnamed>");
+        println!(
+            "  set {} binding {} -> {:?} ({})",
+            recipe.set, recipe.binding, recipe.binding_type, name
+        );
+    }
+}
+
 fn load_material_layout() -> Result<ModelLayoutFile, Box<dyn Error>> {
     let base_dir: PathBuf = common::sample_db_path();
     let layout_path = base_dir.join("layout.json");
@@ -582,15 +781,25 @@ fn load_material_layout() -> Result<ModelLayoutFile, Box<dyn Error>> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 struct CameraData {
     view_proj: [[f32; 4]; 4],
     eye: [f32; 3],
     exposure: f32,
 }
 
+impl Default for CameraData {
+    fn default() -> Self {
+        Self {
+            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            eye: [0.0, 0.0, 3.0],
+            exposure: 1.0,
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 struct InstanceTransforms {
     models: [[[f32; 4]; 4]; 1],
 }
@@ -609,7 +818,7 @@ impl Default for InstanceTransforms {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 struct Lights {
     positions: [[f32; 4]; 16],
     colors: [[f32; 4]; 16],
@@ -629,17 +838,42 @@ impl Default for Lights {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Default)]
+#[derive(Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 struct PostSettings {
     exposure: f32,
     gamma: f32,
     _padding: [f32; 2],
 }
 
+impl Default for PostSettings {
+    fn default() -> Self {
+        Self {
+            exposure: 1.0,
+            gamma: 2.2,
+            _padding: [0.0; 2],
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 struct ExposureData {
     exposure: f32,
     gamma: f32,
     _padding: [f32; 2],
+}
+
+impl Default for ExposureData {
+    fn default() -> Self {
+        Self {
+            exposure: 2.0,
+            gamma: 2.2,
+            _padding: [0.0; 2],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct IndexDefaults {
+    indices: Vec<u32>,
 }

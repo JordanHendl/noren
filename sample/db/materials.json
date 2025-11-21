@@ -13,7 +13,10 @@
     "material/quad": {
       "name": "Quad Material",
       "textures": [],
-      "shader": "shader/default"
+      "shader": "shader/default",
+      "metadata": {
+        "bindings": []
+      }
     },
     "material/multi_bind": {
       "name": "Multi Bind Quad",
@@ -21,14 +24,374 @@
         "texture/quad_diffuse",
         "texture/quad_overlay"
       ],
-      "shader": "shader/multi_bind"
+      "shader": "shader/multi_bind",
+      "metadata": {
+        "bindings": [
+          {
+            "name": "noren_camera",
+            "set": 0,
+            "binding": 0,
+            "binding_type": "uniform",
+            "defaults": {
+              "view_proj": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "eye": [
+                0.0,
+                0.0,
+                3.0
+              ],
+              "exposure": 1.0
+            }
+          },
+          {
+            "name": "noren_instances",
+            "set": 1,
+            "binding": 0,
+            "binding_type": "storage",
+            "defaults": {
+              "models": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "name": "noren_lights",
+            "set": 1,
+            "binding": 1,
+            "binding_type": "storage",
+            "defaults": {
+              "positions": [
+                [
+                  2.0,
+                  2.0,
+                  2.0,
+                  1.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "colors": [
+                [
+                  1.0,
+                  0.9,
+                  0.8,
+                  1.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ]
+            }
+          },
+          {
+            "name": "material_layers",
+            "set": 2,
+            "binding": 0,
+            "binding_type": "sampled_image",
+            "defaults": {}
+          },
+          {
+            "name": "bindless_layers",
+            "set": 0,
+            "binding": 0,
+            "binding_type": "sampled_image",
+            "defaults": {
+              "count": 64,
+              "slots": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
     },
     "material/bind_table": {
       "name": "Bind Table Quad",
       "textures": [
         "texture/quad_overlay"
       ],
-      "shader": "shader/bind_table"
+      "shader": "shader/bind_table",
+      "metadata": {
+        "bindings": [
+          {
+            "name": "noren_post_settings",
+            "set": 0,
+            "binding": 0,
+            "binding_type": "dynamic_uniform",
+            "defaults": {
+              "exposure": 1.0,
+              "gamma": 2.2,
+              "_padding": [
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "noren_exposure",
+            "set": 0,
+            "binding": 1,
+            "binding_type": "uniform",
+            "defaults": {
+              "exposure": 2.0,
+              "gamma": 2.2,
+              "_padding": [
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "bindless_layers",
+            "set": 3,
+            "binding": 0,
+            "binding_type": "sampled_image",
+            "defaults": {
+              "count": 64,
+              "slots": [
+                0
+              ]
+            }
+          },
+          {
+            "name": "noren_indices",
+            "set": 3,
+            "binding": 1,
+            "binding_type": "storage",
+            "defaults": {
+              "indices": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
     }
   },
   "meshes": {},
