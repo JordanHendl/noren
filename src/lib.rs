@@ -1169,6 +1169,7 @@ mod tests {
                     MISSING_TEXTURE_ENTRY.to_string(),
                 ],
                 shader: Some(SHADER_PROGRAM_ENTRY.to_string()),
+                metadata: Default::default(),
             },
         );
 

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use dashi::{AttachmentDescription, SubpassDependency, Viewport, cfg};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 fn default_geometry_path() -> String {
     "geometry.rdb".to_string()
@@ -113,6 +114,8 @@ pub struct MaterialLayout {
     pub textures: Vec<String>,
     #[serde(default)]
     pub shader: Option<String>,
+    #[serde(default)]
+    pub metadata: MaterialMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -133,6 +136,38 @@ pub struct ModelLayout {
     pub name: Option<String>,
     #[serde(default)]
     pub meshes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaterialMetadata {
+    #[serde(default)]
+    pub bindings: Vec<MaterialBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaterialBinding {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub set: u32,
+    #[serde(default)]
+    pub binding: u32,
+    #[serde(default)]
+    pub binding_type: MaterialBindingType,
+    #[serde(default)]
+    pub defaults: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialBindingType {
+    #[default]
+    Unknown,
+    Uniform,
+    Storage,
+    SampledImage,
+    StorageImage,
+    DynamicUniform,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
