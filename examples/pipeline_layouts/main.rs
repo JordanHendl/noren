@@ -37,7 +37,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             "Prepared graphics pipeline {:?} with layout {:?}",
             binding.pipeline, binding.pipeline_layout
         );
-        println!("Use these layouts when creating the bind groups/tables you will bind before drawing with this pipeline:");
+        println!(
+            "Use these layouts when creating the bind groups/tables you will bind before drawing with this pipeline:"
+        );
 
         for (set, layout) in binding.bind_group_layouts.iter().enumerate() {
             match layout {

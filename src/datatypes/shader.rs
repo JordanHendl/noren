@@ -45,7 +45,7 @@ impl ShaderDB {
     }
 
     /// Fetches a shader module by entry name, ensuring it contains SPIR-V data.
-    pub fn fetch_module(&mut self, entry: DatabaseEntry) -> Result<ShaderModule, NorenError> {
+    pub fn fetch_module(&mut self, entry: DatabaseEntry<'_>) -> Result<ShaderModule, NorenError> {
         if let Some(rdb) = &mut self.data {
             let module = rdb.fetch::<ShaderModule>(entry)?;
             if module.is_spirv() {
@@ -56,6 +56,14 @@ impl ShaderDB {
         }
 
         Err(NorenError::DataFailure())
+    }
+
+    /// Lists all shader modules available in the backing database.
+    pub fn enumerate_entries(&self) -> Vec<String> {
+        self.data
+            .as_ref()
+            .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
+            .unwrap_or_default()
     }
 }
 

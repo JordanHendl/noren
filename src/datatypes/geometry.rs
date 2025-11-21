@@ -52,7 +52,7 @@ impl GeometryDB {
     /// Uploads host geometry into GPU buffers and caches the result.
     pub fn enter_gpu_geometry(
         &mut self,
-        entry: DatabaseEntry,
+        entry: DatabaseEntry<'_>,
         geom: HostGeometry,
     ) -> Result<DeviceGeometry, NorenError> {
         debug_assert!(self.cache.get(entry).is_none());
@@ -105,12 +105,15 @@ impl GeometryDB {
     }
 
     /// Returns whether the requested geometry entry is already cached on the GPU.
-    pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
+    pub fn is_loaded(&self, entry: &DatabaseEntry<'_>) -> bool {
         self.cache.get(*entry).is_some()
     }
 
     /// Retrieves host geometry data directly from the backing database file.
-    pub fn fetch_raw_geometry(&mut self, entry: DatabaseEntry) -> Result<HostGeometry, NorenError> {
+    pub fn fetch_raw_geometry(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<HostGeometry, NorenError> {
         if let Some(rdb) = &mut self.data {
             return Ok(rdb.fetch::<HostGeometry>(entry)?);
         }
@@ -121,7 +124,7 @@ impl GeometryDB {
     /// Ensures the geometry is loaded on the GPU and increments its reference count.
     pub fn fetch_gpu_geometry(
         &mut self,
-        entry: DatabaseEntry,
+        entry: DatabaseEntry<'_>,
     ) -> Result<DeviceGeometry, NorenError> {
         if !self.is_loaded(&entry) {
             let host_geom = self.fetch_raw_geometry(entry)?;
@@ -135,8 +138,16 @@ impl GeometryDB {
         Ok(cache_entry.payload.clone())
     }
 
+    /// Lists all geometry entries available in the backing database.
+    pub fn enumerate_entries(&self) -> Vec<String> {
+        self.data
+            .as_ref()
+            .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
+            .unwrap_or_default()
+    }
+
     /// Decrements a geometry reference, scheduling it for unloading after a delay.
-    pub fn unref_entry(&mut self, entry: DatabaseEntry) -> Result<(), NorenError> {
+    pub fn unref_entry(&mut self, entry: DatabaseEntry<'_>) -> Result<(), NorenError> {
         let unload_at = Instant::now() + UNLOAD_DELAY;
         match self.cache.decrement(entry, unload_at) {
             Some(_) => Ok(()),

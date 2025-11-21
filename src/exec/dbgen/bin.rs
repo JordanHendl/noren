@@ -30,10 +30,7 @@ impl Logger {
     }
 
     #[cfg(test)]
-    fn with_sink(
-        verbose: bool,
-        sink: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    ) -> Self {
+    fn with_sink(verbose: bool, sink: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
         Self {
             verbose,
             sink: Some(sink),
@@ -70,7 +67,9 @@ fn main() {
     let logger = Logger::stderr(cli.verbose);
 
     let result = match cli.command {
-        Command::Build { append, spec } => run_from_path(&spec, append, &logger, cli.write_binaries),
+        Command::Build { append, spec } => {
+            run_from_path(&spec, append, &logger, cli.write_binaries)
+        }
         Command::Validate(args) => run_validation(&args, &logger),
         Command::AppendGeometry(args) => append_geometry(&args, &logger, cli.write_binaries),
         Command::AppendImagery(args) => append_imagery(&args, &logger, cli.write_binaries),
@@ -444,7 +443,9 @@ fn run_validation(args: &ValidateArgs, logger: &Logger) -> Result<(), BuildError
         .to_str()
         .ok_or_else(|| BuildError::message("layout path is not valid UTF-8"))?;
 
-    logger.log(format!("validating layout {spec_str} against base {base_str}"));
+    logger.log(format!(
+        "validating layout {spec_str} against base {base_str}"
+    ));
     validate_database_layout(base_str, Some(spec_str)).map_err(BuildError::from)
 }
 
@@ -485,7 +486,11 @@ fn build_geometry(
     Ok(())
 }
 
-fn append_geometry(args: &GeometryAppendArgs, logger: &Logger, write_binaries: bool) -> Result<(), BuildError> {
+fn append_geometry(
+    args: &GeometryAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -574,7 +579,11 @@ fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry,
     Ok(HostGeometry { vertices, indices })
 }
 
-fn append_imagery(args: &ImageAppendArgs, logger: &Logger, write_binaries: bool) -> Result<(), BuildError> {
+fn append_imagery(
+    args: &ImageAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -634,7 +643,11 @@ fn build_imagery(
     Ok(())
 }
 
-fn append_shader(args: &ShaderAppendArgs, logger: &Logger, write_binaries: bool) -> Result<(), BuildError> {
+fn append_shader(
+    args: &ShaderAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -954,10 +967,13 @@ fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
             let texture_key = normalize_entry_name(texture, "texture/", false);
             mesh_textures.push(texture_key.clone());
 
-            layout.textures.entry(texture_key.clone()).or_insert_with(|| TextureLayout {
-                image: texture.clone(),
-                name: None,
-            });
+            layout
+                .textures
+                .entry(texture_key.clone())
+                .or_insert_with(|| TextureLayout {
+                    image: texture.clone(),
+                    name: None,
+                });
         }
 
         layout.meshes.insert(
@@ -1171,8 +1187,7 @@ mod tests {
         assert!(output_dir.join("layout.json").exists());
 
         let model_layout: ModelLayoutFile =
-            serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap())
-                .unwrap();
+            serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap()).unwrap();
 
         let model = model_layout
             .models
@@ -1286,8 +1301,7 @@ mod tests {
         assert!(output_dir.join("layout.json").exists());
 
         let model_layout: ModelLayoutFile =
-            serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap())
-                .unwrap();
+            serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap()).unwrap();
 
         let model = model_layout
             .models
@@ -1347,10 +1361,14 @@ mod tests {
 
         let logs = sink.lock().unwrap();
         assert!(logs.iter().any(|msg| msg.contains("building from spec")));
-        assert!(logs
-            .iter()
-            .any(|msg| msg.contains("geometry: loading geometry/quad")));
-        assert!(logs.iter().any(|msg| msg.contains("geometry: skipping binary output")));
+        assert!(
+            logs.iter()
+                .any(|msg| msg.contains("geometry: loading geometry/quad"))
+        );
+        assert!(
+            logs.iter()
+                .any(|msg| msg.contains("geometry: skipping binary output"))
+        );
     }
 
     #[test]
@@ -1514,19 +1532,20 @@ mod tests {
         run_from_path(&build_path, false, &logger, true).unwrap();
 
         let geometry_path = tmp_root.join("db/geometry.rdb");
-        append_geometry(&GeometryAppendArgs {
-            rdb: geometry_path.clone(),
-            entry: GeometryEntry {
-                entry: "geometry/appended".into(),
-                file: tmp_root.join("sample_pre/gltf/quad.gltf"),
-                mesh: Some("Quad".into()),
-                primitive: Some(0),
+        append_geometry(
+            &GeometryAppendArgs {
+                rdb: geometry_path.clone(),
+                entry: GeometryEntry {
+                    entry: "geometry/appended".into(),
+                    file: tmp_root.join("sample_pre/gltf/quad.gltf"),
+                    mesh: Some("Quad".into()),
+                    primitive: Some(0),
+                },
             },
-        },
-        &logger,
-        true,
-    )
-    .unwrap();
+            &logger,
+            true,
+        )
+        .unwrap();
 
         let mut rdb = RDBFile::load(&geometry_path).unwrap();
         let original = rdb.fetch::<HostGeometry>("geometry/original").unwrap();
