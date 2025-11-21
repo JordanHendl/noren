@@ -124,7 +124,7 @@ impl ImageDB {
     /// Uploads a host image to the GPU and returns its handle and metadata.
     pub fn enter_gpu_image(
         &mut self,
-        entry: DatabaseEntry,
+        entry: DatabaseEntry<'_>,
         image: HostImage,
     ) -> Result<DeviceImage, NorenError> {
         let ctx: &mut Context = unsafe { self.ctx.as_mut() };
@@ -147,12 +147,12 @@ impl ImageDB {
     }
 
     /// Returns whether the specified image is already cached on the GPU.
-    pub fn is_loaded(&self, entry: &DatabaseEntry) -> bool {
+    pub fn is_loaded(&self, entry: &DatabaseEntry<'_>) -> bool {
         self.cache.get(*entry).is_some()
     }
 
     /// Retrieves host image data from the backing database file.
-    pub fn fetch_raw_image(&mut self, entry: DatabaseEntry) -> Result<HostImage, NorenError> {
+    pub fn fetch_raw_image(&mut self, entry: DatabaseEntry<'_>) -> Result<HostImage, NorenError> {
         if let Some(rdb) = &mut self.data {
             return Ok(rdb.fetch::<HostImage>(entry)?);
         }
@@ -161,7 +161,7 @@ impl ImageDB {
     }
 
     /// Loads an image into GPU memory if needed and bumps its reference count.
-    pub fn fetch_gpu_image(&mut self, entry: DatabaseEntry) -> Result<DeviceImage, NorenError> {
+    pub fn fetch_gpu_image(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceImage, NorenError> {
         if let Some(entry) = self.cache.get_mut(entry) {
             entry.refcount += 1;
             entry.clear_unload();
@@ -181,7 +181,7 @@ impl ImageDB {
     ///
     /// Once all references have been released, [`unload_pulse`] should be
     /// invoked to destroy any images whose unload delay has elapsed.
-    pub fn unref_entry(&mut self, entry: DatabaseEntry) -> Result<(), NorenError> {
+    pub fn unref_entry(&mut self, entry: DatabaseEntry<'_>) -> Result<(), NorenError> {
         let unload_at = Instant::now() + UNLOAD_DELAY;
         match self.cache.decrement(entry, unload_at) {
             Some(_) => Ok(()),
@@ -202,6 +202,14 @@ impl ImageDB {
             ctx.destroy_image(entry.payload.img);
         }
     }
+
+    /// Lists all imagery entries available in the backing database.
+    pub fn enumerate_entries(&self) -> Vec<String> {
+        self.data
+            .as_ref()
+            .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -210,7 +218,7 @@ mod tests {
     use crate::utils::rdbfile::RDBFile;
     use std::{fs, path::PathBuf};
 
-    const TEST_ENTRY: DatabaseEntry = "imagery/test_image";
+    const TEST_ENTRY: DatabaseEntry<'static> = "imagery/test_image";
 
     fn create_sample_image() -> HostImage {
         let info = ImageInfo {

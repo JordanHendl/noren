@@ -209,6 +209,69 @@ impl DB {
         todo!()
     }
 
+    /// Enumerates all geometry entries available in the backing database.
+    pub fn enumerate_geometry(&self) -> Vec<String> {
+        self.geometry.enumerate_entries()
+    }
+
+    /// Enumerates all imagery entries available in the backing database.
+    pub fn enumerate_images(&self) -> Vec<String> {
+        self.imagery.enumerate_entries()
+    }
+
+    /// Enumerates shader module entries available for program creation.
+    pub fn enumerate_shader_modules(&self) -> Vec<String> {
+        self.shaders.enumerate_entries()
+    }
+
+    /// Enumerates logical texture definitions declared in the model layout.
+    pub fn enumerate_textures(&self) -> Vec<String> {
+        self.model_file
+            .as_ref()
+            .map(|layout| layout.textures.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates material definitions declared in the model layout.
+    pub fn enumerate_materials(&self) -> Vec<String> {
+        self.model_file
+            .as_ref()
+            .map(|layout| layout.materials.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates mesh definitions declared in the model layout.
+    pub fn enumerate_meshes(&self) -> Vec<String> {
+        self.model_file
+            .as_ref()
+            .map(|layout| layout.meshes.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates model definitions declared in the model layout.
+    pub fn enumerate_models(&self) -> Vec<String> {
+        self.model_file
+            .as_ref()
+            .map(|layout| layout.models.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates render pass definitions declared in the model layout.
+    pub fn enumerate_render_passes(&self) -> Vec<String> {
+        self.model_file
+            .as_ref()
+            .map(|layout| layout.render_passes.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates graphics shader definitions declared in the model layout.
+    pub fn enumerate_shaders(&self) -> Vec<String> {
+        self.model_file
+            .as_ref()
+            .map(|layout| layout.shaders.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Loads or retrieves a cached render pass by name.
     pub fn fetch_render_pass(&mut self, entry: &str) -> Result<Handle<RenderPass>, NorenError> {
         let ctx: &mut Context = unsafe { self.ctx.as_mut() };
@@ -216,7 +279,7 @@ impl DB {
     }
 
     /// Builds a CPU-side model composed of host geometry, textures, and materials.
-    pub fn fetch_model(&mut self, entry: DatabaseEntry) -> Result<HostModel, NorenError> {
+    pub fn fetch_model(&mut self, entry: DatabaseEntry<'_>) -> Result<HostModel, NorenError> {
         self.assemble_model(
             entry,
             |geometry_db, entry| geometry_db.fetch_raw_geometry(entry),
@@ -241,7 +304,7 @@ impl DB {
     }
 
     /// Loads a GPU-ready model with device buffers, textures, and pipelines.
-    pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry) -> Result<DeviceModel, NorenError> {
+    pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceModel, NorenError> {
         let ctx_ptr = self.ctx;
         self.assemble_model(
             entry,
@@ -273,10 +336,79 @@ impl DB {
         )
     }
 
+    /// Builds a CPU-side material with host images and optional shader.
+    pub fn fetch_host_material(&mut self, entry: &str) -> Result<HostMaterial, NorenError> {
+        let layout = self
+            .model_file
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let (name, textures, shader) = build_material_components(
+            layout,
+            &mut self.imagery,
+            &mut self.shaders,
+            &mut self.render_passes,
+            entry,
+            &mut |name, image| HostTexture { name, image },
+            &mut |imagery, tex_entry| imagery.fetch_raw_image(tex_entry),
+            &mut |shader_db, _render_passes, shader_key, shader_layout| {
+                Self::load_graphics_shader(shader_db, shader_key, shader_layout)
+            },
+        )?
+        .ok_or_else(NorenError::LookupFailure)?;
+
+        Ok(HostMaterial {
+            name,
+            textures,
+            shader,
+        })
+    }
+
+    /// Builds a GPU-ready material with device textures and pipeline state.
+    pub fn fetch_device_material(&mut self, entry: &str) -> Result<DeviceMaterial, NorenError> {
+        let layout = self
+            .model_file
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+        let ctx_ptr = self.ctx;
+
+        let (_name, textures, shader) = build_material_components(
+            layout,
+            &mut self.imagery,
+            &mut self.shaders,
+            &mut self.render_passes,
+            entry,
+            &mut |_, image| DeviceTexture::new(image),
+            &mut |imagery, tex_entry| imagery.fetch_gpu_image(tex_entry),
+            &mut move |shader_db, render_passes, shader_key, shader_layout| {
+                let mut shader_opt =
+                    Self::load_graphics_shader(shader_db, shader_key, shader_layout)?;
+                if let Some(shader) = shader_opt.as_mut() {
+                    let ctx: &mut Context = unsafe { &mut *ctx_ptr.as_ptr() };
+                    let render_pass_key = shader_layout
+                        .render_pass
+                        .as_deref()
+                        .ok_or_else(|| NorenError::MissingRenderPass(shader_key.to_string()))?;
+                    Self::configure_graphics_shader_pipeline(
+                        shader,
+                        shader_layout,
+                        ctx,
+                        render_pass_key,
+                        render_passes,
+                    )?;
+                }
+                Ok(shader_opt)
+            },
+        )?
+        .ok_or_else(NorenError::LookupFailure)?;
+
+        Ok(DeviceMaterial::new(textures, shader))
+    }
+
     /// Fetches and configures a graphics shader for a specific render pass.
     pub fn fetch_graphics_shader(
         &mut self,
-        entry: DatabaseEntry,
+        entry: DatabaseEntry<'_>,
     ) -> Result<GraphicsShader, NorenError> {
         let shader_layout = {
             let layout = self
@@ -359,20 +491,124 @@ fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
 ) -> Result<(), NorenError>
 where
     MakeTexture: FnMut(String, Image) -> Texture,
-    FetchImage: FnMut(&mut ImageDB, DatabaseEntry) -> Result<Image, NorenError>,
+    FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
 {
     for tex_key in keys {
         if let Some(tex_def) = layout.textures.get(tex_key) {
             if tex_def.image.is_empty() {
                 continue;
             }
-            let tex_entry = leak_database_entry(&tex_def.image);
-            let image = fetch_image(imagery, tex_entry)?;
+            let image = fetch_image(imagery, tex_def.image.as_str())?;
             let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
             output.push(make_texture(name, image));
         }
     }
     Ok(())
+}
+
+fn build_material_components<Texture, Image, Shader, MakeTexture, FetchImage, LoadShader>(
+    layout: &ModelLayoutFile,
+    imagery: &mut ImageDB,
+    shaders: &mut ShaderDB,
+    render_passes: &mut RenderPassDB,
+    material_key: &str,
+    make_texture: &mut MakeTexture,
+    fetch_image: &mut FetchImage,
+    load_shader: &mut LoadShader,
+) -> Result<Option<(String, Vec<Texture>, Option<Shader>)>, NorenError>
+where
+    MakeTexture: FnMut(String, Image) -> Texture,
+    FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
+    LoadShader: FnMut(
+        &mut ShaderDB,
+        &mut RenderPassDB,
+        &str,
+        &GraphicsShaderLayout,
+    ) -> Result<Option<Shader>, NorenError>,
+{
+    let Some(material_def) = layout.materials.get(material_key) else {
+        return Ok(None);
+    };
+
+    let mut textures = Vec::new();
+    if let Some(shader_key) = material_def.shader.as_deref() {
+        if let Some(shader_layout) = layout.shaders.get(shader_key) {
+            let slots = texture_binding_slots(shader_layout);
+            if slots.is_empty() {
+                append_texture_bindings(
+                    &mut textures,
+                    &material_def.textures,
+                    layout,
+                    imagery,
+                    make_texture,
+                    fetch_image,
+                )?;
+            } else {
+                let normalized =
+                    normalize_binding_entries(&material_def.textures, slots.len(), material_key)?;
+                for (slot_index, slot) in slots.iter().enumerate() {
+                    let tex_id = normalized.get(slot_index).map(|s| s.as_str());
+                    let Some(tex_id) = tex_id.filter(|value| !value.is_empty()) else {
+                        if slot.required {
+                            return Err(NorenError::InvalidMaterial(format!(
+                                "Material '{}' is missing a texture for {:?}",
+                                material_key, slot.kind
+                            )));
+                        }
+                        continue;
+                    };
+                    let tex_def = layout.textures.get(tex_id).ok_or_else(|| {
+                        NorenError::InvalidMaterial(format!(
+                            "Material '{}' references unknown texture '{}'",
+                            material_key, tex_id
+                        ))
+                    })?;
+                    if tex_def.image.is_empty() {
+                        continue;
+                    }
+                    let image = fetch_image(imagery, tex_def.image.as_str())?;
+                    let name = tex_def.name.clone().unwrap_or_else(|| tex_id.to_string());
+                    textures.push(make_texture(name, image));
+                }
+            }
+        } else {
+            append_texture_bindings(
+                &mut textures,
+                &material_def.textures,
+                layout,
+                imagery,
+                make_texture,
+                fetch_image,
+            )?;
+        }
+    } else {
+        append_texture_bindings(
+            &mut textures,
+            &material_def.textures,
+            layout,
+            imagery,
+            make_texture,
+            fetch_image,
+        )?;
+    }
+
+    let shader = match material_def.shader.as_ref() {
+        Some(shader_key) => {
+            if let Some(shader_layout) = layout.shaders.get(shader_key).cloned() {
+                load_shader(shaders, render_passes, shader_key, &shader_layout)?
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+
+    let name = material_def
+        .name
+        .clone()
+        .unwrap_or_else(|| material_key.to_string());
+
+    Ok(Some((name, textures, shader)))
 }
 
 fn normalize_binding_entries(
@@ -518,7 +754,7 @@ impl DB {
         LoadShader,
     >(
         &mut self,
-        entry: DatabaseEntry,
+        entry: DatabaseEntry<'_>,
         mut fetch_geometry: FetchGeometry,
         mut fetch_image: FetchImage,
         mut make_texture: MakeTexture,
@@ -528,8 +764,8 @@ impl DB {
         mut load_shader: LoadShader,
     ) -> Result<Model, NorenError>
     where
-        FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry) -> Result<Geometry, NorenError>,
-        FetchImage: FnMut(&mut ImageDB, DatabaseEntry) -> Result<Image, NorenError>,
+        FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry<'_>) -> Result<Geometry, NorenError>,
+        FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
         MakeTexture: FnMut(String, Image) -> Texture,
         MakeMaterial: FnMut(String, Vec<Texture>, Option<Shader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
@@ -564,8 +800,7 @@ impl DB {
                 continue;
             }
 
-            let geometry_entry = leak_database_entry(&mesh_def.geometry);
-            let geometry = fetch_geometry(&mut self.geometry, geometry_entry)?;
+            let geometry = fetch_geometry(&mut self.geometry, mesh_def.geometry.as_str())?;
 
             let mesh_name = mesh_def.name.clone().unwrap_or_else(|| mesh_key.clone());
 
@@ -576,110 +811,25 @@ impl DB {
                         continue;
                     }
 
-                    let tex_entry = leak_database_entry(&tex_def.image);
-                    let image = fetch_image(&mut self.imagery, tex_entry)?;
+                    let image = fetch_image(&mut self.imagery, tex_def.image.as_str())?;
                     let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
                     mesh_textures.push(make_texture(name, image));
                 }
             }
 
             let material = if let Some(material_key) = &mesh_def.material {
-                if let Some(material_def) = layout.materials.get(material_key) {
-                    let mut textures = Vec::new();
-                    if let Some(shader_key) = material_def.shader.as_deref() {
-                        if let Some(shader_layout) = layout.shaders.get(shader_key) {
-                            let slots = texture_binding_slots(shader_layout);
-                            if slots.is_empty() {
-                                append_texture_bindings(
-                                    &mut textures,
-                                    &material_def.textures,
-                                    layout,
-                                    &mut self.imagery,
-                                    &mut make_texture,
-                                    &mut fetch_image,
-                                )?;
-                            } else {
-                                let normalized = normalize_binding_entries(
-                                    &material_def.textures,
-                                    slots.len(),
-                                    material_key,
-                                )?;
-                                for (slot_index, slot) in slots.iter().enumerate() {
-                                    let tex_id = normalized.get(slot_index).map(|s| s.as_str());
-                                    let Some(tex_id) = tex_id.filter(|value| !value.is_empty())
-                                    else {
-                                        if slot.required {
-                                            return Err(NorenError::InvalidMaterial(format!(
-                                                "Material '{}' is missing a texture for {:?}",
-                                                material_key, slot.kind
-                                            )));
-                                        }
-                                        continue;
-                                    };
-                                    let tex_def = layout.textures.get(tex_id).ok_or_else(|| {
-                                        NorenError::InvalidMaterial(format!(
-                                            "Material '{}' references unknown texture '{}'",
-                                            material_key, tex_id
-                                        ))
-                                    })?;
-                                    if tex_def.image.is_empty() {
-                                        continue;
-                                    }
-                                    let tex_entry = leak_database_entry(&tex_def.image);
-                                    let image = fetch_image(&mut self.imagery, tex_entry)?;
-                                    let name =
-                                        tex_def.name.clone().unwrap_or_else(|| tex_id.to_string());
-                                    textures.push(make_texture(name, image));
-                                }
-                            }
-                        } else {
-                            append_texture_bindings(
-                                &mut textures,
-                                &material_def.textures,
-                                layout,
-                                &mut self.imagery,
-                                &mut make_texture,
-                                &mut fetch_image,
-                            )?;
-                        }
-                    } else {
-                        append_texture_bindings(
-                            &mut textures,
-                            &material_def.textures,
-                            layout,
-                            &mut self.imagery,
-                            &mut make_texture,
-                            &mut fetch_image,
-                        )?;
-                    }
+                let material = build_material_components(
+                    layout,
+                    &mut self.imagery,
+                    &mut self.shaders,
+                    &mut self.render_passes,
+                    material_key,
+                    &mut make_texture,
+                    &mut fetch_image,
+                    &mut load_shader,
+                )?;
 
-                    let shader = match material_def.shader.as_ref() {
-                        Some(shader_key) => {
-                            if let Some(shader_layout) = layout.shaders.get(shader_key).cloned() {
-                                load_shader(
-                                    &mut self.shaders,
-                                    &mut self.render_passes,
-                                    shader_key,
-                                    &shader_layout,
-                                )?
-                            } else {
-                                None
-                            }
-                        }
-                        None => None,
-                    };
-
-                    Some(make_material(
-                        material_def
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| material_key.clone()),
-                        textures,
-                        shader,
-                    ))
-                } else {
-                    None
-                }
+                material.map(|(name, textures, shader)| make_material(name, textures, shader))
             } else {
                 None
             };
@@ -908,8 +1058,7 @@ impl DB {
         shaders: &mut ShaderDB,
         entry: &str,
     ) -> Result<ShaderModule, NorenError> {
-        let shader_entry = leak_database_entry(entry);
-        shaders.fetch_module(shader_entry)
+        shaders.fetch_module(entry)
     }
 }
 
@@ -932,7 +1081,7 @@ mod tests {
 
     use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport, cfg};
 
-    const MODEL_ENTRY: DatabaseEntry = "model/simple";
+    const MODEL_ENTRY: DatabaseEntry<'static> = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
     const IMAGE_ENTRY: &str = "imagery/sample_texture";
     const MATERIAL_ENTRY: &str = "material/simple";
