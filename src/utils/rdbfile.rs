@@ -30,6 +30,12 @@ fn portable_type_hash<T>() -> u64 {
     fnv1a64(type_name::<T>())
 }
 
+/// Returns the portable type tag used to identify serialized values in an RDB.
+#[inline]
+pub fn type_tag_for<T>() -> u32 {
+    portable_type_hash::<T>() as u32
+}
+
 fn to_bytes<T: Serialize>(value: &T) -> Vec<u8> {
     bincode::serialize(value).unwrap()
 }

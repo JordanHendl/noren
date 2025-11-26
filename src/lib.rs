@@ -24,7 +24,7 @@ use dashi::{
 
 pub use parsing::DatabaseLayoutFile;
 pub use utils::error::{NorenError, RdbErr};
-pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView};
+pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView, type_tag_for};
 
 pub struct DBInfo<'a> {
     pub ctx: *mut dashi::Context,
