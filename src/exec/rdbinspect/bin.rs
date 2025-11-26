@@ -154,7 +154,7 @@ fn run() -> Result<(), String> {
 
         if let Some(known) = known_type(meta.type_tag) {
             println!("\nDeserialized as {}:", known.display_name());
-            match (known.decoder)(bytes) {
+            match (known.describe)(bytes) {
                 Ok(text) => println!("{text}"),
                 Err(err) => println!("(failed to decode {}: {err})", known.display_name()),
             }
@@ -191,9 +191,9 @@ fn known_types() -> &'static [KnownType] {
     static KNOWN: OnceLock<Vec<KnownType>> = OnceLock::new();
     KNOWN.get_or_init(|| {
         vec![
-            KnownType::new::<HostGeometry>(),
-            KnownType::new::<HostImage>(),
-            KnownType::new::<ShaderModule>(),
+            KnownType::with::<HostGeometry>(describe_geometry),
+            KnownType::with::<HostImage>(describe_image),
+            KnownType::with::<ShaderModule>(describe_shader),
         ]
     })
 }
@@ -213,22 +213,36 @@ fn type_label(tag: u32) -> String {
 struct KnownType {
     name: &'static str,
     tag: u32,
-    decoder: fn(&[u8]) -> Result<String, String>,
+    describe: Box<dyn Fn(&[u8]) -> Result<String, String> + Send + Sync>,
 }
 
 impl KnownType {
     fn new<T>() -> Self
     where
-        T: DeserializeOwned + std::fmt::Debug,
+        T: DeserializeOwned + std::fmt::Debug + 'static,
     {
         Self {
             name: type_name::<T>(),
             tag: type_tag_for::<T>(),
-            decoder: |bytes| {
+            describe: Box::new(|bytes| {
                 deserialize::<T>(bytes)
                     .map(|value| format!("{value:#?}"))
                     .map_err(|err| err.to_string())
-            },
+            }),
+        }
+    }
+
+    fn with<T>(describe: fn(&T) -> String) -> Self
+    where
+        T: DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        Self {
+            name: type_name::<T>(),
+            tag: type_tag_for::<T>(),
+            describe: Box::new(move |bytes| {
+                let value: T = deserialize(bytes).map_err(|err| err.to_string())?;
+                Ok(describe(&value))
+            }),
         }
     }
 
@@ -238,6 +252,76 @@ impl KnownType {
             .map(|(_, tail)| tail)
             .unwrap_or(self.name)
     }
+}
+
+fn describe_geometry(geometry: &HostGeometry) -> String {
+    let vertex_count = geometry.vertices.len();
+    let indices = geometry.indices.as_ref();
+
+    let (index_summary, triangle_hint) = match indices {
+        Some(list) if !list.is_empty() => {
+            let triangle_count = list.len() / 3;
+            (
+                format!(
+                    "{} indices ({} bytes)",
+                    list.len(),
+                    list.len() * std::mem::size_of::<u32>()
+                ),
+                format!("  ~ Estimated triangles: {triangle_count}"),
+            )
+        }
+        Some(_) => ("0 indices (empty buffer)".to_string(), String::new()),
+        None => ("None (non-indexed draw)".to_string(), String::new()),
+    };
+
+    format!(
+        "  Vertices: {vertex_count}\n  Indices: {index_summary}{}",
+        if triangle_hint.is_empty() {
+            String::new()
+        } else {
+            format!("\n{triangle_hint}")
+        }
+    )
+}
+
+fn describe_image(image: &HostImage) -> String {
+    let info = &image.info;
+    let dimensions = format!("{} x {} x {}", info.dim[0], info.dim[1], info.dim[2]);
+    let bytes = image.data.len();
+
+    format!(
+        "  Dimensions: {dimensions}\n  Layers: {}\n  Format: {:?}\n  Mip levels: {}\n  Data size: {bytes} bytes",
+        info.layers, info.format, info.mip_levels
+    )
+}
+
+fn describe_shader(module: &ShaderModule) -> String {
+    let artifact = module.artifact();
+    let name = artifact
+        .name
+        .as_deref()
+        .or(artifact.file.as_deref())
+        .unwrap_or("(unnamed)");
+
+    let binding_lines: Vec<String> = artifact
+        .variables
+        .iter()
+        .map(|var| format!("    - {}: {:?}", var.name, var.kind))
+        .collect();
+
+    let bindings = if binding_lines.is_empty() {
+        "  Bindings: (none)".to_string()
+    } else {
+        format!("  Bindings:\n{}", binding_lines.join("\n"))
+    };
+
+    format!(
+        "  Name: {name}\n  Language: {:?}\n  Stage: {:?}\n  SPIR-V words: {}\n{}",
+        artifact.lang,
+        artifact.stage,
+        artifact.spirv.len(),
+        bindings
+    )
 }
 
 fn truncated_name(name: &str, width: usize) -> String {
