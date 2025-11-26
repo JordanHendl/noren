@@ -5,26 +5,48 @@ use crate::{RDBView, utils::NorenError};
 
 const SPIRV_MAGIC_WORD: u32 = 0x0723_0203;
 
-#[repr(C)]
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShaderModule {
-    words: Vec<u32>,
+    artifact: bento::CompilationResult,
 }
 
 impl ShaderModule {
+    pub fn from_compilation(artifact: bento::CompilationResult) -> Self {
+        Self { artifact }
+    }
+
     /// Creates a shader module from raw SPIR-V words.
     pub fn from_words(words: Vec<u32>) -> Self {
-        Self { words }
+        Self {
+            artifact: bento::CompilationResult {
+                name: None,
+                file: None,
+                lang: bento::ShaderLang::Glsl,
+                stage: dashi::ShaderType::Compute,
+                variables: Vec::new(),
+                spirv: words,
+            },
+        }
+    }
+
+    pub fn artifact(&self) -> &bento::CompilationResult {
+        &self.artifact
     }
 
     /// Returns the raw SPIR-V words backing the module.
     pub fn words(&self) -> &[u32] {
-        &self.words
+        &self.artifact.spirv
     }
 
     /// Checks whether the module data is valid SPIR-V.
     pub fn is_spirv(&self) -> bool {
-        matches!(self.words.first(), Some(&word) if word == SPIRV_MAGIC_WORD)
+        matches!(self.words().first(), Some(&word) if word == SPIRV_MAGIC_WORD)
+    }
+}
+
+impl Default for ShaderModule {
+    fn default() -> Self {
+        Self::from_words(Vec::new())
     }
 }
 
