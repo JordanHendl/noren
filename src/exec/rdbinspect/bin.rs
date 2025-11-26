@@ -1,6 +1,12 @@
-use std::{env, fs, path::PathBuf, process};
+use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 
-use noren::RDBView;
+use bincode::deserialize;
+use noren::{
+    RDBView,
+    datatypes::{HostGeometry, HostImage, ShaderModule},
+    type_tag_for,
+};
+use serde::de::DeserializeOwned;
 
 fn main() {
     if let Err(err) = run() {
@@ -83,35 +89,44 @@ fn run() -> Result<(), String> {
             .max()
             .unwrap_or(4)
             .clamp(4, 48);
+        let type_width = entries
+            .iter()
+            .map(|entry| type_label(entry.type_tag).len())
+            .max()
+            .unwrap_or(4)
+            .clamp(4, 32);
         println!(
-            "\n{:<name_width$}  {:<6}  {:^12}  {:>12}  {:>12}",
+            "\n{:<name_width$}  {:<type_width$}  {:^12}  {:>12}  {:>12}",
             "Name",
             "Type",
             "Type (hex)",
             "Offset",
             "Length",
-            name_width = name_width
+            name_width = name_width,
+            type_width = type_width
         );
         println!(
-            "{:-<name_width$}  {:-<6}  {:-^12}  {:-<12}  {:-<12}",
+            "{:-<name_width$}  {:-<type_width$}  {:-^12}  {:-<12}  {:-<12}",
             "",
             "",
             "",
             "",
             "",
-            name_width = name_width
+            name_width = name_width,
+            type_width = type_width
         );
 
         for entry in &entries {
-            let ascii = ascii_type(entry.type_tag).unwrap_or_else(|| "-".to_string());
+            let label = type_label(entry.type_tag);
             println!(
-                "{:<name_width$}  {:<6}  {:#010X}  {:>12}  {:>12}",
+                "{:<name_width$}  {:<type_width$}  {:#010X}  {:>12}  {:>12}",
                 truncated_name(&entry.name, name_width),
-                ascii,
+                label,
                 entry.type_tag,
                 entry.offset,
                 entry.len,
-                name_width = name_width
+                name_width = name_width,
+                type_width = type_width
             );
         }
 
@@ -127,18 +142,25 @@ fn run() -> Result<(), String> {
             .ok_or_else(|| format!("entry '{name}' not found"))?;
 
         println!("\nEntry: {}", meta.name);
-        println!(
-            "  Type: {}",
-            ascii_type(meta.type_tag).unwrap_or_else(|| "-".to_string())
-        );
+        let entry_type_label = type_label(meta.type_tag);
+        println!("  Type: {entry_type_label}");
         println!("  Type (hex): {:#010X}", meta.type_tag);
         println!("  Offset: {}", meta.offset);
         println!("  Length: {} bytes", meta.len);
 
+        let bytes = view
+            .entry_bytes(&meta.name)
+            .map_err(|err| format!("unable to read entry '{}': {err}", meta.name))?;
+
+        if let Some(known) = known_type(meta.type_tag) {
+            println!("\nDeserialized as {}:", known.display_name());
+            match (known.decoder)(bytes) {
+                Ok(text) => println!("{text}"),
+                Err(err) => println!("(failed to decode {}: {err})", known.display_name()),
+            }
+        }
+
         if show_hex {
-            let bytes = view
-                .entry_bytes(&meta.name)
-                .map_err(|err| format!("unable to read entry '{}': {err}", meta.name))?;
             println!("\nHex dump (showing up to {hex_limit} bytes):");
             hexdump(bytes, hex_limit);
         }
@@ -162,6 +184,59 @@ fn ascii_type(tag: u32) -> Option<String> {
         Some(String::from_utf8_lossy(&bytes).into_owned())
     } else {
         None
+    }
+}
+
+fn known_types() -> &'static [KnownType] {
+    static KNOWN: OnceLock<Vec<KnownType>> = OnceLock::new();
+    KNOWN.get_or_init(|| {
+        vec![
+            KnownType::new::<HostGeometry>(),
+            KnownType::new::<HostImage>(),
+            KnownType::new::<ShaderModule>(),
+        ]
+    })
+}
+
+fn known_type(tag: u32) -> Option<&'static KnownType> {
+    known_types().iter().find(|ty| ty.tag == tag)
+}
+
+fn type_label(tag: u32) -> String {
+    if let Some(known) = known_type(tag) {
+        return known.display_name().to_string();
+    }
+
+    ascii_type(tag).unwrap_or_else(|| "-".to_string())
+}
+
+struct KnownType {
+    name: &'static str,
+    tag: u32,
+    decoder: fn(&[u8]) -> Result<String, String>,
+}
+
+impl KnownType {
+    fn new<T>() -> Self
+    where
+        T: DeserializeOwned + std::fmt::Debug,
+    {
+        Self {
+            name: type_name::<T>(),
+            tag: type_tag_for::<T>(),
+            decoder: |bytes| {
+                deserialize::<T>(bytes)
+                    .map(|value| format!("{value:#?}"))
+                    .map_err(|err| err.to_string())
+            },
+        }
+    }
+
+    fn display_name(&self) -> &str {
+        self.name
+            .rsplit_once("::")
+            .map(|(_, tail)| tail)
+            .unwrap_or(self.name)
     }
 }
 
