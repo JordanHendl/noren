@@ -5,6 +5,9 @@ use std::{
     str::FromStr,
 };
 
+use bento::{
+    BentoError, Compiler as BentoCompiler, OptimizationLevel, Request as BentoRequest, ShaderLang,
+};
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
@@ -13,7 +16,6 @@ use noren::{
     validate_database_layout,
 };
 use serde::{Deserialize, Serialize};
-use shaderc as sc;
 
 #[derive(Clone, Default)]
 struct Logger {
@@ -657,12 +659,9 @@ fn append_shader(
     } else {
         RDBFile::new()
     };
-    let mut compiler = sc::Compiler::new()
-        .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
-    let options = sc::CompileOptions::new()
-        .ok_or_else(|| BuildError::message("unable to initialize shader compiler options"))?;
+    let compiler = BentoCompiler::new()?;
     logger.log(format!("append shader: {}", args.entry.entry));
-    let module = compile_shader(&mut compiler, &options, Path::new("."), &args.entry)?;
+    let module = compile_shader(&compiler, Path::new("."), &args.entry)?;
     let entry_name = args.entry.entry.clone();
     rdb.add(&entry_name, &module).map_err(BuildError::from)?;
     if write_binaries {
@@ -717,10 +716,7 @@ fn build_shaders(
         RDBFile::new()
     };
 
-    let mut compiler = sc::Compiler::new()
-        .ok_or_else(|| BuildError::message("unable to initialize shader compiler"))?;
-    let options = sc::CompileOptions::new()
-        .ok_or_else(|| BuildError::message("unable to initialize shader compiler options"))?;
+    let compiler = BentoCompiler::new()?;
 
     for entry in entries {
         logger.log(format!(
@@ -728,7 +724,7 @@ fn build_shaders(
             entry.entry,
             resolve_path(base_dir, &entry.file).display()
         ));
-        let module = compile_shader(&mut compiler, &options, base_dir, entry)?;
+        let module = compile_shader(&compiler, base_dir, entry)?;
         rdb.add(&entry.entry, &module).map_err(BuildError::from)?;
     }
 
@@ -752,26 +748,26 @@ fn load_rdb(path: &Path, append: bool) -> Result<RDBFile, BuildError> {
 }
 
 fn compile_shader(
-    compiler: &mut sc::Compiler,
-    options: &sc::CompileOptions,
+    compiler: &BentoCompiler,
     base_dir: &Path,
     entry: &ShaderEntry,
 ) -> Result<ShaderModule, BuildError> {
     let path = resolve_path(base_dir, &entry.file);
-    let source = fs::read_to_string(&path)?;
+    let request = BentoRequest {
+        name: Some(entry.entry.clone()),
+        lang: ShaderLang::Glsl,
+        stage: entry.stage.to_shader_type()?,
+        optimization: OptimizationLevel::Performance,
+        debug_symbols: false,
+    };
+
     let path_str = path
         .to_str()
         .ok_or_else(|| BuildError::message("shader path contains invalid UTF-8"))?;
 
-    let artifact = compiler.compile_into_spirv(
-        &source,
-        entry.stage.to_shaderc_kind(),
-        path_str,
-        "main",
-        Some(options),
-    )?;
+    let artifact = compiler.compile_from_file(path_str, &request)?;
 
-    Ok(ShaderModule::from_words(artifact.as_binary().to_vec()))
+    Ok(ShaderModule::from_compilation(artifact))
 }
 
 fn resolve_path(base: &Path, value: &Path) -> PathBuf {
@@ -812,9 +808,7 @@ fn print_usage(program: &str) {
     eprintln!("  r8uint, r8sint, rgb8, bgra8, rgba8, rgba8unorm, rgba32f, bgra8unorm, d24s8");
     eprintln!("");
     eprintln!("Stages:");
-    eprintln!(
-        "  vertex, fragment, geometry, tessellation_control, tessellation_evaluation, compute"
-    );
+    eprintln!("  vertex, fragment, compute");
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -917,14 +911,14 @@ enum ShaderStageKind {
 }
 
 impl ShaderStageKind {
-    fn to_shaderc_kind(self) -> sc::ShaderKind {
+    fn to_shader_type(self) -> Result<dashi::ShaderType, BuildError> {
         match self {
-            ShaderStageKind::Vertex => sc::ShaderKind::Vertex,
-            ShaderStageKind::Fragment => sc::ShaderKind::Fragment,
-            ShaderStageKind::Geometry => sc::ShaderKind::Geometry,
-            ShaderStageKind::TessellationControl => sc::ShaderKind::TessControl,
-            ShaderStageKind::TessellationEvaluation => sc::ShaderKind::TessEvaluation,
-            ShaderStageKind::Compute => sc::ShaderKind::Compute,
+            ShaderStageKind::Vertex => Ok(dashi::ShaderType::Vertex),
+            ShaderStageKind::Fragment => Ok(dashi::ShaderType::Fragment),
+            ShaderStageKind::Compute => Ok(dashi::ShaderType::Compute),
+            other => Err(BuildError::message(format!(
+                "shader stage '{other:?}' is not supported by Bento compilation"
+            ))),
         }
     }
 }
@@ -1013,7 +1007,7 @@ enum BuildError {
     Image(image::ImageError),
     Gltf(gltf::Error),
     Rdb(RdbErr),
-    Shader(sc::Error),
+    Shader(BentoError),
     Message(String),
 }
 
@@ -1075,8 +1069,8 @@ impl From<NorenError> for BuildError {
     }
 }
 
-impl From<sc::Error> for BuildError {
-    fn from(value: sc::Error) -> Self {
+impl From<BentoError> for BuildError {
+    fn from(value: BentoError) -> Self {
         BuildError::Shader(value)
     }
 }
