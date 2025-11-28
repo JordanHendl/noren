@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use dashi::{
-    BindGroupLayout, BindTableLayout, Context, GraphicsPipeline, GraphicsPipelineDetails,
-    GraphicsPipelineLayout, GraphicsPipelineLayoutInfo, Handle, PipelineShaderInfo,
-    ShaderPrimitiveType, ShaderType, VertexDescriptionInfo, VertexEntryInfo, VertexRate,
+    BindGroupLayout, BindGroupVariable, BindTableLayout, Context, GraphicsPipeline,
+    GraphicsPipelineDetails, GraphicsPipelineLayout, GraphicsPipelineLayoutInfo, Handle,
+    PipelineShaderInfo, ShaderPrimitiveType, ShaderType, VertexDescriptionInfo, VertexEntryInfo,
+    VertexRate, cfg,
 };
 
 use crate::{
-    DB, datatypes::primitives::Vertex, meta::GraphicsShader, parsing::GraphicsShaderLayout,
-    utils::NorenError,
+    DB, datatypes::primitives::Vertex, meta::GraphicsShader, meta::ShaderStage,
+    parsing::GraphicsShaderLayout, utils::NorenError,
 };
 
 pub struct PipelineFactory<'a> {
@@ -59,39 +60,16 @@ impl<'a> PipelineFactory<'a> {
         let shader = DB::load_graphics_shader(self.shaders, shader_key, shader_layout)?
             .ok_or_else(NorenError::LookupFailure)?;
 
-        let (bg_layouts, bt_layouts) = self.create_layout_handles(shader_layout)?;
+        let (bg_layouts, bt_layouts) = self.create_layout_handles(&shader)?;
         let shader_infos = Self::collect_shader_infos(&shader)?;
 
-        const VERTEX_ENTRIES: [VertexEntryInfo; 5] = [
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec3,
-                location: 0,
-                offset: 0,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec3,
-                location: 1,
-                offset: 12,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec4,
-                location: 2,
-                offset: 24,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec2,
-                location: 3,
-                offset: 40,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec4,
-                location: 4,
-                offset: 48,
-            },
-        ];
+        let mut vertex_entries = Self::vertex_entries_from_bento(&shader);
+        if vertex_entries.is_empty() {
+            vertex_entries = Self::default_vertex_entries();
+        }
 
         let vertex_info = VertexDescriptionInfo {
-            entries: &VERTEX_ENTRIES,
+            entries: &vertex_entries,
             stride: std::mem::size_of::<Vertex>(),
             rate: VertexRate::Vertex,
         };
@@ -136,7 +114,7 @@ impl<'a> PipelineFactory<'a> {
 
     fn create_layout_handles(
         &mut self,
-        layout: &GraphicsShaderLayout,
+        shader: &GraphicsShader,
     ) -> Result<
         (
             [Option<Handle<BindGroupLayout>>; 4],
@@ -144,8 +122,10 @@ impl<'a> PipelineFactory<'a> {
         ),
         NorenError,
     > {
+        let layout_cfgs = Self::shader_bind_group_layouts(shader);
+
         let mut bg_handles: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
-        for (index, cfg_opt) in layout.bind_group_layouts.iter().enumerate() {
+        for (index, cfg_opt) in layout_cfgs.iter().enumerate() {
             if index >= bg_handles.len() {
                 break;
             }
@@ -161,22 +141,7 @@ impl<'a> PipelineFactory<'a> {
             }
         }
 
-        let mut bt_handles: [Option<Handle<BindTableLayout>>; 4] = Default::default();
-        for (index, cfg_opt) in layout.bind_table_layouts.iter().enumerate() {
-            if index >= bt_handles.len() {
-                break;
-            }
-
-            if let Some(cfg) = cfg_opt {
-                let borrowed = cfg.borrow();
-                let info = borrowed.info();
-                let handle = self
-                    .ctx
-                    .make_bind_table_layout(&info)
-                    .map_err(|_| NorenError::UploadFailure())?;
-                bt_handles[index] = Some(handle);
-            }
-        }
+        let bt_handles: [Option<Handle<BindTableLayout>>; 4] = Default::default();
 
         Ok((bg_handles, bt_handles))
     }
@@ -206,5 +171,103 @@ impl<'a> PipelineFactory<'a> {
         }
 
         Ok(shader_infos)
+    }
+
+    fn shader_bind_group_layouts(shader: &GraphicsShader) -> [Option<cfg::BindGroupLayoutCfg>; 4] {
+        let mut shader_sets: [Option<Vec<cfg::ShaderInfoCfg>>; 4] = Default::default();
+        for (stage, stage_type) in Self::shader_stages(shader) {
+            let mut grouped: BTreeMap<u32, Vec<BindGroupVariable>> = BTreeMap::new();
+            for variable in &stage.module.artifact().variables {
+                grouped
+                    .entry(variable.set)
+                    .or_default()
+                    .push(variable.kind.clone());
+            }
+
+            for (set, variables) in grouped {
+                if let Some(slot) = shader_sets.get_mut(set as usize) {
+                    let entries = slot.get_or_insert_with(Vec::new);
+                    entries.push(cfg::ShaderInfoCfg {
+                        stage: stage_type,
+                        variables,
+                    });
+                }
+            }
+        }
+
+        let mut layouts: [Option<cfg::BindGroupLayoutCfg>; 4] = Default::default();
+        for (index, shaders) in shader_sets.into_iter().enumerate() {
+            if let Some(shaders) = shaders {
+                layouts[index] = Some(cfg::BindGroupLayoutCfg {
+                    debug_name: format!("{}_set{index}", shader.name),
+                    shaders,
+                });
+            }
+        }
+
+        layouts
+    }
+
+    fn shader_stages(shader: &GraphicsShader) -> Vec<(&ShaderStage, ShaderType)> {
+        let mut stages = Vec::new();
+        if let Some(stage) = shader.vertex.as_ref() {
+            stages.push((stage, ShaderType::Vertex));
+        }
+        if let Some(stage) = shader.fragment.as_ref() {
+            stages.push((stage, ShaderType::Fragment));
+        }
+        stages
+    }
+
+    fn default_vertex_entries() -> Vec<VertexEntryInfo> {
+        vec![
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec3,
+                location: 0,
+                offset: 0,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec3,
+                location: 1,
+                offset: 12,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec4,
+                location: 2,
+                offset: 24,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec2,
+                location: 3,
+                offset: 40,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec4,
+                location: 4,
+                offset: 48,
+            },
+        ]
+    }
+
+    fn vertex_entries_from_bento(shader: &GraphicsShader) -> Vec<VertexEntryInfo> {
+        let templates: BTreeMap<u32, VertexEntryInfo> = Self::default_vertex_entries()
+            .into_iter()
+            .map(|entry| (entry.location as u32, entry))
+            .collect();
+
+        let Some(vertex_stage) = shader.vertex.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut entries = Vec::new();
+        for input in &vertex_stage.module.artifact().metadata.inputs {
+            if let Some(location) = input.location {
+                if let Some(template) = templates.get(&location) {
+                    entries.push(template.clone());
+                }
+            }
+        }
+
+        entries
     }
 }

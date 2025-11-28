@@ -4,11 +4,11 @@ pub mod meta;
 pub mod parsing;
 pub mod render_graph;
 mod utils;
-use std::{io::ErrorKind, ptr::NonNull};
+use std::{collections::BTreeMap, io::ErrorKind, ptr::NonNull};
 
 use crate::{
     datatypes::primitives::Vertex,
-    material_bindings::texture_binding_slots,
+    material_bindings::texture_binding_slots_from_shader,
     render_graph::{PipelineFactory, RenderGraph, RenderGraphRequest},
 };
 use datatypes::*;
@@ -17,9 +17,9 @@ use parsing::*;
 use utils::*;
 
 use dashi::{
-    BindGroupLayout, BindTableLayout, Context, GraphicsPipelineDetails, GraphicsPipelineLayoutInfo,
-    Handle, PipelineShaderInfo, RenderPass, ShaderPrimitiveType, ShaderType, VertexDescriptionInfo,
-    VertexEntryInfo, VertexRate,
+    BindGroupLayout, BindGroupVariable, BindTableLayout, Context, GraphicsPipelineDetails,
+    GraphicsPipelineLayoutInfo, Handle, PipelineShaderInfo, RenderPass, ShaderPrimitiveType,
+    ShaderType, VertexDescriptionInfo, VertexEntryInfo, VertexRate, cfg,
 };
 
 pub use parsing::DatabaseLayoutFile;
@@ -506,7 +506,7 @@ where
     Ok(())
 }
 
-fn build_material_components<Texture, Image, Shader, MakeTexture, FetchImage, LoadShader>(
+fn build_material_components<Texture, Image, MakeTexture, FetchImage, LoadShader>(
     layout: &ModelLayoutFile,
     imagery: &mut ImageDB,
     shaders: &mut ShaderDB,
@@ -515,7 +515,7 @@ fn build_material_components<Texture, Image, Shader, MakeTexture, FetchImage, Lo
     make_texture: &mut MakeTexture,
     fetch_image: &mut FetchImage,
     load_shader: &mut LoadShader,
-) -> Result<Option<(String, Vec<Texture>, Option<Shader>)>, NorenError>
+) -> Result<Option<(String, Vec<Texture>, Option<GraphicsShader>)>, NorenError>
 where
     MakeTexture: FnMut(String, Image) -> Texture,
     FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
@@ -524,51 +524,59 @@ where
         &mut RenderPassDB,
         &str,
         &GraphicsShaderLayout,
-    ) -> Result<Option<Shader>, NorenError>,
+    ) -> Result<Option<GraphicsShader>, NorenError>,
 {
     let Some(material_def) = layout.materials.get(material_key) else {
         return Ok(None);
     };
 
     let mut textures = Vec::new();
+    let mut shader = None;
     if let Some(shader_key) = material_def.shader.as_deref() {
         if let Some(shader_layout) = layout.shaders.get(shader_key) {
-            let slots = texture_binding_slots(shader_layout);
-            if slots.is_empty() {
-                append_texture_bindings(
-                    &mut textures,
-                    &material_def.textures,
-                    layout,
-                    imagery,
-                    make_texture,
-                    fetch_image,
-                )?;
-            } else {
-                let normalized =
-                    normalize_binding_entries(&material_def.textures, slots.len(), material_key)?;
-                for (slot_index, slot) in slots.iter().enumerate() {
-                    let tex_id = normalized.get(slot_index).map(|s| s.as_str());
-                    let Some(tex_id) = tex_id.filter(|value| !value.is_empty()) else {
-                        if slot.required {
-                            return Err(NorenError::InvalidMaterial(format!(
-                                "Material '{}' is missing a texture for {:?}",
-                                material_key, slot.kind
-                            )));
+            shader = load_shader(shaders, render_passes, shader_key, shader_layout)?;
+
+            if let Some(shader_ref) = shader.as_ref() {
+                let slots = texture_binding_slots_from_shader(shader_ref);
+                if slots.is_empty() {
+                    append_texture_bindings(
+                        &mut textures,
+                        &material_def.textures,
+                        layout,
+                        imagery,
+                        make_texture,
+                        fetch_image,
+                    )?;
+                } else {
+                    let normalized = normalize_binding_entries(
+                        &material_def.textures,
+                        slots.len(),
+                        material_key,
+                    )?;
+                    for (slot_index, slot) in slots.iter().enumerate() {
+                        let tex_id = normalized.get(slot_index).map(|s| s.as_str());
+                        let Some(tex_id) = tex_id.filter(|value| !value.is_empty()) else {
+                            if slot.required {
+                                return Err(NorenError::InvalidMaterial(format!(
+                                    "Material '{}' is missing a texture for {:?}",
+                                    material_key, slot.kind
+                                )));
+                            }
+                            continue;
+                        };
+                        let tex_def = layout.textures.get(tex_id).ok_or_else(|| {
+                            NorenError::InvalidMaterial(format!(
+                                "Material '{}' references unknown texture '{}'",
+                                material_key, tex_id
+                            ))
+                        })?;
+                        if tex_def.image.is_empty() {
+                            continue;
                         }
-                        continue;
-                    };
-                    let tex_def = layout.textures.get(tex_id).ok_or_else(|| {
-                        NorenError::InvalidMaterial(format!(
-                            "Material '{}' references unknown texture '{}'",
-                            material_key, tex_id
-                        ))
-                    })?;
-                    if tex_def.image.is_empty() {
-                        continue;
+                        let image = fetch_image(imagery, tex_def.image.as_str())?;
+                        let name = tex_def.name.clone().unwrap_or_else(|| tex_id.to_string());
+                        textures.push(make_texture(name, image));
                     }
-                    let image = fetch_image(imagery, tex_def.image.as_str())?;
-                    let name = tex_def.name.clone().unwrap_or_else(|| tex_id.to_string());
-                    textures.push(make_texture(name, image));
                 }
             }
         } else {
@@ -592,16 +600,15 @@ where
         )?;
     }
 
-    let shader = match material_def.shader.as_ref() {
-        Some(shader_key) => {
-            if let Some(shader_layout) = layout.shaders.get(shader_key).cloned() {
-                load_shader(shaders, render_passes, shader_key, &shader_layout)?
-            } else {
-                None
+    if shader.is_none() {
+        if let Some(shader_key) = material_def.shader.as_deref() {
+            if let Some(shader_layout) = layout.shaders.get(shader_key) {
+                shader = load_shader(shaders, render_passes, shader_key, shader_layout)?;
             }
         }
-        None => None,
-    };
+    }
+
+    let shader = shader;
 
     let name = material_def
         .name
@@ -694,20 +701,6 @@ fn validate_shader_layouts(layout: &ModelLayoutFile) -> Result<(), NorenError> {
             }
         }
 
-        if shader_layout.bind_group_layouts.len() > 4 {
-            issues.push(format!(
-                "bind_group_layouts defines {} entries but only 4 are supported",
-                shader_layout.bind_group_layouts.len()
-            ));
-        }
-
-        if shader_layout.bind_table_layouts.len() > 4 {
-            issues.push(format!(
-                "bind_table_layouts defines {} entries but only 4 are supported",
-                shader_layout.bind_table_layouts.len()
-            ));
-        }
-
         if !issues.is_empty() {
             let materials = shader_to_materials
                 .get(shader_key.as_str())
@@ -744,7 +737,6 @@ impl DB {
         Texture,
         Geometry,
         Image,
-        Shader,
         FetchGeometry,
         FetchImage,
         MakeTexture,
@@ -767,7 +759,7 @@ impl DB {
         FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry<'_>) -> Result<Geometry, NorenError>,
         FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
         MakeTexture: FnMut(String, Image) -> Texture,
-        MakeMaterial: FnMut(String, Vec<Texture>, Option<Shader>) -> Material,
+        MakeMaterial: FnMut(String, Vec<Texture>, Option<GraphicsShader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
         MakeModel: FnMut(String, Vec<Mesh>) -> Model,
         LoadShader: FnMut(
@@ -775,7 +767,7 @@ impl DB {
             &mut RenderPassDB,
             &str,
             &GraphicsShaderLayout,
-        ) -> Result<Option<Shader>, NorenError>,
+        ) -> Result<Option<GraphicsShader>, NorenError>,
     {
         let layout = self
             .model_file
@@ -899,8 +891,10 @@ impl DB {
         render_pass_key: &str,
         render_passes: &mut RenderPassDB,
     ) -> Result<(), NorenError> {
+        let bind_group_layouts = Self::shader_bind_group_layouts(shader);
+
         let mut bg_handles: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
-        for (index, cfg_opt) in layout.bind_group_layouts.iter().enumerate() {
+        for (index, cfg_opt) in bind_group_layouts.iter().enumerate() {
             if index >= bg_handles.len() {
                 break;
             }
@@ -915,21 +909,7 @@ impl DB {
             }
         }
 
-        let mut bt_handles: [Option<Handle<BindTableLayout>>; 4] = Default::default();
-        for (index, cfg_opt) in layout.bind_table_layouts.iter().enumerate() {
-            if index >= bt_handles.len() {
-                break;
-            }
-
-            if let Some(cfg) = cfg_opt {
-                let borrowed = cfg.borrow();
-                let info = borrowed.info();
-                let handle = ctx
-                    .make_bind_table_layout(&info)
-                    .map_err(|_| NorenError::UploadFailure())?;
-                bt_handles[index] = Some(handle);
-            }
-        }
+        let bt_handles: [Option<Handle<BindTableLayout>>; 4] = Default::default();
 
         let mut shader_infos: Vec<PipelineShaderInfo<'_>> = Vec::new();
         if let Some(stage) = shader.vertex.as_ref() {
@@ -960,36 +940,13 @@ impl DB {
             return Ok(());
         }
 
-        const VERTEX_ENTRIES: [VertexEntryInfo; 5] = [
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec3,
-                location: 0,
-                offset: 0,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec3,
-                location: 1,
-                offset: 12,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec4,
-                location: 2,
-                offset: 24,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec2,
-                location: 3,
-                offset: 40,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec4,
-                location: 4,
-                offset: 48,
-            },
-        ];
+        let mut vertex_entries = Self::vertex_entries_from_bento(shader);
+        if vertex_entries.is_empty() {
+            vertex_entries = Self::default_vertex_entries();
+        }
 
         let vertex_info = VertexDescriptionInfo {
-            entries: &VERTEX_ENTRIES,
+            entries: &vertex_entries,
             stride: std::mem::size_of::<Vertex>(),
             rate: VertexRate::Vertex,
         };
@@ -1031,6 +988,104 @@ impl DB {
         shader.pipeline = Some(pipeline);
 
         Ok(())
+    }
+
+    fn shader_bind_group_layouts(shader: &GraphicsShader) -> [Option<cfg::BindGroupLayoutCfg>; 4] {
+        let mut shader_sets: [Option<Vec<cfg::ShaderInfoCfg>>; 4] = Default::default();
+        for (stage, stage_type) in Self::shader_stages(shader) {
+            let mut grouped: BTreeMap<u32, Vec<BindGroupVariable>> = BTreeMap::new();
+            for variable in &stage.module.artifact().variables {
+                grouped
+                    .entry(variable.set)
+                    .or_default()
+                    .push(variable.kind.clone());
+            }
+
+            for (set, variables) in grouped {
+                if let Some(slot) = shader_sets.get_mut(set as usize) {
+                    let entries = slot.get_or_insert_with(Vec::new);
+                    entries.push(cfg::ShaderInfoCfg {
+                        stage: stage_type,
+                        variables,
+                    });
+                }
+            }
+        }
+
+        let mut layouts: [Option<cfg::BindGroupLayoutCfg>; 4] = Default::default();
+        for (index, shaders) in shader_sets.into_iter().enumerate() {
+            if let Some(shaders) = shaders {
+                layouts[index] = Some(cfg::BindGroupLayoutCfg {
+                    debug_name: format!("{}_set{index}", shader.name),
+                    shaders,
+                });
+            }
+        }
+
+        layouts
+    }
+
+    fn shader_stages(shader: &GraphicsShader) -> Vec<(&ShaderStage, ShaderType)> {
+        let mut stages = Vec::new();
+        if let Some(stage) = shader.vertex.as_ref() {
+            stages.push((stage, ShaderType::Vertex));
+        }
+        if let Some(stage) = shader.fragment.as_ref() {
+            stages.push((stage, ShaderType::Fragment));
+        }
+        stages
+    }
+
+    fn default_vertex_entries() -> Vec<VertexEntryInfo> {
+        vec![
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec3,
+                location: 0,
+                offset: 0,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec3,
+                location: 1,
+                offset: 12,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec4,
+                location: 2,
+                offset: 24,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec2,
+                location: 3,
+                offset: 40,
+            },
+            VertexEntryInfo {
+                format: ShaderPrimitiveType::Vec4,
+                location: 4,
+                offset: 48,
+            },
+        ]
+    }
+
+    fn vertex_entries_from_bento(shader: &GraphicsShader) -> Vec<VertexEntryInfo> {
+        let templates: BTreeMap<u32, VertexEntryInfo> = Self::default_vertex_entries()
+            .into_iter()
+            .map(|entry| (entry.location as u32, entry))
+            .collect();
+
+        let Some(vertex_stage) = shader.vertex.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut entries = Vec::new();
+        for input in &vertex_stage.module.artifact().metadata.inputs {
+            if let Some(location) = input.location {
+                if let Some(template) = templates.get(&location) {
+                    entries.push(template.clone());
+                }
+            }
+        }
+
+        entries
     }
 
     pub(crate) fn load_optional_shader_stage(
@@ -1079,7 +1134,7 @@ mod tests {
     use std::fs::File;
     use tempfile::tempdir;
 
-    use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport, cfg};
+    use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport};
 
     const MODEL_ENTRY: DatabaseEntry<'static> = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
@@ -1182,14 +1237,6 @@ mod tests {
                 geometry: None,
                 tessellation_control: None,
                 tessellation_evaluation: None,
-                bind_group_layouts: vec![Some(
-                    cfg::BindGroupLayoutCfg::from_json("{\"debug_name\":\"mat\",\"entries\":[]}")
-                        .expect("bind group layout"),
-                )],
-                bind_table_layouts: vec![Some(
-                    cfg::BindTableLayoutCfg::from_json("{\"debug_name\":\"tbl\",\"entries\":[]}")
-                        .expect("bind table layout"),
-                )],
                 subpass: 0,
                 render_pass: Some("render_pass/test".to_string()),
             },
@@ -1406,18 +1453,6 @@ mod tests {
         layout.shaders.insert(
             "shader".into(),
             GraphicsShaderLayout {
-                bind_group_layouts: vec![Some(
-                    cfg::BindGroupLayoutCfg::from_json(
-                        "{\"debug_name\":\"shader\",\"entries\":[]}",
-                    )
-                    .expect("bind group cfg"),
-                )],
-                bind_table_layouts: vec![Some(
-                    cfg::BindTableLayoutCfg::from_json(
-                        "{\"debug_name\":\"shader\",\"entries\":[]}",
-                    )
-                    .expect("bind table cfg"),
-                )],
                 render_pass: Some("render/test".into()),
                 ..Default::default()
             },
