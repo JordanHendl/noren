@@ -25,6 +25,7 @@ impl ShaderModule {
                 stage: dashi::ShaderType::Compute,
                 variables: Vec::new(),
                 spirv: words,
+                metadata: todo!(),
             },
         }
     }
