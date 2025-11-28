@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use dashi::{AttachmentDescription, SubpassDependency, Viewport, cfg};
+use dashi::{AttachmentDescription, SubpassDependency, Viewport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -149,25 +149,7 @@ pub struct MaterialBinding {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub set: u32,
-    #[serde(default)]
-    pub binding: u32,
-    #[serde(default)]
-    pub binding_type: MaterialBindingType,
-    #[serde(default)]
     pub defaults: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum MaterialBindingType {
-    #[default]
-    Unknown,
-    Uniform,
-    Storage,
-    SampledImage,
-    StorageImage,
-    DynamicUniform,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -184,10 +166,6 @@ pub struct GraphicsShaderLayout {
     pub tessellation_control: Option<String>,
     #[serde(default, rename = "tessellation_evaluation")]
     pub tessellation_evaluation: Option<String>,
-    #[serde(default)]
-    pub bind_group_layouts: Vec<Option<cfg::BindGroupLayoutCfg>>,
-    #[serde(default)]
-    pub bind_table_layouts: Vec<Option<cfg::BindTableLayoutCfg>>,
     #[serde(default)]
     pub subpass: u8,
     #[serde(default)]

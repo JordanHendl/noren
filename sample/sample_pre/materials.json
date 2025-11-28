@@ -31,9 +31,6 @@
         "bindings": [
           {
             "name": "noren_camera",
-            "set": 0,
-            "binding": 0,
-            "binding_type": "uniform",
             "defaults": {
               "view_proj": [
                 [
@@ -71,9 +68,6 @@
           },
           {
             "name": "noren_instances",
-            "set": 1,
-            "binding": 0,
-            "binding_type": "storage",
             "defaults": {
               "models": [
                 [
@@ -107,9 +101,6 @@
           },
           {
             "name": "noren_lights",
-            "set": 1,
-            "binding": 1,
-            "binding_type": "storage",
             "defaults": {
               "positions": [
                 [
@@ -311,16 +302,10 @@
           },
           {
             "name": "material_layers",
-            "set": 2,
-            "binding": 0,
-            "binding_type": "sampled_image",
             "defaults": {}
           },
           {
             "name": "bindless_layers",
-            "set": 0,
-            "binding": 0,
-            "binding_type": "sampled_image",
             "defaults": {
               "count": 64,
               "slots": [
@@ -342,9 +327,6 @@
         "bindings": [
           {
             "name": "noren_post_settings",
-            "set": 0,
-            "binding": 0,
-            "binding_type": "dynamic_uniform",
             "defaults": {
               "exposure": 1.0,
               "gamma": 2.2,
@@ -356,9 +338,6 @@
           },
           {
             "name": "noren_exposure",
-            "set": 0,
-            "binding": 1,
-            "binding_type": "uniform",
             "defaults": {
               "exposure": 2.0,
               "gamma": 2.2,
@@ -370,9 +349,6 @@
           },
           {
             "name": "bindless_layers",
-            "set": 3,
-            "binding": 0,
-            "binding_type": "sampled_image",
             "defaults": {
               "count": 64,
               "slots": [
@@ -382,9 +358,6 @@
           },
           {
             "name": "noren_indices",
-            "set": 3,
-            "binding": 1,
-            "binding_type": "storage",
             "defaults": {
               "indices": [
                 0,
@@ -407,80 +380,6 @@
       "name": "Multi Bind Shader",
       "vertex": "shader/multi_bind.vert",
       "fragment": "shader/multi_bind.frag",
-      "bind_group_layouts": [
-        {
-          "debug_name": "camera_and_view",
-          "shaders": [
-            {
-              "stage": "Vertex",
-              "variables": [
-                {
-                  "var_type": "Uniform",
-                  "binding": 0,
-                  "count": 1
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "debug_name": "scene_data",
-          "shaders": [
-            {
-              "stage": "Vertex",
-              "variables": [
-                {
-                  "var_type": "Storage",
-                  "binding": 0,
-                  "count": 1
-                }
-              ]
-            },
-            {
-              "stage": "Fragment",
-              "variables": [
-                {
-                  "var_type": "Storage",
-                  "binding": 1,
-                  "count": 1
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "debug_name": "material_layers",
-          "shaders": [
-            {
-              "stage": "Fragment",
-              "variables": [
-                {
-                  "var_type": "SampledImage",
-                  "binding": 0,
-                  "count": 4
-                }
-              ]
-            }
-          ]
-        }
-      ],
-      "bind_table_layouts": [
-        {
-          "debug_name": "bindless_materials",
-          "shaders": [
-            {
-              "stage": "Fragment",
-              "variables": [
-                {
-                  "var_type": "SampledImage",
-                  "binding": 0,
-                  "count": 64
-                }
-              ]
-            }
-          ]
-        }
-      ],
       "subpass": 0,
       "render_pass": "render_pass/default"
     },
@@ -488,58 +387,6 @@
       "name": "Bind Table Shader",
       "vertex": "shader/bind_table.vert",
       "fragment": "shader/bind_table.frag",
-      "bind_group_layouts": [
-        {
-          "debug_name": "post_settings",
-          "shaders": [
-            {
-              "stage": "Vertex",
-              "variables": [
-                {
-                  "var_type": "DynamicUniform",
-                  "binding": 0,
-                  "count": 1
-                }
-              ]
-            },
-            {
-              "stage": "Fragment",
-              "variables": [
-                {
-                  "var_type": "Uniform",
-                  "binding": 1,
-                  "count": 1
-                }
-              ]
-            }
-          ]
-        }
-      ],
-      "bind_table_layouts": [
-        null,
-        null,
-        null,
-        {
-          "debug_name": "bindless_lookup",
-          "shaders": [
-            {
-              "stage": "Fragment",
-              "variables": [
-                {
-                  "var_type": "SampledImage",
-                  "binding": 0,
-                  "count": 32
-                },
-                {
-                  "var_type": "Storage",
-                  "binding": 1,
-                  "count": 1
-                }
-              ]
-            }
-          ]
-        }
-      ],
       "subpass": 0,
       "render_pass": "render_pass/default"
     }

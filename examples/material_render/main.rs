@@ -21,12 +21,10 @@ use dashi::{
 use glam::Mat4;
 use noren::meta::model::DeviceMaterial;
 use noren::parsing::{
-    DatabaseLayoutFile, GraphicsShaderLayout, MaterialBindingType, MaterialLayout,
-    MaterialMetadata, ModelLayoutFile,
+    DatabaseLayoutFile, GraphicsShaderLayout, MaterialLayout, MaterialMetadata, ModelLayoutFile,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::error::Error;
-use std::path::PathBuf;
+use std::{collections::HashSet, error::Error, path::PathBuf};
 
 const FALLBACK_DIM: u32 = 2;
 const RESERVED_CAMERA: &str = "noren_camera";
@@ -235,7 +233,7 @@ impl Default for MaterialBindings {
 struct BindingRecipe {
     set: u32,
     binding: u32,
-    binding_type: MaterialBindingType,
+    binding_type: BindGroupVariableType,
     name: Option<String>,
 }
 
@@ -268,19 +266,9 @@ fn build_material_bindings(
             material_layout,
         ),
         _ => {
-            if shader_layout
-                .bind_group_layouts
-                .iter()
-                .flatten()
-                .next()
-                .is_some()
-                || shader_layout
-                    .bind_table_layouts
-                    .iter()
-                    .flatten()
-                    .next()
-                    .is_some()
-            {
+            let has_bindings =
+                !binding_recipes_from_shader(shader, &material_layout.metadata).is_empty();
+            if has_bindings {
                 Err(format!(
                     "Material '{material_entry}' uses bindings but the example only knows how to configure multi-bind layouts"
                 )
@@ -295,12 +283,12 @@ fn build_material_bindings(
 fn build_multi_bind_bindings(
     ctx: &mut gpu::Context,
     shader: &noren::meta::model::GraphicsShader,
-    shader_layout: &GraphicsShaderLayout,
+    _shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
     material_layout: &MaterialLayout,
 ) -> Result<MaterialBindings, Box<dyn Error>> {
     let mut bindings = MaterialBindings::default();
-    bindings.recipes = binding_recipes_from_layout(shader_layout, &material_layout.metadata);
+    bindings.recipes = binding_recipes_from_shader(shader, &material_layout.metadata);
 
     let sampler = ctx.make_sampler(&SamplerInfo::default())?;
     bindings.samplers.push(sampler);
@@ -316,7 +304,7 @@ fn build_multi_bind_bindings(
     bindings.images.push(fallback);
 
     if let Some(layout) = shader.bind_group_layouts.get(0).and_then(|opt| *opt) {
-        let camera: CameraData = binding_defaults(&material_layout.metadata, RESERVED_CAMERA, 0, 0);
+        let camera: CameraData = binding_defaults(&material_layout.metadata, RESERVED_CAMERA);
         let buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_camera",
             byte_size: std::mem::size_of::<CameraData>() as u32,
@@ -336,8 +324,8 @@ fn build_multi_bind_bindings(
 
     if let Some(layout) = shader.bind_group_layouts.get(1).and_then(|opt| *opt) {
         let transforms: InstanceTransforms =
-            binding_defaults(&material_layout.metadata, RESERVED_INSTANCES, 1, 0);
-        let lights: Lights = binding_defaults(&material_layout.metadata, RESERVED_LIGHTS, 1, 1);
+            binding_defaults(&material_layout.metadata, RESERVED_INSTANCES);
+        let lights: Lights = binding_defaults(&material_layout.metadata, RESERVED_LIGHTS);
 
         let transform_buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_instances",
@@ -378,33 +366,24 @@ fn build_multi_bind_bindings(
         builder = builder.layout(layout).set(2);
 
         let mut slot = 0;
-        if let Some(cfg) = shader_layout
-            .bind_group_layouts
-            .get(2)
-            .and_then(|c| c.as_ref())
+        for variable in shader_variables(shader)
+            .into_iter()
+            .filter(|var| var.set == 2 && var.kind.var_type == BindGroupVariableType::SampledImage)
         {
-            let borrowed = cfg.borrow();
-            let info = borrowed.info();
-            for shader_info in info.shaders {
-                for variable in shader_info.variables {
-                    if variable.var_type == BindGroupVariableType::SampledImage {
-                        let count = variable.count.max(1);
-                        for _ in 0..count {
-                            let tex = textures.get(slot).copied().unwrap_or(fallback);
-                            builder = builder.binding(
-                                variable.binding,
-                                ShaderResource::SampledImage(
-                                    ImageView {
-                                        img: tex,
-                                        ..Default::default()
-                                    },
-                                    sampler,
-                                ),
-                            );
-                            slot += 1;
-                        }
-                    }
-                }
+            let count = variable.kind.count.max(1);
+            for _ in 0..count {
+                let tex = textures.get(slot).copied().unwrap_or(fallback);
+                builder = builder.binding(
+                    variable.kind.binding,
+                    ShaderResource::SampledImage(
+                        ImageView {
+                            img: tex,
+                            ..Default::default()
+                        },
+                        sampler,
+                    ),
+                );
+                slot += 1;
             }
         }
 
@@ -414,56 +393,43 @@ fn build_multi_bind_bindings(
     if let Some(layout) = shader.bind_table_layouts.get(0).and_then(|opt| *opt) {
         let mut binding_sets: Vec<(u32, Vec<IndexedResource>)> = Vec::new();
 
-        if let Some(cfg) = shader_layout
-            .bind_table_layouts
-            .get(0)
-            .and_then(|c| c.as_ref())
+        for variable in shader_variables(shader)
+            .into_iter()
+            .filter(|var| var.set == 0 && var.kind.var_type == BindGroupVariableType::SampledImage)
         {
-            let borrowed = cfg.borrow();
-            let info = borrowed.info();
-            for shader_info in info.shaders {
-                for variable in shader_info.variables {
-                    if variable.var_type == BindGroupVariableType::SampledImage {
-                        let defaults: SampledImageDefaults = binding_defaults(
-                            &material_layout.metadata,
-                            RESERVED_BINDLESS_LAYERS,
-                            0,
-                            variable.binding,
-                        );
-                        let mut count = defaults
-                            .count
-                            .unwrap_or_else(|| variable.count.max(1) as usize);
-                        count = count.max(variable.count.max(1) as usize);
+            let defaults: SampledImageDefaults =
+                binding_defaults(&material_layout.metadata, RESERVED_BINDLESS_LAYERS);
+            let mut count = defaults
+                .count
+                .unwrap_or_else(|| variable.kind.count.max(1) as usize);
+            count = count.max(variable.kind.count.max(1) as usize);
 
-                        let mut resources: Vec<IndexedResource> = (0..count)
-                            .map(|slot| IndexedResource {
-                                slot: slot as u32,
-                                resource: ShaderResource::SampledImage(
-                                    ImageView {
-                                        img: fallback,
-                                        ..Default::default()
-                                    },
-                                    sampler,
-                                ),
-                            })
-                            .collect();
+            let mut resources: Vec<IndexedResource> = (0..count)
+                .map(|slot| IndexedResource {
+                    slot: slot as u32,
+                    resource: ShaderResource::SampledImage(
+                        ImageView {
+                            img: fallback,
+                            ..Default::default()
+                        },
+                        sampler,
+                    ),
+                })
+                .collect();
 
-                        for (tex_idx, slot) in defaults.slots.iter().enumerate() {
-                            if (*slot as usize) < resources.len() {
-                                resources[*slot as usize].resource = ShaderResource::SampledImage(
-                                    ImageView {
-                                        img: textures.get(tex_idx).copied().unwrap_or(fallback),
-                                        ..Default::default()
-                                    },
-                                    sampler,
-                                );
-                            }
-                        }
-
-                        binding_sets.push((variable.binding, resources));
-                    }
+            for (tex_idx, slot) in defaults.slots.iter().enumerate() {
+                if (*slot as usize) < resources.len() {
+                    resources[*slot as usize].resource = ShaderResource::SampledImage(
+                        ImageView {
+                            img: textures.get(tex_idx).copied().unwrap_or(fallback),
+                            ..Default::default()
+                        },
+                        sampler,
+                    );
                 }
             }
+
+            binding_sets.push((variable.kind.binding, resources));
         }
 
         let mut builder = BindTableBuilder::new("material_bindless");
@@ -481,12 +447,12 @@ fn build_multi_bind_bindings(
 fn build_bind_table_material_bindings(
     ctx: &mut gpu::Context,
     shader: &noren::meta::model::GraphicsShader,
-    shader_layout: &GraphicsShaderLayout,
+    _shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
     material_layout: &MaterialLayout,
 ) -> Result<MaterialBindings, Box<dyn Error>> {
     let mut bindings = MaterialBindings::default();
-    bindings.recipes = binding_recipes_from_layout(shader_layout, &material_layout.metadata);
+    bindings.recipes = binding_recipes_from_shader(shader, &material_layout.metadata);
 
     let sampler = ctx.make_sampler(&SamplerInfo::default())?;
     bindings.samplers.push(sampler);
@@ -509,11 +475,10 @@ fn build_bind_table_material_bindings(
         })?;
         let mut settings = allocator.bump().ok_or("allocate dynamic settings buffer")?;
         let defaults: PostSettings =
-            binding_defaults(&material_layout.metadata, RESERVED_POST_SETTINGS, 0, 0);
+            binding_defaults(&material_layout.metadata, RESERVED_POST_SETTINGS);
         settings.slice::<PostSettings>()[0] = defaults;
 
-        let exposure: ExposureData =
-            binding_defaults(&material_layout.metadata, RESERVED_EXPOSURE, 0, 1);
+        let exposure: ExposureData = binding_defaults(&material_layout.metadata, RESERVED_EXPOSURE);
 
         let exposure_buffer = ctx.make_buffer(&BufferInfo {
             debug_name: "material_exposure",
@@ -543,7 +508,7 @@ fn build_bind_table_material_bindings(
         let mut binding_sets: Vec<(u32, Vec<IndexedResource>)> = Vec::new();
 
         let index_defaults: IndexDefaults =
-            binding_defaults(&material_layout.metadata, RESERVED_INDICES, 3, 1);
+            binding_defaults(&material_layout.metadata, RESERVED_INDICES);
         let indices = if index_defaults.indices.is_empty() {
             vec![0u32, 1u32]
         } else {
@@ -558,71 +523,54 @@ fn build_bind_table_material_bindings(
         })?;
         bindings.buffers.push(indices_buffer);
 
-        if let Some(cfg) = shader_layout
-            .bind_table_layouts
-            .get(3)
-            .and_then(|c| c.as_ref())
+        for variable in shader_variables(shader)
+            .into_iter()
+            .filter(|var| var.set == 3)
         {
-            let borrowed = cfg.borrow();
-            let info = borrowed.info();
-            for shader_info in info.shaders {
-                for variable in shader_info.variables {
-                    match variable.var_type {
-                        BindGroupVariableType::SampledImage => {
-                            let defaults: SampledImageDefaults = binding_defaults(
-                                &material_layout.metadata,
-                                RESERVED_BINDLESS_LAYERS,
-                                3,
-                                variable.binding,
+            match variable.kind.var_type {
+                BindGroupVariableType::SampledImage => {
+                    let defaults: SampledImageDefaults =
+                        binding_defaults(&material_layout.metadata, RESERVED_BINDLESS_LAYERS);
+                    let mut count = defaults
+                        .count
+                        .unwrap_or_else(|| variable.kind.count.max(1) as usize);
+                    count = count.max(variable.kind.count.max(1) as usize);
+
+                    let mut resources: Vec<IndexedResource> = (0..count)
+                        .map(|slot| IndexedResource {
+                            slot: slot as u32,
+                            resource: ShaderResource::SampledImage(
+                                ImageView {
+                                    img: fallback,
+                                    ..Default::default()
+                                },
+                                sampler,
+                            ),
+                        })
+                        .collect();
+
+                    for (tex_idx, slot) in defaults.slots.iter().enumerate() {
+                        if (*slot as usize) < resources.len() {
+                            resources[*slot as usize].resource = ShaderResource::SampledImage(
+                                ImageView {
+                                    img: textures.get(tex_idx).copied().unwrap_or(fallback),
+                                    ..Default::default()
+                                },
+                                sampler,
                             );
-                            let mut count = defaults
-                                .count
-                                .unwrap_or_else(|| variable.count.max(1) as usize);
-                            count = count.max(variable.count.max(1) as usize);
-
-                            let mut resources: Vec<IndexedResource> = (0..count)
-                                .map(|slot| IndexedResource {
-                                    slot: slot as u32,
-                                    resource: ShaderResource::SampledImage(
-                                        ImageView {
-                                            img: fallback,
-                                            ..Default::default()
-                                        },
-                                        sampler,
-                                    ),
-                                })
-                                .collect();
-
-                            for (tex_idx, slot) in defaults.slots.iter().enumerate() {
-                                if (*slot as usize) < resources.len() {
-                                    resources[*slot as usize].resource =
-                                        ShaderResource::SampledImage(
-                                            ImageView {
-                                                img: textures
-                                                    .get(tex_idx)
-                                                    .copied()
-                                                    .unwrap_or(fallback),
-                                                ..Default::default()
-                                            },
-                                            sampler,
-                                        );
-                                }
-                            }
-
-                            binding_sets.push((variable.binding, resources));
                         }
-                        BindGroupVariableType::Storage => {
-                            let resources = vec![IndexedResource {
-                                slot: 0,
-                                resource: ShaderResource::ConstBuffer(BufferView::new(
-                                    indices_buffer,
-                                )),
-                            }];
-                            binding_sets.push((variable.binding, resources));
-                        }
-                        _ => {}
                     }
+
+                    binding_sets.push((variable.kind.binding, resources));
                 }
+                BindGroupVariableType::Storage => {
+                    let resources = vec![IndexedResource {
+                        slot: 0,
+                        resource: ShaderResource::ConstBuffer(BufferView::new(indices_buffer)),
+                    }];
+                    binding_sets.push((variable.kind.binding, resources));
+                }
+                _ => {}
             }
         }
 
@@ -651,88 +599,53 @@ fn make_fallback_texture(ctx: &mut gpu::Context) -> Result<Handle<Image>, Box<dy
     Ok(ctx.make_image(&info)?)
 }
 
-fn binding_recipes_from_layout(
-    shader_layout: &GraphicsShaderLayout,
+fn binding_recipes_from_shader(
+    shader: &noren::meta::model::GraphicsShader,
     metadata: &MaterialMetadata,
 ) -> Vec<BindingRecipe> {
     let mut recipes = Vec::new();
-
-    for (set, cfg_opt) in shader_layout.bind_group_layouts.iter().enumerate() {
-        if let Some(cfg) = cfg_opt {
-            let borrowed = cfg.borrow();
-            let info = borrowed.info();
-            for shader_info in info.shaders {
-                for variable in shader_info.variables {
-                    recipes.push(BindingRecipe {
-                        set: set as u32,
-                        binding: variable.binding,
-                        binding_type: binding_type_from_variable(variable.var_type.clone()),
-                        name: metadata_name(metadata, set as u32, variable.binding),
-                    });
-                }
-            }
-        }
-    }
-
-    for (set, cfg_opt) in shader_layout.bind_table_layouts.iter().enumerate() {
-        if let Some(cfg) = cfg_opt {
-            let borrowed = cfg.borrow();
-            let info = borrowed.info();
-            for shader_info in info.shaders {
-                for variable in shader_info.variables {
-                    recipes.push(BindingRecipe {
-                        set: set as u32,
-                        binding: variable.binding,
-                        binding_type: binding_type_from_variable(variable.var_type.clone()),
-                        name: metadata_name(metadata, set as u32, variable.binding),
-                    });
-                }
-            }
-        }
+    for variable in shader_variables(shader) {
+        recipes.push(BindingRecipe {
+            set: variable.set,
+            binding: variable.kind.binding,
+            binding_type: variable.kind.var_type.clone(),
+            name: metadata_name(metadata, &variable.name),
+        });
     }
 
     recipes
 }
 
-fn binding_type_from_variable(var_type: BindGroupVariableType) -> MaterialBindingType {
-    match var_type {
-        BindGroupVariableType::Uniform => MaterialBindingType::Uniform,
-        BindGroupVariableType::Storage => MaterialBindingType::Storage,
-        BindGroupVariableType::SampledImage => MaterialBindingType::SampledImage,
-        BindGroupVariableType::StorageImage => MaterialBindingType::StorageImage,
-        BindGroupVariableType::DynamicUniform => MaterialBindingType::DynamicUniform,
-        _ => MaterialBindingType::Unknown,
+fn shader_variables(shader: &noren::meta::model::GraphicsShader) -> Vec<&bento::ShaderVariable> {
+    let mut vars = Vec::new();
+    let mut seen = HashSet::new();
+    for stage in [shader.vertex.as_ref(), shader.fragment.as_ref()] {
+        if let Some(stage) = stage {
+            for variable in &stage.module.artifact().variables {
+                let key = (variable.set, variable.kind.binding);
+                if seen.insert(key) {
+                    vars.push(variable);
+                }
+            }
+        }
     }
+
+    vars
 }
 
-fn metadata_name(metadata: &MaterialMetadata, set: u32, binding: u32) -> Option<String> {
+fn metadata_name(metadata: &MaterialMetadata, variable_name: &str) -> Option<String> {
     metadata
         .bindings
         .iter()
-        .find(|meta| meta.set == set && meta.binding == binding)
+        .find(|meta| meta.name.as_deref() == Some(variable_name))
         .and_then(|meta| meta.name.clone())
 }
 
-fn binding_defaults<T: DeserializeOwned + Default>(
-    metadata: &MaterialMetadata,
-    name: &str,
-    set: u32,
-    binding: u32,
-) -> T {
+fn binding_defaults<T: DeserializeOwned + Default>(metadata: &MaterialMetadata, name: &str) -> T {
     if let Some(meta) = metadata
         .bindings
         .iter()
         .find(|meta| meta.name.as_deref() == Some(name))
-    {
-        if !meta.defaults.is_null() {
-            return serde_json::from_value(meta.defaults.clone()).unwrap_or_default();
-        }
-    }
-
-    if let Some(meta) = metadata
-        .bindings
-        .iter()
-        .find(|meta| meta.set == set && meta.binding == binding)
     {
         if !meta.defaults.is_null() {
             return serde_json::from_value(meta.defaults.clone()).unwrap_or_default();
