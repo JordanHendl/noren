@@ -1,18 +1,10 @@
 {
-  "textures": {
-    "texture/quad_diffuse": {
-      "image": "imagery/tulips",
-      "name": "Quad Diffuse"
-    },
-    "texture/quad_overlay": {
-      "image": "imagery/peppers",
-      "name": "Quad Overlay"
-    }
-  },
   "materials": {
     "material/quad": {
       "name": "Quad Material",
-      "textures": [],
+      "textures": [
+        "texture/imagery/tulips"
+      ],
       "shader": "shader/default",
       "metadata": {
         "bindings": []
@@ -21,8 +13,8 @@
     "material/multi_bind": {
       "name": "Multi Bind Quad",
       "textures": [
-        "texture/quad_diffuse",
-        "texture/quad_overlay"
+        "texture/imagery/tulips",
+        "texture/imagery/peppers"
       ],
       "shader": "shader/multi_bind",
       "metadata": {
@@ -148,152 +140,6 @@
                   0.0,
                   0.0,
                   0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ]
-              ],
-              "colors": [
-                [
-                  1.0,
-                  0.9,
-                  0.8,
-                  1.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
                 ]
               ]
             }
@@ -318,7 +164,7 @@
     "material/bind_table": {
       "name": "Bind Table Quad",
       "textures": [
-        "texture/quad_overlay"
+        "texture/imagery/peppers"
       ],
       "shader": "shader/bind_table",
       "metadata": {
@@ -366,40 +212,5 @@
         ]
       }
     }
-  },
-  "meshes": {},
-  "models": {},
-  "shaders": {
-    "shader/default": {
-      "name": "Default Shader",
-      "vertex": "shader/quad.vert",
-      "fragment": "shader/quad.frag",
-      "geometry": null,
-      "tessellation_control": null,
-      "tessellation_evaluation": null,
-      "subpass": 0,
-      "render_pass": "render_pass/default"
-    },
-    "shader/multi_bind": {
-      "name": "Multi Bind Shader",
-      "vertex": "shader/multi_bind.vert",
-      "fragment": "shader/multi_bind.frag",
-      "geometry": null,
-      "tessellation_control": null,
-      "tessellation_evaluation": null,
-      "subpass": 0,
-      "render_pass": "render_pass/default"
-    },
-    "shader/bind_table": {
-      "name": "Bind Table Shader",
-      "vertex": "shader/bind_table.vert",
-      "fragment": "shader/bind_table.frag",
-      "geometry": null,
-      "tessellation_control": null,
-      "tessellation_evaluation": null,
-      "subpass": 0,
-      "render_pass": "render_pass/default"
-    }
-  },
-  "render_passes": {}
+  }
 }

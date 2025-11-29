@@ -2,9 +2,16 @@ This directory is a staging database, and shows how a 'staging db' gets built in
 
 To do this, run `dbgen sample_pre/norenbuild.json` and it'll create the output `db` which is usable with samples. Use `dbgen --append sample_pre/norenbuild.json` if you only want to add new entries to existing `.rdb` files without rebuilding them from scratch.
 
-Materials, shaders, and textures now live in `db/materials.json` so the `models.json` file only needs to describe meshes and their composition inside higher level models. Each material declares the textures it binds and the shader it expects to use, which keeps the staging data aligned with how the runtime assembles models.
+Meta data now lives in per-entity files under both `sample_pre/` and `db/`:
 
-Render passes are authored separately inside `db/render_passes.json`. Each entry follows the same structure consumed by `dashi::builders::RenderPassBuilder`, so the data can be copied directly from tooling or hand-authored. Every shader in `db/materials.json` must specify the `render_pass` it targets, and that value must match one of the names inside `db/render_passes.json`. The loader will look up the matching pass definition before it finalizes the pipeline, which keeps asset authors in control of how attachments, viewports, and subpasses line up with the shader code.
+- `textures.json` – texture entries that reference imagery in `imagery.rdb`
+- `materials.json` – material bindings and metadata (bindless layers, camera defaults, etc.)
+- `meshes.json` – mesh entries that point to geometry and optional materials
+- `models.json` – logical models that bundle together meshes
+- `shaders.json` – shader layout metadata that references compiled modules in `shaders.rdb`
+- `render_passes.json` – render pass layouts consumed by shader definitions
+
+Every shader in `shaders.json` must specify the `render_pass` it targets, and that value must match one of the names inside `render_passes.json`. The loader will look up the matching pass definition before it finalizes the pipeline, which keeps asset authors in control of how attachments, viewports, and subpasses line up with the shader code.
 
 When you just need to add a single resource, you can skip `norenbuild.json` entirely and write straight into an `.rdb`:
 
