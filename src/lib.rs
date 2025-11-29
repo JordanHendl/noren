@@ -271,6 +271,14 @@ impl DB {
         self.render_passes.fetch(entry, ctx)
     }
 
+    /// Returns an iterator over the declared subpasses for the provided render pass.
+    pub fn render_pass_subpasses(
+        &self,
+        entry: &str,
+    ) -> Result<RenderPassSubpasses<'_>, NorenError> {
+        self.render_passes.subpasses(entry)
+    }
+
     /// Builds a CPU-side model composed of host geometry, textures, and materials.
     pub fn fetch_model(&mut self, entry: DatabaseEntry<'_>) -> Result<HostModel, NorenError> {
         self.assemble_model(
@@ -1421,6 +1429,13 @@ mod tests {
 
         let mut db = DB::new(&db_info)?;
         let _render_pass = db.fetch_render_pass("render_pass/test")?;
+
+        let subpasses = db.render_pass_subpasses("render_pass/test")?;
+        let mut collected: Vec<_> = subpasses.collect();
+        assert_eq!(collected.len(), 1);
+        let subpass = collected.pop().expect("at least one subpass");
+        assert_eq!(subpass.color_attachments.len(), 1);
+        assert!(subpass.depth_stencil_attachment.is_none());
 
         let host_model = db.fetch_model(MODEL_ENTRY)?;
         assert_eq!(host_model.name, MODEL_ENTRY);
