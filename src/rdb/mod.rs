@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod bind_group_layout;
 pub mod bind_table_layout;
 pub mod font;
@@ -7,6 +8,7 @@ pub mod primitives;
 pub mod render_pass;
 pub mod shader;
 
+pub use audio::*;
 pub use bind_group_layout::*;
 pub use bind_table_layout::*;
 pub use font::*;

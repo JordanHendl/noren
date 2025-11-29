@@ -1,9 +1,9 @@
 {
   "meshes": {
     "mesh/quad": {
-      "name": "Quad Mesh",
+      "name": "quad",
       "geometry": "geometry/quad",
-      "material": "material/quad",
+      "material": null,
       "textures": [
         "texture/imagery/tulips",
         "texture/imagery/peppers"
