@@ -1,0 +1,24 @@
+{
+  "shaders": {
+    "shader/default": {
+      "name": "Default Shader",
+      "vertex": "shader/quad.vert",
+      "fragment": "shader/quad.frag",
+      "render_pass": "render_pass/default"
+    },
+    "shader/multi_bind": {
+      "name": "Multi Bind Shader",
+      "vertex": "shader/multi_bind.vert",
+      "fragment": "shader/multi_bind.frag",
+      "subpass": 0,
+      "render_pass": "render_pass/default"
+    },
+    "shader/bind_table": {
+      "name": "Bind Table Shader",
+      "vertex": "shader/bind_table.vert",
+      "fragment": "shader/bind_table.frag",
+      "subpass": 0,
+      "render_pass": "render_pass/default"
+    }
+  }
+}

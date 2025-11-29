@@ -1,12 +1,4 @@
 {
-  "meshes": {
-    "mesh/quad": {
-      "name": "Quad Mesh",
-      "geometry": "geometry/quad",
-      "material": "material/quad",
-      "textures": []
-    }
-  },
   "models": {
     "model/quad": {
       "name": "Quad",

@@ -13,6 +13,10 @@ fn default_imagery_path() -> String {
     "imagery.rdb".to_string()
 }
 
+fn default_texture_path() -> String {
+    "textures.json".to_string()
+}
+
 fn default_model_path() -> String {
     "models.json".to_string()
 }
@@ -21,24 +25,21 @@ fn default_material_path() -> String {
     "materials.json".to_string()
 }
 
+fn default_mesh_path() -> String {
+    "meshes.json".to_string()
+}
+
 fn default_render_pass_path() -> String {
     "render_passes.json".to_string()
 }
 
-fn default_shader_path() -> String {
-    "shaders.rdb".to_string()
+fn default_shader_layout_path() -> String {
+    "shaders.json".to_string()
 }
 
-////////////////////////////////
-/// This struct defines the structure of the database.
-/// It is not needed, and if data is missing, it will default to values for data lookups.
-///
-/// Raw data (geometry, imagery, etc.) is found in '*.rdb' files inside the database. These are
-/// mapped and data is looked up at runtime when fetched.
-///
-/// Complex data (models, materials) are loaded from json configuration, where they are described with what
-/// primitives they use (mutliple meshes, ref geometry a/b/c with textures d/e/f, etc).
-////////////////////////////////
+fn default_shader_module_path() -> String {
+    "shaders.rdb".to_string()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseLayoutFile {
@@ -46,30 +47,50 @@ pub struct DatabaseLayoutFile {
     pub geometry: String,
     #[serde(default = "default_imagery_path")]
     pub imagery: String,
-    #[serde(default = "default_model_path")]
-    pub models: String,
+    #[serde(default = "default_texture_path")]
+    pub textures: String,
     #[serde(default = "default_material_path")]
     pub materials: String,
+    #[serde(default = "default_mesh_path")]
+    pub meshes: String,
+    #[serde(default = "default_model_path")]
+    pub models: String,
     #[serde(default = "default_render_pass_path")]
     pub render_passes: String,
-    #[serde(default = "default_shader_path")]
+    #[serde(default = "default_shader_layout_path")]
+    pub shader_layouts: String,
+    #[serde(default = "default_shader_module_path")]
     pub shaders: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TextureLayoutFile {
+    #[serde(default)]
+    pub textures: HashMap<String, TextureLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaterialLayoutFile {
+    #[serde(default)]
+    pub materials: HashMap<String, MaterialLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MeshLayoutFile {
+    #[serde(default)]
+    pub meshes: HashMap<String, MeshLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelLayoutFile {
     #[serde(default)]
-    pub textures: HashMap<String, TextureLayout>,
-    #[serde(default)]
-    pub materials: HashMap<String, MaterialLayout>,
-    #[serde(default)]
-    pub meshes: HashMap<String, MeshLayout>,
-    #[serde(default)]
     pub models: HashMap<String, ModelLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ShaderLayoutFile {
     #[serde(default)]
     pub shaders: HashMap<String, GraphicsShaderLayout>,
-    #[serde(default)]
-    pub render_passes: HashMap<String, RenderPassLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -175,15 +196,39 @@ pub struct GraphicsShaderLayout {
     pub furikake_state: FurikakeState,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MetaLayout {
+    pub textures: HashMap<String, TextureLayout>,
+    pub materials: HashMap<String, MaterialLayout>,
+    pub meshes: HashMap<String, MeshLayout>,
+    pub models: HashMap<String, ModelLayout>,
+    pub shaders: HashMap<String, GraphicsShaderLayout>,
+    pub render_passes: HashMap<String, RenderPassLayout>,
+}
+
+impl MetaLayout {
+    pub fn is_empty(&self) -> bool {
+        self.textures.is_empty()
+            && self.materials.is_empty()
+            && self.meshes.is_empty()
+            && self.models.is_empty()
+            && self.shaders.is_empty()
+            && self.render_passes.is_empty()
+    }
+}
+
 impl Default for DatabaseLayoutFile {
     fn default() -> Self {
         Self {
             geometry: default_geometry_path(),
             imagery: default_imagery_path(),
-            models: default_model_path(),
+            textures: default_texture_path(),
             materials: default_material_path(),
+            meshes: default_mesh_path(),
+            models: default_model_path(),
             render_passes: default_render_pass_path(),
-            shaders: default_shader_path(),
+            shader_layouts: default_shader_layout_path(),
+            shaders: default_shader_module_path(),
         }
     }
 }

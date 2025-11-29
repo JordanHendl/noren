@@ -4,7 +4,7 @@ use std::{
 };
 
 use dashi::{ContextInfo, gpu};
-use noren::{DB, DBInfo, datatypes::DatabaseEntry};
+use noren::{DB, DBInfo, rdb::DatabaseEntry};
 
 pub mod display;
 

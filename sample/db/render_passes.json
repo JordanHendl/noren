@@ -30,7 +30,6 @@
               "stencil_store_op": "DontCare"
             }
           ],
-          "depth_stencil_attachment": null,
           "subpass_dependencies": []
         }
       ]

@@ -111,8 +111,8 @@ fn shader_stages(shader: &GraphicsShader) -> Vec<&crate::meta::ShaderStage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{meta::ShaderStage, rdb::ShaderModule};
     use bento::{CompilationResult, InterfaceVariable, ShaderLang, ShaderMetadata, ShaderVariable};
-    use crate::{datatypes::ShaderModule, meta::ShaderStage};
     use dashi::{BindGroupVariable, BindGroupVariableType, ShaderType};
 
     fn reserved_metadata_for(state: FurikakeState) -> &'static [furikake::ReservedMetadata] {
@@ -162,7 +162,8 @@ mod tests {
     #[test]
     fn validates_default_and_bindless_reserved_bindings() {
         for state in [FurikakeState::Default, FurikakeState::Bindless] {
-            let shader = shader_with_variables(variables_for_reserved(state), ShaderMetadata::default());
+            let shader =
+                shader_with_variables(variables_for_reserved(state), ShaderMetadata::default());
 
             assert!(validate_furikake_state(&shader, state).is_ok());
         }

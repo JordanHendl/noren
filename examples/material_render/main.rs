@@ -19,9 +19,10 @@ use dashi::{
     Viewport,
 };
 use glam::Mat4;
-use noren::meta::model::DeviceMaterial;
+use noren::meta::DeviceMaterial;
 use noren::parsing::{
-    DatabaseLayoutFile, GraphicsShaderLayout, MaterialLayout, MaterialMetadata, ModelLayoutFile,
+    DatabaseLayoutFile, GraphicsShaderLayout, MaterialLayout, MaterialLayoutFile, MaterialMetadata,
+    MetaLayout, RenderPassLayoutFile, ShaderLayoutFile, TextureLayoutFile,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashSet, error::Error, path::PathBuf};
@@ -132,8 +133,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 fn render_quad_with_material(
     ctx: &mut gpu::Context,
-    host_geometry: &noren::datatypes::geometry::HostGeometry,
-    device_geometry: noren::datatypes::geometry::DeviceGeometry,
+    host_geometry: &noren::rdb::geometry::HostGeometry,
+    device_geometry: noren::rdb::geometry::DeviceGeometry,
     bindings: &MaterialBindings,
     pipeline: Handle<dashi::GraphicsPipeline>,
     framebuffer: Handle<Image>,
@@ -247,7 +248,7 @@ struct SampledImageDefaults {
 
 fn build_material_bindings(
     ctx: &mut gpu::Context,
-    shader: &noren::meta::model::GraphicsShader,
+    shader: &noren::meta::GraphicsShader,
     shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
     material_layout: &MaterialLayout,
@@ -282,7 +283,7 @@ fn build_material_bindings(
 
 fn build_multi_bind_bindings(
     ctx: &mut gpu::Context,
-    shader: &noren::meta::model::GraphicsShader,
+    shader: &noren::meta::GraphicsShader,
     _shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
     material_layout: &MaterialLayout,
@@ -446,7 +447,7 @@ fn build_multi_bind_bindings(
 
 fn build_bind_table_material_bindings(
     ctx: &mut gpu::Context,
-    shader: &noren::meta::model::GraphicsShader,
+    shader: &noren::meta::GraphicsShader,
     _shader_layout: &GraphicsShaderLayout,
     material: &DeviceMaterial,
     material_layout: &MaterialLayout,
@@ -600,7 +601,7 @@ fn make_fallback_texture(ctx: &mut gpu::Context) -> Result<Handle<Image>, Box<dy
 }
 
 fn binding_recipes_from_shader(
-    shader: &noren::meta::model::GraphicsShader,
+    shader: &noren::meta::GraphicsShader,
     metadata: &MaterialMetadata,
 ) -> Vec<BindingRecipe> {
     let mut recipes = Vec::new();
@@ -616,7 +617,7 @@ fn binding_recipes_from_shader(
     recipes
 }
 
-fn shader_variables(shader: &noren::meta::model::GraphicsShader) -> Vec<&bento::ShaderVariable> {
+fn shader_variables(shader: &noren::meta::GraphicsShader) -> Vec<&bento::ShaderVariable> {
     let mut vars = Vec::new();
     let mut seen = HashSet::new();
     for stage in [shader.vertex.as_ref(), shader.fragment.as_ref()] {
@@ -670,27 +671,29 @@ fn print_binding_recipes(bindings: &MaterialBindings) {
     }
 }
 
-fn load_material_layout() -> Result<ModelLayoutFile, Box<dyn Error>> {
+fn load_material_layout() -> Result<MetaLayout, Box<dyn Error>> {
     let base_dir: PathBuf = common::sample_db_path();
     let layout_path = base_dir.join("layout.json");
     let layout: DatabaseLayoutFile = serde_json::from_str(&std::fs::read_to_string(layout_path)?)?;
 
-    let materials_path = base_dir.join(layout.materials);
-    let materials = std::fs::read_to_string(&materials_path)?;
-    let mut material_layout: ModelLayoutFile = serde_json::from_str(&materials)?;
+    let materials: MaterialLayoutFile =
+        serde_json::from_str(&std::fs::read_to_string(base_dir.join(layout.materials))?)?;
+    let shaders: ShaderLayoutFile = serde_json::from_str(&std::fs::read_to_string(
+        base_dir.join(layout.shader_layouts),
+    )?)?;
+    let render_passes: RenderPassLayoutFile = serde_json::from_str(&std::fs::read_to_string(
+        base_dir.join(layout.render_passes),
+    )?)?;
+    let textures: TextureLayoutFile =
+        serde_json::from_str(&std::fs::read_to_string(base_dir.join(layout.textures))?)?;
 
-    if !material_layout.render_passes.is_empty() {
-        return Ok(material_layout);
-    }
-
-    if let Ok(render_passes) = std::fs::read_to_string(base_dir.join(layout.render_passes)) {
-        let render_layout: ModelLayoutFile = serde_json::from_str(&render_passes)?;
-        material_layout
-            .render_passes
-            .extend(render_layout.render_passes);
-    }
-
-    Ok(material_layout)
+    Ok(MetaLayout {
+        materials: materials.materials,
+        shaders: shaders.shaders,
+        render_passes: render_passes.render_passes,
+        textures: textures.textures,
+        ..Default::default()
+    })
 }
 
 #[repr(C)]

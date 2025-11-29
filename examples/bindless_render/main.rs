@@ -118,7 +118,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 fn load_bindless_textures(
     ctx: &mut gpu::Context,
-    imagery: &mut noren::datatypes::ImageDB,
+    imagery: &mut noren::rdb::ImageDB,
 ) -> Result<[Handle<Image>; 2], Box<dyn Error>> {
     let albedo = imagery.fetch_raw_image(SAMPLE_TEXTURE_ENTRY)?;
     let bloom = imagery.fetch_raw_image("imagery/peppers")?;
@@ -249,8 +249,8 @@ fn make_bind_table(
 
 fn render_bindless(
     ctx: &mut gpu::Context,
-    device_geometry: noren::datatypes::geometry::DeviceGeometry,
-    host_geometry: &noren::datatypes::geometry::HostGeometry,
+    device_geometry: noren::rdb::geometry::DeviceGeometry,
+    host_geometry: &noren::rdb::geometry::HostGeometry,
     pipeline: Handle<dashi::GraphicsPipeline>,
     framebuffer: Handle<Image>,
     bind_group_set: usize,

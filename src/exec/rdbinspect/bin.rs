@@ -3,7 +3,7 @@ use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 use bincode::deserialize;
 use noren::{
     RDBView,
-    datatypes::{HostGeometry, HostImage, ShaderModule},
+    rdb::{HostGeometry, HostImage, ShaderModule},
     type_tag_for,
 };
 use serde::de::DeserializeOwned;

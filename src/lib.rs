@@ -1,21 +1,22 @@
-pub mod datatypes;
 mod furikake_state;
 mod material_bindings;
 pub mod meta;
 pub mod parsing;
+pub mod rdb;
 pub mod render_graph;
 mod utils;
 use std::{collections::BTreeMap, io::ErrorKind, ptr::NonNull};
 
 use crate::{
-    datatypes::primitives::Vertex,
     material_bindings::texture_binding_slots_from_shader,
+    rdb::primitives::Vertex,
     render_graph::{PipelineFactory, RenderGraph, RenderGraphRequest},
 };
-use datatypes::*;
 pub use furikake_state::FurikakeState;
 use meta::*;
 use parsing::*;
+use rdb::*;
+use serde::de::DeserializeOwned;
 use utils::*;
 
 use dashi::{
@@ -48,7 +49,7 @@ pub struct DB {
     imagery: ImageDB,
     shaders: ShaderDB,
     render_passes: RenderPassDB,
-    model_file: Option<ModelLayoutFile>,
+    meta_layout: Option<MetaLayout>,
 }
 
 fn read_database_layout(layout_file: Option<&str>) -> Result<DatabaseLayoutFile, NorenError> {
@@ -59,65 +60,55 @@ fn read_database_layout(layout_file: Option<&str>) -> Result<DatabaseLayoutFile,
     Ok(layout)
 }
 
-fn load_model_layout(
+fn load_json_file<T: DeserializeOwned + Default>(path: &str) -> Result<Option<T>, NorenError> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) if raw.trim().is_empty() => Ok(None),
+        Ok(raw) => Ok(Some(serde_json::from_str::<T>(&raw)?)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn load_meta_layout(
     base_dir: &str,
     layout: &DatabaseLayoutFile,
-) -> Result<Option<ModelLayoutFile>, NorenError> {
-    let model_path = format!("{}/{}", base_dir, layout.models);
-    let material_path = format!("{}/{}", base_dir, layout.materials);
-    let render_pass_path = format!("{}/{}", base_dir, layout.render_passes);
+) -> Result<Option<MetaLayout>, NorenError> {
+    let textures =
+        load_json_file::<TextureLayoutFile>(&format!("{}/{}", base_dir, layout.textures))?;
+    let materials =
+        load_json_file::<MaterialLayoutFile>(&format!("{}/{}", base_dir, layout.materials))?;
+    let meshes = load_json_file::<MeshLayoutFile>(&format!("{}/{}", base_dir, layout.meshes))?;
+    let models = load_json_file::<ModelLayoutFile>(&format!("{}/{}", base_dir, layout.models))?;
+    let shader_layouts =
+        load_json_file::<ShaderLayoutFile>(&format!("{}/{}", base_dir, layout.shader_layouts))?;
+    let render_pass_layouts =
+        load_json_file::<RenderPassLayoutFile>(&format!("{}/{}", base_dir, layout.render_passes))?;
 
-    let mut model_file = match std::fs::read_to_string(&model_path) {
-        Ok(raw) if raw.trim().is_empty() => None,
-        Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
-        Err(err) if err.kind() == ErrorKind::NotFound => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    let material_file = match std::fs::read_to_string(&material_path) {
-        Ok(raw) if raw.trim().is_empty() => None,
-        Ok(raw) => Some(serde_json::from_str::<ModelLayoutFile>(&raw)?),
-        Err(err) if err.kind() == ErrorKind::NotFound => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    let render_pass_file = match std::fs::read_to_string(&render_pass_path) {
-        Ok(raw) if raw.trim().is_empty() => None,
-        Ok(raw) => Some(serde_json::from_str::<RenderPassLayoutFile>(&raw)?),
-        Err(err) if err.kind() == ErrorKind::NotFound => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    if let Some(materials) = material_file {
-        match model_file {
-            Some(ref mut layout) => {
-                layout.textures.extend(materials.textures.into_iter());
-                layout.materials.extend(materials.materials.into_iter());
-                layout.shaders.extend(materials.shaders.into_iter());
-                layout
-                    .render_passes
-                    .extend(materials.render_passes.into_iter());
-            }
-            None => {
-                model_file = Some(materials);
-            }
-        }
+    let mut meta_layout = MetaLayout::default();
+    if let Some(file) = textures {
+        meta_layout.textures = file.textures;
+    }
+    if let Some(file) = materials {
+        meta_layout.materials = file.materials;
+    }
+    if let Some(file) = meshes {
+        meta_layout.meshes = file.meshes;
+    }
+    if let Some(file) = models {
+        meta_layout.models = file.models;
+    }
+    if let Some(file) = shader_layouts {
+        meta_layout.shaders = file.shaders;
+    }
+    if let Some(file) = render_pass_layouts {
+        meta_layout.render_passes = file.render_passes;
     }
 
-    if let Some(render_passes) = render_pass_file {
-        match model_file {
-            Some(ref mut layout) => layout
-                .render_passes
-                .extend(render_passes.render_passes.into_iter()),
-            None => {
-                let mut layout = ModelLayoutFile::default();
-                layout.render_passes = render_passes.render_passes;
-                model_file = Some(layout);
-            }
-        }
+    if meta_layout.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(meta_layout))
     }
-
-    Ok(model_file)
 }
 
 /// Validates that shader, material, and render pass references in the layout are consistent.
@@ -126,11 +117,11 @@ pub fn validate_database_layout(
     layout_file: Option<&str>,
 ) -> Result<(), NorenError> {
     let layout = read_database_layout(layout_file)?;
-    let Some(model_layout) = load_model_layout(base_dir, &layout)? else {
+    let Some(meta_layout) = load_meta_layout(base_dir, &layout)? else {
         return Ok(());
     };
 
-    validate_shader_layouts(&model_layout)
+    validate_meta_layout(&meta_layout)
 }
 
 ////////////////////////////////////////////////
@@ -154,14 +145,14 @@ impl DB {
         let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
-        let mut model_file = load_model_layout(info.base_dir, &layout)?;
+        let meta_layout = load_meta_layout(info.base_dir, &layout)?;
 
-        if let Some(layout) = model_file.as_ref() {
-            validate_shader_layouts(layout)?;
+        if let Some(layout) = meta_layout.as_ref() {
+            validate_meta_layout(layout)?;
         }
 
-        let render_passes = if let Some(layout) = model_file.as_mut() {
-            RenderPassDB::new(std::mem::take(&mut layout.render_passes))
+        let render_passes = if let Some(layout) = meta_layout.as_ref() {
+            RenderPassDB::new(layout.render_passes.clone())
         } else {
             RenderPassDB::default()
         };
@@ -172,7 +163,7 @@ impl DB {
             imagery,
             shaders,
             render_passes,
-            model_file,
+            meta_layout,
         })
     }
 
@@ -228,7 +219,7 @@ impl DB {
 
     /// Enumerates logical texture definitions declared in the model layout.
     pub fn enumerate_textures(&self) -> Vec<String> {
-        self.model_file
+        self.meta_layout
             .as_ref()
             .map(|layout| layout.textures.keys().cloned().collect())
             .unwrap_or_default()
@@ -236,7 +227,7 @@ impl DB {
 
     /// Enumerates material definitions declared in the model layout.
     pub fn enumerate_materials(&self) -> Vec<String> {
-        self.model_file
+        self.meta_layout
             .as_ref()
             .map(|layout| layout.materials.keys().cloned().collect())
             .unwrap_or_default()
@@ -244,7 +235,7 @@ impl DB {
 
     /// Enumerates mesh definitions declared in the model layout.
     pub fn enumerate_meshes(&self) -> Vec<String> {
-        self.model_file
+        self.meta_layout
             .as_ref()
             .map(|layout| layout.meshes.keys().cloned().collect())
             .unwrap_or_default()
@@ -252,7 +243,7 @@ impl DB {
 
     /// Enumerates model definitions declared in the model layout.
     pub fn enumerate_models(&self) -> Vec<String> {
-        self.model_file
+        self.meta_layout
             .as_ref()
             .map(|layout| layout.models.keys().cloned().collect())
             .unwrap_or_default()
@@ -260,7 +251,7 @@ impl DB {
 
     /// Enumerates render pass definitions declared in the model layout.
     pub fn enumerate_render_passes(&self) -> Vec<String> {
-        self.model_file
+        self.meta_layout
             .as_ref()
             .map(|layout| layout.render_passes.keys().cloned().collect())
             .unwrap_or_default()
@@ -268,7 +259,7 @@ impl DB {
 
     /// Enumerates graphics shader definitions declared in the model layout.
     pub fn enumerate_shaders(&self) -> Vec<String> {
-        self.model_file
+        self.meta_layout
             .as_ref()
             .map(|layout| layout.shaders.keys().cloned().collect())
             .unwrap_or_default()
@@ -341,7 +332,7 @@ impl DB {
     /// Builds a CPU-side material with host images and optional shader.
     pub fn fetch_host_material(&mut self, entry: &str) -> Result<HostMaterial, NorenError> {
         let layout = self
-            .model_file
+            .meta_layout
             .as_ref()
             .ok_or_else(|| NorenError::LookupFailure())?;
 
@@ -369,7 +360,7 @@ impl DB {
     /// Builds a GPU-ready material with device textures and pipeline state.
     pub fn fetch_device_material(&mut self, entry: &str) -> Result<DeviceMaterial, NorenError> {
         let layout = self
-            .model_file
+            .meta_layout
             .as_ref()
             .ok_or_else(|| NorenError::LookupFailure())?;
         let ctx_ptr = self.ctx;
@@ -414,7 +405,7 @@ impl DB {
     ) -> Result<GraphicsShader, NorenError> {
         let shader_layout = {
             let layout = self
-                .model_file
+                .meta_layout
                 .as_ref()
                 .ok_or_else(|| NorenError::LookupFailure())?;
             layout
@@ -450,7 +441,7 @@ impl DB {
         request: RenderGraphRequest,
     ) -> Result<RenderGraph, NorenError> {
         let layout = self
-            .model_file
+            .meta_layout
             .as_ref()
             .ok_or_else(|| NorenError::LookupFailure())?;
 
@@ -486,7 +477,7 @@ impl DB {
 fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
     output: &mut Vec<Texture>,
     keys: &[String],
-    layout: &ModelLayoutFile,
+    layout: &MetaLayout,
     imagery: &mut ImageDB,
     make_texture: &mut MakeTexture,
     fetch_image: &mut FetchImage,
@@ -508,8 +499,73 @@ where
     Ok(())
 }
 
+fn validate_material_links(layout: &MetaLayout) -> Result<(), NorenError> {
+    for (material_key, material) in &layout.materials {
+        for texture_key in &material.textures {
+            if !layout.textures.contains_key(texture_key) {
+                return Err(NorenError::InvalidMaterial(format!(
+                    "Material '{material_key}' references missing texture '{texture_key}'",
+                )));
+            }
+        }
+
+        if let Some(shader_key) = &material.shader {
+            if !layout.shaders.contains_key(shader_key) {
+                return Err(NorenError::InvalidMaterial(format!(
+                    "Material '{material_key}' references missing shader '{shader_key}'",
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_mesh_links(layout: &MetaLayout) -> Result<(), NorenError> {
+    for (mesh_key, mesh) in &layout.meshes {
+        for texture_key in &mesh.textures {
+            if !layout.textures.contains_key(texture_key) {
+                return Err(NorenError::InvalidModel(format!(
+                    "Mesh '{mesh_key}' references missing texture '{texture_key}'",
+                )));
+            }
+        }
+
+        if let Some(material_key) = &mesh.material {
+            if !layout.materials.contains_key(material_key) {
+                return Err(NorenError::InvalidMaterial(format!(
+                    "Mesh '{mesh_key}' references missing material '{material_key}'",
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_model_links(layout: &MetaLayout) -> Result<(), NorenError> {
+    for (model_key, model) in &layout.models {
+        for mesh_key in &model.meshes {
+            if !layout.meshes.contains_key(mesh_key) {
+                return Err(NorenError::InvalidModel(format!(
+                    "Model '{model_key}' references missing mesh '{mesh_key}'",
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_meta_layout(layout: &MetaLayout) -> Result<(), NorenError> {
+    validate_material_links(layout)?;
+    validate_mesh_links(layout)?;
+    validate_model_links(layout)?;
+    validate_shader_layouts(layout)
+}
+
 fn build_material_components<Texture, Image, MakeTexture, FetchImage, LoadShader>(
-    layout: &ModelLayoutFile,
+    layout: &MetaLayout,
     imagery: &mut ImageDB,
     shaders: &mut ShaderDB,
     render_passes: &mut RenderPassDB,
@@ -640,7 +696,7 @@ fn normalize_binding_entries(
     Ok(normalized)
 }
 
-fn validate_shader_layouts(layout: &ModelLayoutFile) -> Result<(), NorenError> {
+fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
     use std::collections::HashMap;
 
     let mut shader_to_materials: HashMap<&str, Vec<String>> = HashMap::new();
@@ -772,7 +828,7 @@ impl DB {
         ) -> Result<Option<GraphicsShader>, NorenError>,
     {
         let layout = self
-            .model_file
+            .meta_layout
             .as_ref()
             .ok_or_else(|| NorenError::LookupFailure())?;
 
@@ -1125,15 +1181,16 @@ impl DB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::datatypes::{
+    use crate::parsing::{
+        GraphicsShaderLayout, MaterialLayout, MaterialLayoutFile, MeshLayout, MeshLayoutFile,
+        ModelLayout, ModelLayoutFile, RenderPassLayout, RenderPassLayoutFile, RenderSubpassLayout,
+        ShaderLayoutFile, TextureLayout, TextureLayoutFile,
+    };
+    use crate::rdb::{
         ShaderModule,
         geometry::HostGeometry,
         imagery::{HostImage, ImageInfo},
         primitives::Vertex,
-    };
-    use crate::parsing::{
-        GraphicsShaderLayout, MaterialLayout, MeshLayout, ModelLayout, ModelLayoutFile,
-        RenderPassLayout, RenderPassLayoutFile, RenderSubpassLayout, TextureLayout,
     };
     use crate::utils::rdbfile::RDBFile;
     use std::fs::File;
@@ -1169,8 +1226,18 @@ mod tests {
         let tmp = tempdir().expect("create temp dir");
         let base_dir = tmp.path();
 
+        let textures_dst = base_dir.join("textures.json");
+        let materials_dst = base_dir.join("materials.json");
+        let meshes_dst = base_dir.join("meshes.json");
         let models_dst = base_dir.join("models.json");
-        let mut layout = ModelLayoutFile::default();
+        let shaders_dst = base_dir.join("shaders.json");
+        let render_pass_dst = base_dir.join("render_passes.json");
+
+        let mut textures = TextureLayoutFile::default();
+        let mut materials = MaterialLayoutFile::default();
+        let mut meshes = MeshLayoutFile::default();
+        let mut models = ModelLayoutFile::default();
+        let mut shaders = ShaderLayoutFile::default();
 
         let layout_viewport = Viewport {
             area: FRect2D {
@@ -1205,14 +1272,14 @@ mod tests {
             },
         );
 
-        layout.textures.insert(
+        textures.textures.insert(
             MESH_TEXTURE_ENTRY.to_string(),
             TextureLayout {
                 image: IMAGE_ENTRY.to_string(),
                 name: None,
             },
         );
-        layout.textures.insert(
+        textures.textures.insert(
             MISSING_TEXTURE_ENTRY.to_string(),
             TextureLayout {
                 image: String::new(),
@@ -1220,7 +1287,7 @@ mod tests {
             },
         );
 
-        layout.materials.insert(
+        materials.materials.insert(
             MATERIAL_ENTRY.to_string(),
             MaterialLayout {
                 name: None,
@@ -1233,7 +1300,7 @@ mod tests {
             },
         );
 
-        layout.shaders.insert(
+        shaders.shaders.insert(
             SHADER_PROGRAM_ENTRY.to_string(),
             GraphicsShaderLayout {
                 name: None,
@@ -1248,7 +1315,7 @@ mod tests {
             },
         );
 
-        layout.meshes.insert(
+        meshes.meshes.insert(
             MESH_ENTRY.to_string(),
             MeshLayout {
                 name: Some("Simple Mesh".to_string()),
@@ -1261,7 +1328,7 @@ mod tests {
             },
         );
 
-        layout.meshes.insert(
+        meshes.meshes.insert(
             MESH_MISSING_GEOMETRY.to_string(),
             MeshLayout {
                 name: Some("No Geometry".to_string()),
@@ -1271,7 +1338,7 @@ mod tests {
             },
         );
 
-        layout.models.insert(
+        models.models.insert(
             MODEL_ENTRY.to_string(),
             ModelLayout {
                 name: None,
@@ -1279,12 +1346,16 @@ mod tests {
             },
         );
 
-        serde_json::to_writer(File::create(&models_dst)?, &layout)?;
-        let render_pass_dst = base_dir.join("render_passes.json");
+        serde_json::to_writer(File::create(&textures_dst)?, &textures)?;
+        serde_json::to_writer(File::create(&materials_dst)?, &materials)?;
+        serde_json::to_writer(File::create(&meshes_dst)?, &meshes)?;
+        serde_json::to_writer(File::create(&models_dst)?, &models)?;
+        serde_json::to_writer(File::create(&shaders_dst)?, &shaders)?;
         serde_json::to_writer(File::create(&render_pass_dst)?, &render_pass_layout)?;
 
-        let parsed_layout: ModelLayoutFile = serde_json::from_reader(File::open(&models_dst)?)?;
-        let parsed_shader = parsed_layout
+        let parsed_shader_file: ShaderLayoutFile =
+            serde_json::from_reader(File::open(&shaders_dst)?)?;
+        let parsed_shader = parsed_shader_file
             .shaders
             .get(SHADER_PROGRAM_ENTRY)
             .expect("shader entry");
@@ -1397,13 +1468,7 @@ mod tests {
         assert!(device_mesh.material.is_some());
         let device_mat = device_mesh.material.as_ref().unwrap();
         assert_eq!(device_mesh.textures.len(), 1);
-        let mesh_texture = device_mesh.textures.get(0).unwrap();
         assert_eq!(device_mat.textures.len(), 1);
-        let material_texture = device_mat.textures.get(0).unwrap();
-        let texture_name = |bytes: &[u8; 64]| {
-            let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            std::str::from_utf8(&bytes[..len]).unwrap().to_string()
-        };
         assert!(device_mat.shader.is_some());
         let device_shader = device_mat.shader.as_ref().unwrap();
         assert!(device_shader.vertex.is_some());
@@ -1434,29 +1499,32 @@ mod tests {
             },
         );
 
-        let mut layout = ModelLayoutFile::default();
-        layout.meshes.insert(
+        let mut meshes = MeshLayoutFile::default();
+        meshes.meshes.insert(
             "mesh".into(),
             MeshLayout {
                 material: Some("mat".into()),
                 ..Default::default()
             },
         );
-        layout.models.insert(
+        let mut models = ModelLayoutFile::default();
+        models.models.insert(
             "model".into(),
             ModelLayout {
                 meshes: vec!["mesh".into()],
                 ..Default::default()
             },
         );
-        layout.materials.insert(
+        let mut materials = MaterialLayoutFile::default();
+        materials.materials.insert(
             "mat".into(),
             MaterialLayout {
                 shader: Some("shader".into()),
                 ..Default::default()
             },
         );
-        layout.shaders.insert(
+        let mut shaders = ShaderLayoutFile::default();
+        shaders.shaders.insert(
             "shader".into(),
             GraphicsShaderLayout {
                 render_pass: Some("render/test".into()),
@@ -1468,13 +1536,16 @@ mod tests {
             base.join("render_passes.json"),
             serde_json::to_vec(&render_passes)?,
         )?;
-        std::fs::write(base.join("models.json"), serde_json::to_vec(&layout)?)?;
+        std::fs::write(base.join("meshes.json"), serde_json::to_vec(&meshes)?)?;
+        std::fs::write(base.join("models.json"), serde_json::to_vec(&models)?)?;
+        std::fs::write(base.join("materials.json"), serde_json::to_vec(&materials)?)?;
+        std::fs::write(base.join("shaders.json"), serde_json::to_vec(&shaders)?)?;
 
         validate_database_layout(base.to_str().unwrap(), None)
     }
 
     #[test]
-    fn validation_reports_incompatible_shader() {
+    fn validation_reports_incompatible_shader() -> Result<(), NorenError> {
         let tmp = tempdir().unwrap();
         let base = tmp.path();
 
@@ -1488,29 +1559,32 @@ mod tests {
             },
         );
 
-        let mut layout = ModelLayoutFile::default();
-        layout.meshes.insert(
+        let mut meshes = MeshLayoutFile::default();
+        meshes.meshes.insert(
             "mesh".into(),
             MeshLayout {
                 material: Some("mat".into()),
                 ..Default::default()
             },
         );
-        layout.models.insert(
+        let mut models = ModelLayoutFile::default();
+        models.models.insert(
             "model".into(),
             ModelLayout {
                 meshes: vec!["mesh".into()],
                 ..Default::default()
             },
         );
-        layout.materials.insert(
+        let mut materials = MaterialLayoutFile::default();
+        materials.materials.insert(
             "mat".into(),
             MaterialLayout {
                 shader: Some("shader".into()),
                 ..Default::default()
             },
         );
-        layout.shaders.insert(
+        let mut shaders = ShaderLayoutFile::default();
+        shaders.shaders.insert(
             "shader".into(),
             GraphicsShaderLayout {
                 subpass: 1,
@@ -1522,13 +1596,23 @@ mod tests {
         std::fs::write(
             base.join("render_passes.json"),
             serde_json::to_vec(&render_passes).unwrap(),
-        )
-        .unwrap();
+        )?;
+        std::fs::write(
+            base.join("meshes.json"),
+            serde_json::to_vec(&meshes).unwrap(),
+        )?;
         std::fs::write(
             base.join("models.json"),
-            serde_json::to_vec(&layout).unwrap(),
-        )
-        .unwrap();
+            serde_json::to_vec(&models).unwrap(),
+        )?;
+        std::fs::write(
+            base.join("materials.json"),
+            serde_json::to_vec(&materials).unwrap(),
+        )?;
+        std::fs::write(
+            base.join("shaders.json"),
+            serde_json::to_vec(&shaders).unwrap(),
+        )?;
 
         let error = validate_database_layout(base.to_str().unwrap(), None)
             .expect_err("validation should fail");
@@ -1548,5 +1632,7 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+
+        Ok(())
     }
 }
