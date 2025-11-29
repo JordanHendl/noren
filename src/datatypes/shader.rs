@@ -25,12 +25,7 @@ impl ShaderModule {
                 stage: dashi::ShaderType::Compute,
                 variables: Vec::new(),
                 spirv: words,
-                metadata: bento::ShaderMetadata {
-                    entry_points: Vec::new(),
-                    inputs: Vec::new(),
-                    outputs: Vec::new(),
-                    workgroup_size: None,
-                },
+                metadata: Default::default(),
             },
         }
     }
