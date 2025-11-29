@@ -1,0 +1,39 @@
+use crate::meta::{DeviceMaterial, DeviceTexture, DeviceTextureList, HostMaterial, HostTexture};
+use crate::rdb::{DeviceGeometry, HostGeometry};
+
+#[derive(Clone, Debug)]
+pub struct HostMesh {
+    pub name: String,
+    pub geometry: HostGeometry,
+    pub textures: Vec<HostTexture>,
+    pub material: Option<HostMaterial>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DeviceMesh {
+    pub geometry: DeviceGeometry,
+    pub textures: DeviceTextureList,
+    pub material: Option<DeviceMaterial>,
+}
+
+impl DeviceMesh {
+    /// Creates a GPU-ready mesh with geometry, textures, and an optional material.
+    pub fn new(
+        geometry: DeviceGeometry,
+        textures: Vec<DeviceTexture>,
+        material: Option<DeviceMaterial>,
+    ) -> Self {
+        let mut list = DeviceTextureList::new();
+        for texture in textures
+            .into_iter()
+            .take(super::textures::DEVICE_TEXTURE_CAPACITY)
+        {
+            list.push(texture);
+        }
+        Self {
+            geometry,
+            textures: list,
+            material,
+        }
+    }
+}

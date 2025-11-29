@@ -80,9 +80,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn pick_preview_texture(
-    model: &noren::meta::model::DeviceModel,
-) -> Option<&noren::meta::model::DeviceTexture> {
+fn pick_preview_texture(model: &noren::meta::DeviceModel) -> Option<&noren::meta::DeviceTexture> {
     model
         .meshes
         .iter()

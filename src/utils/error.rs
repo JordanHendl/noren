@@ -33,6 +33,7 @@ pub enum NorenError {
     UnknownRenderPass(String),
     InvalidRenderPass(String),
     InvalidMaterial(String),
+    InvalidModel(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
     InvalidShaderState(String),
     JSONError(serde_json::Error),
@@ -63,6 +64,9 @@ impl std::fmt::Display for NorenError {
             }
             NorenError::InvalidMaterial(reason) => {
                 write!(f, "Invalid material: {}", reason)
+            }
+            NorenError::InvalidModel(reason) => {
+                write!(f, "Invalid model layout: {}", reason)
             }
             NorenError::InvalidShaderLayout(errors) => {
                 let mut message = String::from("Shader layout validation failed:\n");

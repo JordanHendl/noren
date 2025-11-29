@@ -85,8 +85,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 fn render_geometry(
     ctx: &mut gpu::Context,
-    host_geometry: &noren::datatypes::geometry::HostGeometry,
-    device_geometry: noren::datatypes::geometry::DeviceGeometry,
+    host_geometry: &noren::rdb::geometry::HostGeometry,
+    device_geometry: noren::rdb::geometry::DeviceGeometry,
     pipeline: Handle<dashi::GraphicsPipeline>,
     framebuffer: Handle<Image>,
 ) -> Result<(), dashi::GPUError> {

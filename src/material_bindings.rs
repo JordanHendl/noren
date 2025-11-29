@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::meta::model::GraphicsShader;
+use crate::meta::GraphicsShader;
 use dashi::{BindGroupVariable, BindGroupVariableType};
 
 /// Indicates where a texture binding originates from inside the shader layout.

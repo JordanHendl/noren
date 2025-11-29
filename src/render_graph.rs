@@ -8,14 +8,14 @@ use dashi::{
 };
 
 use crate::{
-    DB, datatypes::primitives::Vertex, furikake_state::validate_furikake_state,
-    meta::GraphicsShader, meta::ShaderStage, parsing::GraphicsShaderLayout, utils::NorenError,
+    DB, furikake_state::validate_furikake_state, meta::GraphicsShader, meta::ShaderStage,
+    parsing::GraphicsShaderLayout, rdb::primitives::Vertex, utils::NorenError,
 };
 
 pub struct PipelineFactory<'a> {
     ctx: &'a mut Context,
-    render_passes: &'a mut crate::datatypes::render_pass::RenderPassDB,
-    shaders: &'a mut crate::datatypes::shader::ShaderDB,
+    render_passes: &'a mut crate::rdb::render_pass::RenderPassDB,
+    shaders: &'a mut crate::rdb::shader::ShaderDB,
 }
 
 #[derive(Default)]
@@ -41,8 +41,8 @@ impl<'a> PipelineFactory<'a> {
     /// Creates a factory that can build pipelines using the provided context and databases.
     pub fn new(
         ctx: &'a mut Context,
-        shaders: &'a mut crate::datatypes::shader::ShaderDB,
-        render_passes: &'a mut crate::datatypes::render_pass::RenderPassDB,
+        shaders: &'a mut crate::rdb::shader::ShaderDB,
+        render_passes: &'a mut crate::rdb::render_pass::RenderPassDB,
     ) -> Self {
         Self {
             ctx,

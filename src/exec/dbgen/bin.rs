@@ -13,8 +13,10 @@ use bento::{
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
-    datatypes::{HostGeometry, HostImage, ImageInfo, ShaderModule, primitives::Vertex},
-    parsing::{MeshLayout, ModelLayout, ModelLayoutFile, TextureLayout},
+    parsing::{
+        MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile, TextureLayout, TextureLayoutFile,
+    },
+    rdb::{HostGeometry, HostImage, ImageInfo, ShaderModule, primitives::Vertex},
     validate_database_layout,
 };
 use serde::{Deserialize, Serialize};
@@ -388,6 +390,8 @@ fn run_from_path(
 
     let geometry_path = resolve_string_path(&output_dir, &output.layout.geometry);
     let imagery_path = resolve_string_path(&output_dir, &output.layout.imagery);
+    let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
+    let meshes_path = resolve_string_path(&output_dir, &output.layout.meshes);
     let models_path = resolve_string_path(&output_dir, &output.layout.models);
     let shaders_path = resolve_string_path(&output_dir, &output.layout.shaders);
     let layout_path = resolve_path(&output_dir, &output.layout_file);
@@ -417,11 +421,25 @@ fn run_from_path(
         logger,
     )?;
 
+    let model_layouts = build_model_layout(&models);
+
+    if let Some(parent) = textures_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let textures_file = File::create(&textures_path)?;
+    serde_json::to_writer_pretty(textures_file, &model_layouts.textures)?;
+
+    if let Some(parent) = meshes_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let meshes_file = File::create(&meshes_path)?;
+    serde_json::to_writer_pretty(meshes_file, &model_layouts.meshes)?;
+
     if let Some(parent) = models_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let models_file = File::create(&models_path)?;
-    serde_json::to_writer_pretty(models_file, &build_model_layout(&models))?;
+    serde_json::to_writer_pretty(models_file, &model_layouts.models)?;
 
     if let Some(parent) = layout_path.parent() {
         fs::create_dir_all(parent)?;
@@ -1328,8 +1346,16 @@ struct ModelEntry {
     textures: Vec<String>,
 }
 
-fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
-    let mut layout = ModelLayoutFile::default();
+struct GeneratedModelLayouts {
+    textures: TextureLayoutFile,
+    meshes: MeshLayoutFile,
+    models: ModelLayoutFile,
+}
+
+fn build_model_layout(entries: &[ModelEntry]) -> GeneratedModelLayouts {
+    let mut textures = TextureLayoutFile::default();
+    let mut meshes = MeshLayoutFile::default();
+    let mut models = ModelLayoutFile::default();
 
     for model in entries {
         let model_key = normalize_entry_name(&model.name, "model/", true);
@@ -1340,7 +1366,7 @@ fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
             let texture_key = normalize_entry_name(texture, "texture/", false);
             mesh_textures.push(texture_key.clone());
 
-            layout
+            textures
                 .textures
                 .entry(texture_key.clone())
                 .or_insert_with(|| TextureLayout {
@@ -1349,7 +1375,7 @@ fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
                 });
         }
 
-        layout.meshes.insert(
+        meshes.meshes.insert(
             mesh_key.clone(),
             MeshLayout {
                 name: Some(model.name.clone()),
@@ -1359,7 +1385,7 @@ fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
             },
         );
 
-        layout.models.insert(
+        models.models.insert(
             model_key,
             ModelLayout {
                 name: Some(model.name.clone()),
@@ -1368,7 +1394,11 @@ fn build_model_layout(entries: &[ModelEntry]) -> ModelLayoutFile {
         );
     }
 
-    layout
+    GeneratedModelLayouts {
+        textures,
+        meshes,
+        models,
+    }
 }
 
 fn normalize_entry_name(entry: &str, prefix: &str, allow_existing_prefix: bool) -> String {
@@ -1498,10 +1528,13 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    materials: "materials.json".into(),
+                    textures: "textures.json".into(),
+                    meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
+                    shader_layouts: "shaders.json".into(),
                     shaders: "shaders.rdb".into(),
-                    materials: "materials.json".into(),
                 },
             },
             imagery: vec![
@@ -1555,12 +1588,18 @@ mod tests {
         let output_dir = tmp_root.join("db");
         assert!(output_dir.join("geometry.rdb").exists());
         assert!(output_dir.join("imagery.rdb").exists());
+        assert!(output_dir.join("textures.json").exists());
+        assert!(output_dir.join("meshes.json").exists());
         assert!(output_dir.join("models.json").exists());
         assert!(output_dir.join("shaders.rdb").exists());
         assert!(output_dir.join("layout.json").exists());
 
         let model_layout: ModelLayoutFile =
             serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap()).unwrap();
+        let mesh_layout: MeshLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("meshes.json")).unwrap()).unwrap();
+        let texture_layout: TextureLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("textures.json")).unwrap()).unwrap();
 
         let model = model_layout
             .models
@@ -1568,14 +1607,14 @@ mod tests {
             .expect("model entry exists");
         assert_eq!(model.meshes, vec!["mesh/quad"]);
 
-        let mesh = model_layout
+        let mesh = mesh_layout
             .meshes
             .get("mesh/quad")
             .expect("mesh entry exists");
         assert_eq!(mesh.geometry, "geometry/quad");
         assert_eq!(mesh.textures, vec!["texture/imagery/tulips"]);
 
-        let texture = model_layout
+        let texture = texture_layout
             .textures
             .get("texture/imagery/tulips")
             .expect("texture entry exists");
@@ -1589,7 +1628,10 @@ mod tests {
         let layout: DatabaseLayoutFile = serde_json::from_str(&layout_text).unwrap();
         assert_eq!(layout.geometry, "geometry.rdb");
         assert_eq!(layout.imagery, "imagery.rdb");
+        assert_eq!(layout.textures, "textures.json");
+        assert_eq!(layout.meshes, "meshes.json");
         assert_eq!(layout.models, "models.json");
+        assert_eq!(layout.shader_layouts, "shaders.json");
         assert_eq!(layout.shaders, "shaders.rdb");
 
         let mut geom = RDBFile::load(output_dir.join("geometry.rdb")).unwrap();
@@ -1632,10 +1674,13 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    materials: "materials.json".into(),
+                    textures: "textures.json".into(),
+                    meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
+                    shader_layouts: "shaders.json".into(),
                     shaders: "shaders.rdb".into(),
-                    materials: "materials.json".into(),
                 },
             },
             imagery: vec![ImageEntry {
@@ -1670,11 +1715,17 @@ mod tests {
         assert!(!output_dir.join("geometry.rdb").exists());
         assert!(!output_dir.join("imagery.rdb").exists());
         assert!(!output_dir.join("shaders.rdb").exists());
+        assert!(output_dir.join("textures.json").exists());
+        assert!(output_dir.join("meshes.json").exists());
         assert!(output_dir.join("models.json").exists());
         assert!(output_dir.join("layout.json").exists());
 
         let model_layout: ModelLayoutFile =
             serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap()).unwrap();
+        let mesh_layout: MeshLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("meshes.json")).unwrap()).unwrap();
+        let texture_layout: TextureLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("textures.json")).unwrap()).unwrap();
 
         let model = model_layout
             .models
@@ -1682,12 +1733,18 @@ mod tests {
             .expect("model entry exists");
         assert_eq!(model.meshes, vec!["mesh/quad"]);
 
-        let mesh = model_layout
+        let mesh = mesh_layout
             .meshes
             .get("mesh/quad")
             .expect("mesh entry exists");
         assert_eq!(mesh.geometry, "geometry/quad");
         assert_eq!(mesh.textures, vec!["texture/imagery/tulips"]);
+
+        let texture = texture_layout
+            .textures
+            .get("texture/imagery/tulips")
+            .expect("texture entry exists");
+        assert_eq!(texture.image, "imagery/tulips");
     }
 
     #[test]
@@ -1707,9 +1764,12 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    textures: "textures.json".into(),
+                    materials: "materials.json".into(),
+                    meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
-                    materials: "materials.json".into(),
+                    shader_layouts: "shaders.json".into(),
                     shaders: "shaders.rdb".into(),
                 },
             },
@@ -1752,14 +1812,15 @@ mod tests {
             textures: vec!["imagery/sample".into()],
         }]);
 
-        let model = layout.models.get("model/sample").expect("model key");
+        let model = layout.models.models.get("model/sample").expect("model key");
         assert_eq!(model.meshes, vec!["mesh/sample"]);
 
-        let mesh = layout.meshes.get("mesh/sample").expect("mesh key");
+        let mesh = layout.meshes.meshes.get("mesh/sample").expect("mesh key");
         assert_eq!(mesh.geometry, "geometry/sample");
         assert_eq!(mesh.textures, vec!["texture/imagery/sample"]);
 
         let texture = layout
+            .textures
             .textures
             .get("texture/imagery/sample")
             .expect("texture key");
@@ -1797,10 +1858,13 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    materials: "materials.json".into(),
+                    textures: "textures.json".into(),
+                    meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
+                    shader_layouts: "shaders.json".into(),
                     shaders: "shaders.rdb".into(),
-                    materials: "materials.json".into(),
                 },
             },
             imagery: vec![ImageEntry {
@@ -1833,9 +1897,12 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    textures: "textures.json".into(),
+                    materials: "materials.json".into(),
+                    meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
-                    materials: "materials.json".into(),
+                    shader_layouts: "shaders.json".into(),
                     shaders: "shaders.rdb".into(),
                 },
             },
@@ -1881,9 +1948,12 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    textures: "textures.json".into(),
+                    materials: "materials.json".into(),
+                    meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     render_passes: "render_passes.json".into(),
-                    materials: "materials.json".into(),
+                    shader_layouts: "shaders.json".into(),
                     shaders: "shaders.rdb".into(),
                 },
             },
