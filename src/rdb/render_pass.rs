@@ -95,6 +95,15 @@ impl RenderPassDB {
             subpass_id: subpass,
         })
     }
+
+    /// Returns an iterator over the declared subpasses for the specified render pass.
+    pub fn subpasses(&self, key: &str) -> Result<RenderPassSubpasses<'_>, NorenError> {
+        let entry = self.passes.get(key).ok_or_else(NorenError::LookupFailure)?;
+
+        Ok(RenderPassSubpasses {
+            iter: entry.recipe.subpasses.iter(),
+        })
+    }
 }
 
 struct RenderPassEntry {
@@ -154,5 +163,35 @@ impl RenderPassSubpassRecipe {
             depth_stencil_attachment: layout.depth_stencil_attachment,
             subpass_dependencies: layout.subpass_dependencies,
         }
+    }
+}
+
+/// Immutable view of a render pass subpass, useful when iterating declared subpasses.
+pub struct RenderPassSubpassView<'a> {
+    pub color_attachments: &'a [AttachmentDescription],
+    pub depth_stencil_attachment: Option<&'a AttachmentDescription>,
+    pub subpass_dependencies: &'a [SubpassDependency],
+}
+
+impl<'a> From<&'a RenderPassSubpassRecipe> for RenderPassSubpassView<'a> {
+    fn from(recipe: &'a RenderPassSubpassRecipe) -> Self {
+        Self {
+            color_attachments: &recipe.color_attachments,
+            depth_stencil_attachment: recipe.depth_stencil_attachment.as_ref(),
+            subpass_dependencies: &recipe.subpass_dependencies,
+        }
+    }
+}
+
+/// Iterator over the subpasses defined for a render pass.
+pub struct RenderPassSubpasses<'a> {
+    iter: std::slice::Iter<'a, RenderPassSubpassRecipe>,
+}
+
+impl<'a> Iterator for RenderPassSubpasses<'a> {
+    type Item = RenderPassSubpassView<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(RenderPassSubpassView::from)
     }
 }
