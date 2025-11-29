@@ -3,15 +3,10 @@ mod material_bindings;
 pub mod meta;
 pub mod parsing;
 pub mod rdb;
-pub mod render_graph;
 mod utils;
-use std::{collections::BTreeMap, io::ErrorKind, ptr::NonNull};
+use std::io::ErrorKind;
 
-use crate::{
-    material_bindings::texture_binding_slots_from_shader,
-    rdb::primitives::Vertex,
-    render_graph::{PipelineFactory, RenderGraph, RenderGraphRequest},
-};
+use crate::material_bindings::texture_binding_slots_from_shader;
 pub use furikake_state::FurikakeState;
 use meta::*;
 use parsing::*;
@@ -19,11 +14,6 @@ use rdb::*;
 use serde::de::DeserializeOwned;
 use utils::*;
 
-use dashi::{
-    BindGroupLayout, BindGroupVariable, BindTableLayout, Context, GraphicsPipelineDetails,
-    GraphicsPipelineLayoutInfo, Handle, PipelineShaderInfo, RenderPass, ShaderPrimitiveType,
-    ShaderType, VertexDescriptionInfo, VertexEntryInfo, VertexRate, cfg,
-};
 
 pub use parsing::DatabaseLayoutFile;
 pub use utils::error::{NorenError, RdbErr};
@@ -44,12 +34,10 @@ pub struct ShaderValidationError {
 }
 
 pub struct DB {
-    ctx: NonNull<Context>,
     geometry: GeometryDB,
     imagery: ImageDB,
     audio: AudioDB,
     shaders: ShaderDB,
-    render_passes: RenderPassDB,
     meta_layout: Option<MetaLayout>,
 }
 
@@ -142,7 +130,6 @@ impl DB {
     pub fn new(info: &DBInfo) -> Result<Self, NorenError> {
         let layout = read_database_layout(info.layout_file)?;
 
-        let ctx_ptr = NonNull::new(info.ctx).expect("Null GPU Context");
         let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let audio = AudioDB::new(&format!("{}/{}", info.base_dir, layout.audio));
@@ -153,19 +140,11 @@ impl DB {
             validate_meta_layout(layout)?;
         }
 
-        let render_passes = if let Some(layout) = meta_layout.as_ref() {
-            RenderPassDB::new(layout.render_passes.clone())
-        } else {
-            RenderPassDB::default()
-        };
-
         Ok(Self {
-            ctx: ctx_ptr,
             geometry,
             imagery,
             audio,
             shaders,
-            render_passes,
             meta_layout,
         })
     }
@@ -267,34 +246,12 @@ impl DB {
             .unwrap_or_default()
     }
 
-    /// Enumerates render pass definitions declared in the model layout.
-    pub fn enumerate_render_passes(&self) -> Vec<String> {
-        self.meta_layout
-            .as_ref()
-            .map(|layout| layout.render_passes.keys().cloned().collect())
-            .unwrap_or_default()
-    }
-
     /// Enumerates graphics shader definitions declared in the model layout.
     pub fn enumerate_shaders(&self) -> Vec<String> {
         self.meta_layout
             .as_ref()
             .map(|layout| layout.shaders.keys().cloned().collect())
             .unwrap_or_default()
-    }
-
-    /// Loads or retrieves a cached render pass by name.
-    pub fn fetch_render_pass(&mut self, entry: &str) -> Result<Handle<RenderPass>, NorenError> {
-        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
-        self.render_passes.fetch(entry, ctx)
-    }
-
-    /// Returns an iterator over the declared subpasses for the provided render pass.
-    pub fn render_pass_subpasses(
-        &self,
-        entry: &str,
-    ) -> Result<RenderPassSubpasses<'_>, NorenError> {
-        self.render_passes.subpasses(entry)
     }
 
     /// Builds a CPU-side model composed of host geometry, textures, and materials.
@@ -316,15 +273,14 @@ impl DB {
                 material,
             },
             |name, meshes| HostModel { name, meshes },
-            |shader_db, _render_passes, shader_key, shader_layout| {
+            |shader_db, shader_key, shader_layout| {
                 Self::load_graphics_shader(shader_db, shader_key, shader_layout)
             },
         )
     }
 
-    /// Loads a GPU-ready model with device buffers, textures, and pipelines.
+    /// Loads a GPU-ready model with device buffers, textures, and shaders.
     pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceModel, NorenError> {
-        let ctx_ptr = self.ctx;
         self.assemble_model(
             entry,
             |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
@@ -333,24 +289,8 @@ impl DB {
             |_, textures, shader| DeviceMaterial::new(textures, shader),
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
             |name, meshes| DeviceModel { name, meshes },
-            move |shader_db, render_passes, shader_key, shader_layout| {
-                let mut shader_opt =
-                    Self::load_graphics_shader(shader_db, shader_key, shader_layout)?;
-                if let Some(shader) = shader_opt.as_mut() {
-                    let ctx: &mut Context = unsafe { &mut *ctx_ptr.as_ptr() };
-                    let render_pass_key = shader_layout
-                        .render_pass
-                        .as_deref()
-                        .ok_or_else(|| NorenError::MissingRenderPass(shader_key.to_string()))?;
-                    Self::configure_graphics_shader_pipeline(
-                        shader,
-                        shader_layout,
-                        ctx,
-                        render_pass_key,
-                        render_passes,
-                    )?;
-                }
-                Ok(shader_opt)
+            |shader_db, shader_key, shader_layout| {
+                Self::load_graphics_shader(shader_db, shader_key, shader_layout)
             },
         )
     }
@@ -366,11 +306,10 @@ impl DB {
             layout,
             &mut self.imagery,
             &mut self.shaders,
-            &mut self.render_passes,
             entry,
             &mut |name, image| HostTexture { name, image },
             &mut |imagery, tex_entry| imagery.fetch_raw_image(tex_entry),
-            &mut |shader_db, _render_passes, shader_key, shader_layout| {
+            &mut |shader_db, shader_key, shader_layout| {
                 Self::load_graphics_shader(shader_db, shader_key, shader_layout)
             },
         )?
@@ -383,40 +322,22 @@ impl DB {
         })
     }
 
-    /// Builds a GPU-ready material with device textures and pipeline state.
+    /// Builds a GPU-ready material with device textures and shaders.
     pub fn fetch_device_material(&mut self, entry: &str) -> Result<DeviceMaterial, NorenError> {
         let layout = self
             .meta_layout
             .as_ref()
             .ok_or_else(|| NorenError::LookupFailure())?;
-        let ctx_ptr = self.ctx;
 
         let (_name, textures, shader) = build_material_components(
             layout,
             &mut self.imagery,
             &mut self.shaders,
-            &mut self.render_passes,
             entry,
             &mut |_, image| DeviceTexture::new(image),
             &mut |imagery, tex_entry| imagery.fetch_gpu_image(tex_entry),
-            &mut move |shader_db, render_passes, shader_key, shader_layout| {
-                let mut shader_opt =
-                    Self::load_graphics_shader(shader_db, shader_key, shader_layout)?;
-                if let Some(shader) = shader_opt.as_mut() {
-                    let ctx: &mut Context = unsafe { &mut *ctx_ptr.as_ptr() };
-                    let render_pass_key = shader_layout
-                        .render_pass
-                        .as_deref()
-                        .ok_or_else(|| NorenError::MissingRenderPass(shader_key.to_string()))?;
-                    Self::configure_graphics_shader_pipeline(
-                        shader,
-                        shader_layout,
-                        ctx,
-                        render_pass_key,
-                        render_passes,
-                    )?;
-                }
-                Ok(shader_opt)
+            &mut move |shader_db, shader_key, shader_layout| {
+                Self::load_graphics_shader(shader_db, shader_key, shader_layout)
             },
         )?
         .ok_or_else(NorenError::LookupFailure)?;
@@ -424,7 +345,7 @@ impl DB {
         Ok(DeviceMaterial::new(textures, shader))
     }
 
-    /// Fetches and configures a graphics shader for a specific render pass.
+    /// Fetches a graphics shader definition.
     pub fn fetch_graphics_shader(
         &mut self,
         entry: DatabaseEntry<'_>,
@@ -441,62 +362,12 @@ impl DB {
                 .ok_or_else(|| NorenError::LookupFailure())?
         };
 
-        let render_pass_key = shader_layout
-            .render_pass
-            .as_deref()
-            .ok_or_else(|| NorenError::MissingRenderPass(entry.to_string()))?;
-
-        let mut shader = Self::load_graphics_shader(&mut self.shaders, entry, &shader_layout)?
+        let shader = Self::load_graphics_shader(&mut self.shaders, entry, &shader_layout)?
             .ok_or_else(NorenError::LookupFailure)?;
 
-        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
-        Self::configure_graphics_shader_pipeline(
-            &mut shader,
-            &shader_layout,
-            ctx,
-            render_pass_key,
-            &mut self.render_passes,
-        )?;
+        furikake_state::validate_furikake_state(&shader, shader.furikake_state)?;
 
         Ok(shader)
-    }
-
-    /// Creates a render graph that links shaders to their render passes and pipelines.
-    pub fn create_render_graph(
-        &mut self,
-        request: RenderGraphRequest,
-    ) -> Result<RenderGraph, NorenError> {
-        let layout = self
-            .meta_layout
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
-        let mut factory = PipelineFactory::new(ctx, &mut self.shaders, &mut self.render_passes);
-
-        let mut graph = RenderGraph::default();
-        for shader_key in request.shaders {
-            let shader_layout = layout
-                .shaders
-                .get(&shader_key)
-                .ok_or_else(|| NorenError::LookupFailure())?;
-
-            let render_pass_key = shader_layout
-                .render_pass
-                .as_deref()
-                .ok_or_else(|| NorenError::MissingRenderPass(shader_key.clone()))?;
-
-            let (render_pass, binding) =
-                factory.make_pipeline(&shader_key, shader_layout, render_pass_key)?;
-
-            graph
-                .render_passes
-                .entry(render_pass_key.to_string())
-                .or_insert(render_pass);
-            graph.pipelines.insert(shader_key, binding);
-        }
-
-        Ok(graph)
     }
 }
 
@@ -594,7 +465,6 @@ fn build_material_components<Texture, Image, MakeTexture, FetchImage, LoadShader
     layout: &MetaLayout,
     imagery: &mut ImageDB,
     shaders: &mut ShaderDB,
-    render_passes: &mut RenderPassDB,
     material_key: &str,
     make_texture: &mut MakeTexture,
     fetch_image: &mut FetchImage,
@@ -603,12 +473,8 @@ fn build_material_components<Texture, Image, MakeTexture, FetchImage, LoadShader
 where
     MakeTexture: FnMut(String, Image) -> Texture,
     FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
-    LoadShader: FnMut(
-        &mut ShaderDB,
-        &mut RenderPassDB,
-        &str,
-        &GraphicsShaderLayout,
-    ) -> Result<Option<GraphicsShader>, NorenError>,
+    LoadShader:
+        FnMut(&mut ShaderDB, &str, &GraphicsShaderLayout) -> Result<Option<GraphicsShader>, NorenError>,
 {
     let Some(material_def) = layout.materials.get(material_key) else {
         return Ok(None);
@@ -618,7 +484,7 @@ where
     let mut shader = None;
     if let Some(shader_key) = material_def.shader.as_deref() {
         if let Some(shader_layout) = layout.shaders.get(shader_key) {
-            shader = load_shader(shaders, render_passes, shader_key, shader_layout)?;
+            shader = load_shader(shaders, shader_key, shader_layout)?;
 
             if let Some(shader_ref) = shader.as_ref() {
                 let slots = texture_binding_slots_from_shader(shader_ref);
@@ -687,7 +553,7 @@ where
     if shader.is_none() {
         if let Some(shader_key) = material_def.shader.as_deref() {
             if let Some(shader_layout) = layout.shaders.get(shader_key) {
-                shader = load_shader(shaders, render_passes, shader_key, shader_layout)?;
+                shader = load_shader(shaders, shader_key, shader_layout)?;
             }
         }
     }
@@ -754,35 +620,13 @@ fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
 
     for (shader_key, shader_layout) in &layout.shaders {
         let mut issues = Vec::new();
-        let mut render_pass_name = None;
-
-        match shader_layout.render_pass.as_deref() {
-            Some(pass) => {
-                render_pass_name = Some(pass);
-                if !layout.render_passes.contains_key(pass) {
-                    issues.push(format!("unknown render pass '{pass}'"));
-                }
-            }
-            None => issues.push("render pass not specified".to_string()),
-        }
-
-        if let Some(pass_name) = render_pass_name {
-            if let Some(pass_layout) = layout.render_passes.get(pass_name) {
-                if shader_layout.subpass as usize >= pass_layout.subpasses.len() {
-                    issues.push(format!(
-                        "subpass index {} is out of range ({} available)",
-                        shader_layout.subpass,
-                        pass_layout.subpasses.len()
-                    ));
-                } else {
-                    let subpass = &pass_layout.subpasses[shader_layout.subpass as usize];
-                    if subpass.color_attachments.is_empty()
-                        && subpass.depth_stencil_attachment.is_none()
-                    {
-                        issues.push("referenced subpass declares no attachments".to_string());
-                    }
-                }
-            }
+        if shader_layout.vertex.is_none()
+            && shader_layout.fragment.is_none()
+            && shader_layout.geometry.is_none()
+            && shader_layout.tessellation_control.is_none()
+            && shader_layout.tessellation_evaluation.is_none()
+        {
+            issues.push("no shader stages specified".to_string());
         }
 
         if !issues.is_empty() {
@@ -846,12 +690,8 @@ impl DB {
         MakeMaterial: FnMut(String, Vec<Texture>, Option<GraphicsShader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
         MakeModel: FnMut(String, Vec<Mesh>) -> Model,
-        LoadShader: FnMut(
-            &mut ShaderDB,
-            &mut RenderPassDB,
-            &str,
-            &GraphicsShaderLayout,
-        ) -> Result<Option<GraphicsShader>, NorenError>,
+        LoadShader:
+            FnMut(&mut ShaderDB, &str, &GraphicsShaderLayout) -> Result<Option<GraphicsShader>, NorenError>,
     {
         let layout = self
             .meta_layout
@@ -898,7 +738,6 @@ impl DB {
                     layout,
                     &mut self.imagery,
                     &mut self.shaders,
-                    &mut self.render_passes,
                     material_key,
                     &mut make_texture,
                     &mut fetch_image,
@@ -969,212 +808,6 @@ impl DB {
         }
     }
 
-    pub(crate) fn configure_graphics_shader_pipeline(
-        shader: &mut GraphicsShader,
-        layout: &GraphicsShaderLayout,
-        ctx: &mut Context,
-        render_pass_key: &str,
-        render_passes: &mut RenderPassDB,
-    ) -> Result<(), NorenError> {
-        let bind_group_layouts = Self::shader_bind_group_layouts(shader);
-
-        let mut bg_handles: [Option<Handle<BindGroupLayout>>; 4] = Default::default();
-        for (index, cfg_opt) in bind_group_layouts.iter().enumerate() {
-            if index >= bg_handles.len() {
-                break;
-            }
-
-            if let Some(cfg) = cfg_opt {
-                let borrowed = cfg.borrow();
-                let info = borrowed.info();
-                let handle = ctx
-                    .make_bind_group_layout(&info)
-                    .map_err(|_| NorenError::UploadFailure())?;
-                bg_handles[index] = Some(handle);
-            }
-        }
-
-        let bt_handles: [Option<Handle<BindTableLayout>>; 4] = Default::default();
-
-        let mut shader_infos: Vec<PipelineShaderInfo<'_>> = Vec::new();
-        if let Some(stage) = shader.vertex.as_ref() {
-            shader_infos.push(PipelineShaderInfo {
-                stage: ShaderType::Vertex,
-                spirv: stage.module.words(),
-                specialization: &[],
-            });
-        }
-
-        if let Some(stage) = shader.fragment.as_ref() {
-            shader_infos.push(PipelineShaderInfo {
-                stage: ShaderType::Fragment,
-                spirv: stage.module.words(),
-                specialization: &[],
-            });
-        }
-
-        if shader_infos.is_empty() {
-            return Err(NorenError::LookupFailure());
-        }
-
-        furikake_state::validate_furikake_state(&shader, shader.furikake_state)?;
-
-        if cfg!(test) {
-            shader.bind_group_layouts = bg_handles;
-            shader.bind_table_layouts = bt_handles;
-            shader.pipeline_layout = None;
-            shader.pipeline = None;
-            return Ok(());
-        }
-
-        let mut vertex_entries = Self::vertex_entries_from_bento(shader);
-        if vertex_entries.is_empty() {
-            vertex_entries = Self::default_vertex_entries();
-        }
-
-        let vertex_info = VertexDescriptionInfo {
-            entries: &vertex_entries,
-            stride: std::mem::size_of::<Vertex>(),
-            rate: VertexRate::Vertex,
-        };
-
-        let layout_info = GraphicsPipelineLayoutInfo {
-            debug_name: &shader.name,
-            vertex_info,
-            bg_layouts: bg_handles,
-            bt_layouts: bt_handles,
-            shaders: &shader_infos,
-            details: GraphicsPipelineDetails::default(),
-        };
-
-        let pipeline_layout = ctx
-            .make_graphics_pipeline_layout(&layout_info)
-            .map_err(|_| NorenError::UploadFailure())?;
-
-        let pipeline_info = match render_passes.pipeline_info(
-            render_pass_key,
-            layout.subpass,
-            pipeline_layout,
-            &shader.name,
-            ctx,
-        ) {
-            Ok(info) => info,
-            Err(NorenError::LookupFailure()) => {
-                return Err(NorenError::UnknownRenderPass(render_pass_key.to_string()));
-            }
-            Err(err) => return Err(err),
-        };
-
-        let pipeline = ctx
-            .make_graphics_pipeline(&pipeline_info)
-            .map_err(|_| NorenError::UploadFailure())?;
-
-        shader.bind_group_layouts = layout_info.bg_layouts;
-        shader.bind_table_layouts = layout_info.bt_layouts;
-        shader.pipeline_layout = Some(pipeline_layout);
-        shader.pipeline = Some(pipeline);
-
-        Ok(())
-    }
-
-    fn shader_bind_group_layouts(shader: &GraphicsShader) -> [Option<cfg::BindGroupLayoutCfg>; 4] {
-        let mut shader_sets: [Option<Vec<cfg::ShaderInfoCfg>>; 4] = Default::default();
-        for (stage, stage_type) in Self::shader_stages(shader) {
-            let mut grouped: BTreeMap<u32, Vec<BindGroupVariable>> = BTreeMap::new();
-            for variable in &stage.module.artifact().variables {
-                grouped
-                    .entry(variable.set)
-                    .or_default()
-                    .push(variable.kind.clone());
-            }
-
-            for (set, variables) in grouped {
-                if let Some(slot) = shader_sets.get_mut(set as usize) {
-                    let entries = slot.get_or_insert_with(Vec::new);
-                    entries.push(cfg::ShaderInfoCfg {
-                        stage: stage_type,
-                        variables,
-                    });
-                }
-            }
-        }
-
-        let mut layouts: [Option<cfg::BindGroupLayoutCfg>; 4] = Default::default();
-        for (index, shaders) in shader_sets.into_iter().enumerate() {
-            if let Some(shaders) = shaders {
-                layouts[index] = Some(cfg::BindGroupLayoutCfg {
-                    debug_name: format!("{}_set{index}", shader.name),
-                    shaders,
-                });
-            }
-        }
-
-        layouts
-    }
-
-    fn shader_stages(shader: &GraphicsShader) -> Vec<(&ShaderStage, ShaderType)> {
-        let mut stages = Vec::new();
-        if let Some(stage) = shader.vertex.as_ref() {
-            stages.push((stage, ShaderType::Vertex));
-        }
-        if let Some(stage) = shader.fragment.as_ref() {
-            stages.push((stage, ShaderType::Fragment));
-        }
-        stages
-    }
-
-    fn default_vertex_entries() -> Vec<VertexEntryInfo> {
-        vec![
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec3,
-                location: 0,
-                offset: 0,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec3,
-                location: 1,
-                offset: 12,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec4,
-                location: 2,
-                offset: 24,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec2,
-                location: 3,
-                offset: 40,
-            },
-            VertexEntryInfo {
-                format: ShaderPrimitiveType::Vec4,
-                location: 4,
-                offset: 48,
-            },
-        ]
-    }
-
-    fn vertex_entries_from_bento(shader: &GraphicsShader) -> Vec<VertexEntryInfo> {
-        let templates: BTreeMap<u32, VertexEntryInfo> = Self::default_vertex_entries()
-            .into_iter()
-            .map(|entry| (entry.location as u32, entry))
-            .collect();
-
-        let Some(vertex_stage) = shader.vertex.as_ref() else {
-            return Vec::new();
-        };
-
-        let mut entries = Vec::new();
-        for input in &vertex_stage.module.artifact().metadata.inputs {
-            if let Some(location) = input.location {
-                if let Some(template) = templates.get(&location) {
-                    entries.push(template.clone());
-                }
-            }
-        }
-
-        entries
-    }
-
     pub(crate) fn load_optional_shader_stage(
         shaders: &mut ShaderDB,
         entry: Option<&str>,
@@ -1209,8 +842,7 @@ mod tests {
     use super::*;
     use crate::parsing::{
         GraphicsShaderLayout, MaterialLayout, MaterialLayoutFile, MeshLayout, MeshLayoutFile,
-        ModelLayout, ModelLayoutFile, RenderPassLayout, RenderPassLayoutFile, RenderSubpassLayout,
-        ShaderLayoutFile, TextureLayout, TextureLayoutFile,
+        ModelLayout, ModelLayoutFile, ShaderLayoutFile, TextureLayout, TextureLayoutFile,
     };
     use crate::rdb::{
         ShaderModule,
@@ -1222,7 +854,6 @@ mod tests {
     use std::fs::File;
     use tempfile::tempdir;
 
-    use dashi::{AttachmentDescription, FRect2D, Format, Rect2D, Viewport};
 
     const MODEL_ENTRY: DatabaseEntry<'static> = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
@@ -1257,46 +888,11 @@ mod tests {
         let meshes_dst = base_dir.join("meshes.json");
         let models_dst = base_dir.join("models.json");
         let shaders_dst = base_dir.join("shaders.json");
-        let render_pass_dst = base_dir.join("render_passes.json");
-
         let mut textures = TextureLayoutFile::default();
         let mut materials = MaterialLayoutFile::default();
         let mut meshes = MeshLayoutFile::default();
         let mut models = ModelLayoutFile::default();
         let mut shaders = ShaderLayoutFile::default();
-
-        let layout_viewport = Viewport {
-            area: FRect2D {
-                x: 0.0,
-                y: 0.0,
-                w: 1.0,
-                h: 1.0,
-            },
-            scissor: Rect2D {
-                x: 0,
-                y: 0,
-                w: 1,
-                h: 1,
-            },
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-
-        let mut render_pass_layout = RenderPassLayoutFile::default();
-        render_pass_layout.render_passes.insert(
-            "render_pass/test".to_string(),
-            RenderPassLayout {
-                debug_name: Some("Test Pass".to_string()),
-                viewport: layout_viewport,
-                subpasses: vec![RenderSubpassLayout {
-                    color_attachments: vec![AttachmentDescription {
-                        format: Format::RGBA8,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-            },
-        );
 
         textures.textures.insert(
             MESH_TEXTURE_ENTRY.to_string(),
@@ -1336,7 +932,7 @@ mod tests {
                 tessellation_control: None,
                 tessellation_evaluation: None,
                 subpass: 0,
-                render_pass: Some("render_pass/test".to_string()),
+                render_pass: None,
                 furikake_state: FurikakeState::None,
             },
         );
@@ -1377,7 +973,6 @@ mod tests {
         serde_json::to_writer(File::create(&meshes_dst)?, &meshes)?;
         serde_json::to_writer(File::create(&models_dst)?, &models)?;
         serde_json::to_writer(File::create(&shaders_dst)?, &shaders)?;
-        serde_json::to_writer(File::create(&render_pass_dst)?, &render_pass_layout)?;
 
         let parsed_shader_file: ShaderLayoutFile =
             serde_json::from_reader(File::open(&shaders_dst)?)?;
@@ -1385,22 +980,7 @@ mod tests {
             .shaders
             .get(SHADER_PROGRAM_ENTRY)
             .expect("shader entry");
-        assert_eq!(
-            parsed_shader.render_pass.as_deref(),
-            Some("render_pass/test")
-        );
-        let parsed_pass_layout: RenderPassLayoutFile =
-            serde_json::from_reader(File::open(&render_pass_dst)?)?;
-        let parsed_pass = parsed_pass_layout
-            .render_passes
-            .get("render_pass/test")
-            .expect("render pass entry");
-        assert_eq!(parsed_pass.debug_name.as_deref(), Some("Test Pass"));
-        assert_eq!(parsed_pass.subpasses.len(), 1);
-        assert_eq!(
-            parsed_pass.subpasses[0].color_attachments[0].format,
-            Format::RGBA8
-        );
+        assert!(parsed_shader.render_pass.is_none());
 
         let mut geom_rdb = RDBFile::new();
         let geom = HostGeometry {
@@ -1446,15 +1026,6 @@ mod tests {
         };
 
         let mut db = DB::new(&db_info)?;
-        let _render_pass = db.fetch_render_pass("render_pass/test")?;
-
-        let subpasses = db.render_pass_subpasses("render_pass/test")?;
-        let mut collected: Vec<_> = subpasses.collect();
-        assert_eq!(collected.len(), 1);
-        let subpass = collected.pop().expect("at least one subpass");
-        assert_eq!(subpass.color_attachments.len(), 1);
-        assert!(subpass.depth_stencil_attachment.is_none());
-
         let host_model = db.fetch_model(MODEL_ENTRY)?;
         assert_eq!(host_model.name, MODEL_ENTRY);
         assert_eq!(host_model.meshes.len(), 1);
@@ -1473,7 +1044,6 @@ mod tests {
         assert_eq!(shader.name, SHADER_PROGRAM_ENTRY);
         assert!(shader.vertex.is_some());
         assert!(shader.fragment.is_some());
-        assert!(shader.pipeline.is_none());
         assert_eq!(
             shader.vertex.as_ref().unwrap().module.words(),
             &[0x0723_0203, 1, 2, 3]
@@ -1487,7 +1057,6 @@ mod tests {
         assert_eq!(fetched_shader.name, SHADER_PROGRAM_ENTRY);
         assert!(fetched_shader.vertex.is_some());
         assert!(fetched_shader.fragment.is_some());
-        assert!(fetched_shader.pipeline.is_none());
 
         assert!(matches!(
             db.fetch_graphics_shader(SHADER_MISSING_ENTRY),
@@ -1506,31 +1075,14 @@ mod tests {
         let device_shader = device_mat.shader.as_ref().unwrap();
         assert!(device_shader.vertex.is_some());
         assert!(device_shader.fragment.is_some());
-        assert!(device_shader.pipeline.is_none());
 
         Ok(())
     }
 
     #[test]
-    fn validate_layouts_with_render_pass() -> Result<(), NorenError> {
+    fn validate_layouts_with_shader_stage() -> Result<(), NorenError> {
         let tmp = tempdir().unwrap();
         let base = tmp.path();
-
-        let mut render_passes = RenderPassLayoutFile::default();
-        render_passes.render_passes.insert(
-            "render/test".into(),
-            RenderPassLayout {
-                viewport: Viewport::default(),
-                subpasses: vec![RenderSubpassLayout {
-                    color_attachments: vec![AttachmentDescription {
-                        format: Format::RGBA8,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
 
         let mut meshes = MeshLayoutFile::default();
         meshes.meshes.insert(
@@ -1560,15 +1112,11 @@ mod tests {
         shaders.shaders.insert(
             "shader".into(),
             GraphicsShaderLayout {
-                render_pass: Some("render/test".into()),
+                vertex: Some("shader.vert".into()),
                 ..Default::default()
             },
         );
 
-        std::fs::write(
-            base.join("render_passes.json"),
-            serde_json::to_vec(&render_passes)?,
-        )?;
         std::fs::write(base.join("meshes.json"), serde_json::to_vec(&meshes)?)?;
         std::fs::write(base.join("models.json"), serde_json::to_vec(&models)?)?;
         std::fs::write(base.join("materials.json"), serde_json::to_vec(&materials)?)?;
@@ -1582,16 +1130,6 @@ mod tests {
         let tmp = tempdir().unwrap();
         let base = tmp.path();
 
-        let mut render_passes = RenderPassLayoutFile::default();
-        render_passes.render_passes.insert(
-            "render/test".into(),
-            RenderPassLayout {
-                viewport: Viewport::default(),
-                subpasses: vec![RenderSubpassLayout::default()],
-                ..Default::default()
-            },
-        );
-
         let mut meshes = MeshLayoutFile::default();
         meshes.meshes.insert(
             "mesh".into(),
@@ -1619,17 +1157,9 @@ mod tests {
         let mut shaders = ShaderLayoutFile::default();
         shaders.shaders.insert(
             "shader".into(),
-            GraphicsShaderLayout {
-                subpass: 1,
-                render_pass: Some("render/test".into()),
-                ..Default::default()
-            },
+            GraphicsShaderLayout::default(),
         );
 
-        std::fs::write(
-            base.join("render_passes.json"),
-            serde_json::to_vec(&render_passes).unwrap(),
-        )?;
         std::fs::write(
             base.join("meshes.json"),
             serde_json::to_vec(&meshes).unwrap(),
@@ -1658,7 +1188,7 @@ mod tests {
                 assert!(
                     diag.issues
                         .iter()
-                        .any(|issue| issue.contains("subpass index"))
+                        .any(|issue| issue.contains("no shader stages"))
                 );
                 assert_eq!(diag.materials, vec!["mat".to_string()]);
                 assert_eq!(diag.models, vec!["model".to_string()]);
