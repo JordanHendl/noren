@@ -16,7 +16,10 @@ use noren::{
     parsing::{
         MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile, TextureLayout, TextureLayoutFile,
     },
-    rdb::{HostGeometry, HostImage, ImageInfo, ShaderModule, primitives::Vertex},
+    rdb::{
+        AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, ShaderModule,
+        primitives::Vertex,
+    },
     validate_database_layout,
 };
 use serde::{Deserialize, Serialize};
@@ -79,6 +82,7 @@ fn main() {
         Command::Validate(args) => run_validation(&args, &logger),
         Command::AppendGeometry(args) => append_geometry(&args, &logger, cli.write_binaries),
         Command::AppendImagery(args) => append_imagery(&args, &logger, cli.write_binaries),
+        Command::AppendAudio(args) => append_audio(&args, &logger, cli.write_binaries),
         Command::AppendShader(args) => append_shader(&args, &logger, cli.write_binaries),
     };
 
@@ -171,12 +175,13 @@ fn parse_validate_command(mut args: impl Iterator<Item = String>) -> Result<Comm
 
 fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(kind) = args.next() else {
-        return Err("append requires a resource type (geometry, imagery, shader)".into());
+        return Err("append requires a resource type (geometry, imagery, audio, shader)".into());
     };
 
     match kind.as_str() {
         "geometry" => parse_geometry_append(args).map(Command::AppendGeometry),
         "imagery" => parse_imagery_append(args).map(Command::AppendImagery),
+        "audio" => parse_audio_append(args).map(Command::AppendAudio),
         "shader" => parse_shader_append(args).map(Command::AppendShader),
         other => Err(format!("unknown append resource type: {other}")),
     }
@@ -284,6 +289,45 @@ fn parse_imagery_append(mut args: impl Iterator<Item = String>) -> Result<ImageA
     })
 }
 
+fn parse_audio_append(mut args: impl Iterator<Item = String>) -> Result<AudioAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut format = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--audio" => {
+                file = Some(next_value("--audio", &mut args)?);
+            }
+            "--format" => {
+                let value = next_value("--format", &mut args)?;
+                format = Some(
+                    parse_audio_format(&value)
+                        .ok_or_else(|| format!("unknown audio format '{value}'"))?,
+                );
+            }
+            other => return Err(format!("unexpected argument to append audio: {other}")),
+        }
+    }
+
+    Ok(AudioAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: AudioEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--audio is required".to_string())?),
+            format,
+        },
+    })
+}
+
 fn parse_shader_append(mut args: impl Iterator<Item = String>) -> Result<ShaderAppendArgs, String> {
     let mut rdb: Option<PathBuf> = None;
     let mut entry = None;
@@ -334,6 +378,7 @@ enum Command {
     Validate(ValidateArgs),
     AppendGeometry(GeometryAppendArgs),
     AppendImagery(ImageAppendArgs),
+    AppendAudio(AudioAppendArgs),
     AppendShader(ShaderAppendArgs),
 }
 
@@ -353,6 +398,12 @@ struct GeometryAppendArgs {
 struct ImageAppendArgs {
     rdb: PathBuf,
     entry: ImageEntry,
+}
+
+#[derive(Debug)]
+struct AudioAppendArgs {
+    rdb: PathBuf,
+    entry: AudioEntry,
 }
 
 #[derive(Debug)]
@@ -380,6 +431,7 @@ fn run_from_path(
     let BuildSpec {
         output,
         imagery,
+        audio,
         geometry,
         shaders,
         models,
@@ -390,6 +442,7 @@ fn run_from_path(
 
     let geometry_path = resolve_string_path(&output_dir, &output.layout.geometry);
     let imagery_path = resolve_string_path(&output_dir, &output.layout.imagery);
+    let audio_path = resolve_string_path(&output_dir, &output.layout.audio);
     let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
     let meshes_path = resolve_string_path(&output_dir, &output.layout.meshes);
     let models_path = resolve_string_path(&output_dir, &output.layout.models);
@@ -408,6 +461,14 @@ fn run_from_path(
         &base_dir,
         &imagery_path,
         &imagery,
+        append,
+        write_binaries,
+        logger,
+    )?;
+    build_audio(
+        &base_dir,
+        &audio_path,
+        &audio,
         append,
         write_binaries,
         logger,
@@ -1042,6 +1103,73 @@ fn build_imagery(
     Ok(())
 }
 
+fn append_audio(
+    args: &AudioAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    logger.log(format!("append audio: {}", args.entry.entry));
+    let clip = load_audio(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &clip).map_err(BuildError::from)?;
+
+    if write_binaries {
+        logger.log(format!("append audio: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append audio: skipping binary output (--layouts-only)");
+    }
+
+    Ok(())
+}
+
+fn build_audio(
+    base_dir: &Path,
+    output: &Path,
+    entries: &[AudioEntry],
+    append: bool,
+    write_binaries: bool,
+    logger: &Logger,
+) -> Result<(), BuildError> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
+
+    for entry in entries {
+        logger.log(format!(
+            "audio: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
+        let clip = load_audio(base_dir, entry)?;
+        rdb.add(&entry.entry, &clip).map_err(BuildError::from)?;
+    }
+
+    if write_binaries {
+        logger.log(format!("audio: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("audio: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
 fn append_shader(
     args: &ShaderAppendArgs,
     logger: &Logger,
@@ -1086,6 +1214,25 @@ fn load_image(base_dir: &Path, entry: &ImageEntry) -> Result<HostImage, BuildErr
     };
 
     Ok(HostImage::new(info, data))
+}
+
+fn infer_audio_format(path: &Path, override_format: Option<AudioFormat>) -> AudioFormat {
+    if let Some(format) = override_format {
+        return format;
+    }
+
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(parse_audio_format)
+        .unwrap_or_default()
+}
+
+fn load_audio(base_dir: &Path, entry: &AudioEntry) -> Result<AudioClip, BuildError> {
+    let path = resolve_path(base_dir, &entry.file);
+    let data = fs::read(&path)?;
+    let format = infer_audio_format(&entry.file, entry.format.clone());
+
+    Ok(AudioClip::new(entry.entry.clone(), format, data))
 }
 
 fn to_rgba(image: DynamicImage) -> image::RgbaImage {
@@ -1192,6 +1339,9 @@ fn print_usage(program: &str) {
         "  {program} append imagery --rdb <imagery.rdb> --entry <name> --image <file> [--layers <count>] [--mip-levels <count>] [--format <format>]"
     );
     eprintln!(
+        "  {program} append audio --rdb <audio.rdb> --entry <name> --audio <file> [--format <format>]"
+    );
+    eprintln!(
         "  {program} append shader --rdb <shaders.rdb> --entry <name> --stage <stage> --shader <file>"
     );
     eprintln!("");
@@ -1214,6 +1364,8 @@ struct BuildSpec {
     output: OutputSpec,
     #[serde(default)]
     imagery: Vec<ImageEntry>,
+    #[serde(default)]
+    audio: Vec<AudioEntry>,
     #[serde(default)]
     geometry: Vec<GeometryEntry>,
     #[serde(default)]
@@ -1285,6 +1437,24 @@ fn parse_image_format(value: &str) -> Option<dashi::Format> {
         "rgba32f" | "rgba32_float" | "rgba32float" => Some(dashi::Format::RGBA32F),
         "bgra8unorm" | "bgra8_unorm" => Some(dashi::Format::BGRA8Unorm),
         "d24s8" => Some(dashi::Format::D24S8),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AudioEntry {
+    entry: String,
+    file: PathBuf,
+    #[serde(default)]
+    format: Option<AudioFormat>,
+}
+
+fn parse_audio_format(value: &str) -> Option<AudioFormat> {
+    match value.to_ascii_lowercase().as_str() {
+        "ogg" | "oga" => Some(AudioFormat::Ogg),
+        "wav" => Some(AudioFormat::Wav),
+        "mp3" => Some(AudioFormat::Mp3),
+        "flac" => Some(AudioFormat::Flac),
         _ => None,
     }
 }
@@ -1528,6 +1698,7 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    audio: "audio.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
                     meshes: "meshes.json".into(),
@@ -1537,6 +1708,7 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            audio: Vec::new(),
             imagery: vec![
                 ImageEntry {
                     entry: "imagery/tulips".into(),
@@ -1674,6 +1846,7 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    audio: "audio.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
                     meshes: "meshes.json".into(),
@@ -1683,6 +1856,7 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            audio: Vec::new(),
             imagery: vec![ImageEntry {
                 entry: "imagery/tulips".into(),
                 file: PathBuf::from("imagery/tulips.png"),
@@ -1764,6 +1938,7 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    audio: "audio.rdb".into(),
                     textures: "textures.json".into(),
                     materials: "materials.json".into(),
                     meshes: "meshes.json".into(),
@@ -1773,6 +1948,7 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            audio: Vec::new(),
             imagery: Vec::new(),
             geometry: vec![GeometryEntry {
                 entry: "geometry/quad".into(),
@@ -1858,6 +2034,7 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    audio: "audio.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
                     meshes: "meshes.json".into(),
@@ -1867,6 +2044,7 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            audio: Vec::new(),
             imagery: vec![ImageEntry {
                 entry: "imagery/tulips".into(),
                 file: PathBuf::from("imagery/tulips.png"),
@@ -1897,6 +2075,7 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    audio: "audio.rdb".into(),
                     textures: "textures.json".into(),
                     materials: "materials.json".into(),
                     meshes: "meshes.json".into(),
@@ -1906,6 +2085,7 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            audio: Vec::new(),
             imagery: vec![],
             geometry: vec![GeometryEntry {
                 entry: "geometry/quad_copy".into(),
@@ -1948,6 +2128,7 @@ mod tests {
                 layout: DatabaseLayoutFile {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
+                    audio: "audio.rdb".into(),
                     textures: "textures.json".into(),
                     materials: "materials.json".into(),
                     meshes: "meshes.json".into(),
@@ -1957,6 +2138,7 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            audio: Vec::new(),
             imagery: Vec::new(),
             geometry: vec![GeometryEntry {
                 entry: "geometry/original".into(),

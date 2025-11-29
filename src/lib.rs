@@ -47,6 +47,7 @@ pub struct DB {
     ctx: NonNull<Context>,
     geometry: GeometryDB,
     imagery: ImageDB,
+    audio: AudioDB,
     shaders: ShaderDB,
     render_passes: RenderPassDB,
     meta_layout: Option<MetaLayout>,
@@ -144,6 +145,7 @@ impl DB {
         let ctx_ptr = NonNull::new(info.ctx).expect("Null GPU Context");
         let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
+        let audio = AudioDB::new(&format!("{}/{}", info.base_dir, layout.audio));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
         let meta_layout = load_meta_layout(info.base_dir, &layout)?;
 
@@ -161,6 +163,7 @@ impl DB {
             ctx: ctx_ptr,
             geometry,
             imagery,
+            audio,
             shaders,
             render_passes,
             meta_layout,
@@ -187,6 +190,16 @@ impl DB {
         &mut self.imagery
     }
 
+    /// Returns an immutable reference to the audio database.
+    pub fn audio(&self) -> &AudioDB {
+        &self.audio
+    }
+
+    /// Returns a mutable reference to the audio database.
+    pub fn audio_mut(&mut self) -> &mut AudioDB {
+        &mut self.audio
+    }
+
     /// Returns an immutable reference to the shader database.
     pub fn shaders(&self) -> &ShaderDB {
         &self.shaders
@@ -210,6 +223,11 @@ impl DB {
     /// Enumerates all imagery entries available in the backing database.
     pub fn enumerate_images(&self) -> Vec<String> {
         self.imagery.enumerate_entries()
+    }
+
+    /// Enumerates all audio clips available in the backing database.
+    pub fn enumerate_audio_clips(&self) -> Vec<String> {
+        self.audio.enumerate_entries()
     }
 
     /// Enumerates shader module entries available for program creation.

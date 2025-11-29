@@ -1,6 +1,7 @@
 {
   "geometry": "geometry.rdb",
   "imagery": "imagery.rdb",
+  "audio": "audio.rdb",
   "textures": "textures.json",
   "materials": "materials.json",
   "meshes": "meshes.json",

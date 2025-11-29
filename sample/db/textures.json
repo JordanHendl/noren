@@ -1,12 +1,12 @@
 {
   "textures": {
-    "texture/imagery/tulips": {
-      "image": "imagery/tulips",
-      "name": "Quad Diffuse"
-    },
     "texture/imagery/peppers": {
       "image": "imagery/peppers",
-      "name": "Quad Overlay"
+      "name": null
+    },
+    "texture/imagery/tulips": {
+      "image": "imagery/tulips",
+      "name": null
     }
   }
 }
