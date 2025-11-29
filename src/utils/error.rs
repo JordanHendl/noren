@@ -29,9 +29,6 @@ pub enum NorenError {
     LookupFailure(),
     UploadFailure(),
     DataFailure(),
-    MissingRenderPass(String),
-    UnknownRenderPass(String),
-    InvalidRenderPass(String),
     InvalidMaterial(String),
     InvalidModel(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
@@ -51,17 +48,6 @@ impl std::fmt::Display for NorenError {
             }
             NorenError::UploadFailure() => write!(f, "Failed to upload data."),
             NorenError::DataFailure() => write!(f, "Data processing failed."),
-            NorenError::MissingRenderPass(shader) => write!(
-                f,
-                "Graphics shader '{}' does not specify a render pass.",
-                shader
-            ),
-            NorenError::UnknownRenderPass(pass) => {
-                write!(f, "Render pass '{}' could not be found.", pass)
-            }
-            NorenError::InvalidRenderPass(reason) => {
-                write!(f, "Invalid render pass configuration: {}", reason)
-            }
             NorenError::InvalidMaterial(reason) => {
                 write!(f, "Invalid material: {}", reason)
             }
@@ -157,18 +143,6 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::DataFailure()),
             "Data processing failed."
-        );
-        assert_eq!(
-            format!("{}", NorenError::MissingRenderPass("shader".into())),
-            "Graphics shader 'shader' does not specify a render pass."
-        );
-        assert_eq!(
-            format!("{}", NorenError::UnknownRenderPass("pass".into())),
-            "Render pass 'pass' could not be found."
-        );
-        assert_eq!(
-            format!("{}", NorenError::InvalidRenderPass("bad subpass".into())),
-            "Invalid render pass configuration: bad subpass"
         );
         assert_eq!(
             format!("{}", NorenError::InvalidMaterial("reason".into())),
