@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::furikake_state::FurikakeState;
 use dashi::{AttachmentDescription, SubpassDependency, Viewport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -170,6 +171,8 @@ pub struct GraphicsShaderLayout {
     pub subpass: u8,
     #[serde(default)]
     pub render_pass: Option<String>,
+    #[serde(default)]
+    pub furikake_state: FurikakeState,
 }
 
 impl Default for DatabaseLayoutFile {

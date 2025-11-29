@@ -34,6 +34,7 @@ pub enum NorenError {
     InvalidRenderPass(String),
     InvalidMaterial(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
+    InvalidShaderState(String),
     JSONError(serde_json::Error),
     YAMLError(serde_yaml::Error),
     IOFailure(std::io::Error),
@@ -81,6 +82,9 @@ impl std::fmt::Display for NorenError {
                     }
                 }
                 write!(f, "{}", message)
+            }
+            NorenError::InvalidShaderState(reason) => {
+                write!(f, "Invalid shader state: {}", reason)
             }
             NorenError::RDBFileError(rdb_err) => write!(f, "RDB file error: {}", rdb_err),
             NorenError::IOFailure(error) => write!(f, "I/O failure: {}", error),
@@ -165,6 +169,10 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::InvalidMaterial("reason".into())),
             "Invalid material: reason"
+        );
+        assert_eq!(
+            format!("{}", NorenError::InvalidShaderState("bad state".into())),
+            "Invalid shader state: bad state"
         );
         assert_eq!(
             format!("{}", NorenError::RDBFileError(RdbErr::BadHeader)),

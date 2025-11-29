@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::datatypes::{DeviceGeometry, DeviceImage, HostGeometry, HostImage, ShaderModule};
+use crate::{
+    datatypes::{DeviceGeometry, DeviceImage, HostGeometry, HostImage, ShaderModule},
+    furikake_state::FurikakeState,
+};
 use dashi::{BindGroupLayout, BindTableLayout, GraphicsPipeline, GraphicsPipelineLayout, Handle};
 
 pub const DEVICE_NAME_CAPACITY: usize = 64;
@@ -247,6 +250,7 @@ pub struct GraphicsShader {
     pub geometry: Option<ShaderStage>,
     pub tessellation_control: Option<ShaderStage>,
     pub tessellation_evaluation: Option<ShaderStage>,
+    pub furikake_state: FurikakeState,
     pub bind_group_layouts: [Option<Handle<BindGroupLayout>>; 4],
     pub bind_table_layouts: [Option<Handle<BindTableLayout>>; 4],
     pub pipeline_layout: Option<Handle<GraphicsPipelineLayout>>,
@@ -258,6 +262,7 @@ impl GraphicsShader {
     pub fn new(name: String) -> Self {
         Self {
             name,
+            furikake_state: FurikakeState::None,
             ..Default::default()
         }
     }
