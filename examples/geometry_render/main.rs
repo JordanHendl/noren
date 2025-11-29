@@ -1,10 +1,13 @@
-//! Run with `cargo run --example geometry_render` to load geometry from the
-//! database and upload it to GPU buffers.
+//! Run with `cargo run --example geometry_render [primitive]` to load a default
+//! primitive from the database and upload it to GPU buffers.
 
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{SAMPLE_GEOMETRY_ENTRY, display::blit_image_to_display, init_context, open_sample_db};
+use common::{
+    DEFAULT_GEOMETRY_PRIMITIVES, default_geometry_entry_from_args, display::blit_image_to_display,
+    init_context, open_sample_db,
+};
 use dashi::driver::command::{BeginDrawing, Draw, DrawIndexed};
 use dashi::gpu::{self, CommandStream};
 use dashi::{
@@ -12,7 +15,9 @@ use dashi::{
     SubmitInfo, Viewport,
 };
 use noren::render_graph::RenderGraphRequest;
-use std::error::Error;
+use std::{env, error::Error};
+
+const FRAMEBUFFER_DIM: [u32; 2] = [800, 600];
 
 fn main() {
     if let Err(err) = run() {
@@ -22,6 +27,12 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    let geometry_entry = default_geometry_entry_from_args(env::args().nth(1));
+    println!(
+        "Rendering geometry entry '{geometry_entry}'. Default primitives: {}",
+        DEFAULT_GEOMETRY_PRIMITIVES.join(", ")
+    );
+
     let mut ctx = match init_context() {
         Ok(ctx) => ctx,
         Err(err) => {
@@ -33,15 +44,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut db = open_sample_db(&mut ctx)?;
     let geom_db = db.geometry_mut();
 
-    let host_geometry = geom_db.fetch_raw_geometry(SAMPLE_GEOMETRY_ENTRY)?;
+    let host_geometry = geom_db.fetch_raw_geometry(&geometry_entry)?;
     println!(
         "Host geometry '{}' contains {} vertices and {} indices",
-        SAMPLE_GEOMETRY_ENTRY,
+        geometry_entry,
         host_geometry.vertices.len(),
         host_geometry.indices.as_ref().map_or(0, |idx| idx.len())
     );
 
-    let device_geometry = geom_db.fetch_gpu_geometry(SAMPLE_GEOMETRY_ENTRY)?;
+    let device_geometry = geom_db.fetch_gpu_geometry(&geometry_entry)?;
     println!(
         "Uploaded GPU geometry with buffers {:?} / {:?}",
         device_geometry.vertices, device_geometry.indices
@@ -64,7 +75,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let framebuffer = ctx.make_image(&ImageInfo {
         debug_name: "geometry_render_fb",
-        dim: [800, 600, 1],
+        dim: [FRAMEBUFFER_DIM[0], FRAMEBUFFER_DIM[1], 1],
         format: dashi::Format::RGBA8,
         ..Default::default()
     })?;
@@ -77,8 +88,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         framebuffer,
     )?;
 
-    println!("Displaying GPU rasterized geometry (800x600)");
-    blit_image_to_display(&mut ctx, framebuffer, [800, 600], "geometry_render")?;
+    println!(
+        "Displaying GPU rasterized geometry ({}x{})",
+        FRAMEBUFFER_DIM[0], FRAMEBUFFER_DIM[1]
+    );
+    blit_image_to_display(&mut ctx, framebuffer, FRAMEBUFFER_DIM, "geometry_render")?;
 
     Ok(())
 }

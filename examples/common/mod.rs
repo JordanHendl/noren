@@ -8,6 +8,15 @@ use noren::{DB, DBInfo, rdb::DatabaseEntry};
 
 pub mod display;
 
+pub const DEFAULT_GEOMETRY_PRIMITIVES: [&str; 6] = [
+    "geometry/sphere",
+    "geometry/cube",
+    "geometry/quad",
+    "geometry/plane",
+    "geometry/cylinder",
+    "geometry/cone",
+];
+
 /// Absolute path to the bundled sample database directory.
 pub fn sample_db_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sample/db")
@@ -47,6 +56,31 @@ pub fn open_sample_db(ctx: &mut gpu::Context) -> Result<DB, Box<dyn Error>> {
     };
 
     Ok(DB::new(&info)?)
+}
+
+/// Resolve an input argument into a geometry database entry name.
+///
+/// When no value is provided the default "geometry/sphere" is used. Arguments
+/// without the `geometry/` prefix are automatically expanded.
+pub fn default_geometry_entry_from_args(arg: Option<String>) -> String {
+    let requested = arg.unwrap_or_else(|| "sphere".to_string());
+    let entry = if requested.starts_with("geometry/") {
+        requested
+    } else {
+        format!("geometry/{requested}")
+    };
+
+    if !DEFAULT_GEOMETRY_PRIMITIVES
+        .iter()
+        .any(|primitive| *primitive == entry)
+    {
+        eprintln!(
+            "Provided primitive '{entry}' is not in the default set: {}",
+            DEFAULT_GEOMETRY_PRIMITIVES.join(", ")
+        );
+    }
+
+    entry
 }
 
 fn path_to_string(path: &Path) -> Result<String, Box<dyn Error>> {
