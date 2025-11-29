@@ -1,4 +1,5 @@
 pub mod datatypes;
+mod furikake_state;
 mod material_bindings;
 pub mod meta;
 pub mod parsing;
@@ -12,6 +13,7 @@ use crate::{
     render_graph::{PipelineFactory, RenderGraph, RenderGraphRequest},
 };
 use datatypes::*;
+pub use furikake_state::FurikakeState;
 use meta::*;
 use parsing::*;
 use utils::*;
@@ -843,6 +845,7 @@ impl DB {
                 .clone()
                 .unwrap_or_else(|| shader_key.to_string()),
         );
+        shader.furikake_state = layout.furikake_state;
 
         let mut has_stage = false;
 
@@ -931,6 +934,8 @@ impl DB {
         if shader_infos.is_empty() {
             return Err(NorenError::LookupFailure());
         }
+
+        furikake_state::validate_furikake_state(&shader, shader.furikake_state)?;
 
         if cfg!(test) {
             shader.bind_group_layouts = bg_handles;
@@ -1239,6 +1244,7 @@ mod tests {
                 tessellation_evaluation: None,
                 subpass: 0,
                 render_pass: Some("render_pass/test".to_string()),
+                furikake_state: FurikakeState::None,
             },
         );
 

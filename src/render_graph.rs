@@ -8,8 +8,8 @@ use dashi::{
 };
 
 use crate::{
-    DB, datatypes::primitives::Vertex, meta::GraphicsShader, meta::ShaderStage,
-    parsing::GraphicsShaderLayout, utils::NorenError,
+    DB, datatypes::primitives::Vertex, furikake_state::validate_furikake_state,
+    meta::GraphicsShader, meta::ShaderStage, parsing::GraphicsShaderLayout, utils::NorenError,
 };
 
 pub struct PipelineFactory<'a> {
@@ -32,6 +32,7 @@ pub struct RenderGraphRequest {
 pub struct PipelineBinding {
     pub pipeline: Handle<GraphicsPipeline>,
     pub pipeline_layout: Handle<GraphicsPipelineLayout>,
+    pub furikake_state: crate::FurikakeState,
     pub bind_group_layouts: [Option<Handle<BindGroupLayout>>; 4],
     pub bind_table_layouts: [Option<Handle<BindTableLayout>>; 4],
 }
@@ -59,6 +60,8 @@ impl<'a> PipelineFactory<'a> {
     ) -> Result<(Handle<dashi::RenderPass>, PipelineBinding), NorenError> {
         let shader = DB::load_graphics_shader(self.shaders, shader_key, shader_layout)?
             .ok_or_else(NorenError::LookupFailure)?;
+
+        validate_furikake_state(&shader, shader.furikake_state)?;
 
         let (bg_layouts, bt_layouts) = self.create_layout_handles(&shader)?;
         let shader_infos = Self::collect_shader_infos(&shader)?;
@@ -106,6 +109,7 @@ impl<'a> PipelineFactory<'a> {
             PipelineBinding {
                 pipeline,
                 pipeline_layout,
+                furikake_state: shader.furikake_state,
                 bind_group_layouts: layout_info.bg_layouts,
                 bind_table_layouts: layout_info.bt_layouts,
             },
