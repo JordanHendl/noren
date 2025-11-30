@@ -476,7 +476,7 @@ dependencies = [
 [[package]]
 name = "dashi"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/dashi#85c7e55b22a67b7504f177205796f01fe0e24cba"
+source = "git+https://github.com/JordanHendl/dashi#a03785c0a014a3ca8220e3db877fac8fa6c295ad"
 dependencies = [
  "anyhow",
  "ash",
@@ -1345,7 +1345,7 @@ dependencies = [
 [[package]]
 name = "resource_pool"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/ResourcePool#08774d83bbf641da09b636a56f341bfd6648a54f"
+source = "git+https://github.com/JordanHendl/ResourcePool#52c231ad68e6c13dce9fd7dbe75d5f7a229aa66f"
 dependencies = [
  "bytemuck",
 ]

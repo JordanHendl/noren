@@ -67,6 +67,11 @@ impl ShaderDB {
         Self { data }
     }
 
+    /// Returns whether shader module data was loaded successfully.
+    pub fn has_data(&self) -> bool {
+        self.data.is_some()
+    }
+
     /// Fetches a shader module by entry name, ensuring it contains SPIR-V data.
     pub fn fetch_module(&mut self, entry: DatabaseEntry<'_>) -> Result<ShaderModule, NorenError> {
         if let Some(rdb) = &mut self.data {
