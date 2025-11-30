@@ -9,8 +9,8 @@ framework.
 ## Features
 
 - **Database-backed runtime** – `src/lib.rs` exposes the `DB` type that lazily
-  maps geometry, imagery, shaders, and render passes from disk into GPU ready
-  resources.
+  maps geometry, imagery, shaders, and shader metadata (including attachment
+  formats) from disk into GPU ready resources.
 - **Authoring tooling** – The `dbgen`, `rdbinspect`, and `material_editor`
   binaries under `src/exec` allow you to compile, inspect, and edit database
   assets.
@@ -40,9 +40,10 @@ cargo run --bin dbgen -- sample/sample_pre/norenbuild.json
 ```
 
 The command produces a `sample/db/` folder with `geometry.rdb`, `imagery.rdb`,
-`shaders.rdb`, `materials.json`, and `render_passes.json`. Use the `--append`
-flag to incrementally add new entries without rebuilding from scratch, or call
-`dbgen append` to inject a single resource (geometry, imagery, or shader) into an
+`shaders.rdb`, and metadata JSON files (`materials.json`, `textures.json`,
+`meshes.json`, `models.json`, `shaders.json`). Use the `--append` flag to
+incrementally add new entries without rebuilding from scratch, or call `dbgen
+append` to inject a single resource (geometry, imagery, or shader) into an
 existing `.rdb` file.
 
 ## Running examples

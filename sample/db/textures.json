@@ -1,11 +1,11 @@
 {
   "textures": {
-    "texture/imagery/peppers": {
-      "image": "imagery/peppers",
-      "name": null
-    },
     "texture/imagery/tulips": {
       "image": "imagery/tulips",
+      "name": null
+    },
+    "texture/imagery/peppers": {
+      "image": "imagery/peppers",
       "name": null
     }
   }

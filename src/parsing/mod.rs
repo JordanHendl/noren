@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::furikake_state::FurikakeState;
-use dashi::{AttachmentDescription, SubpassDependency, Viewport};
+use dashi::Format;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -33,10 +33,6 @@ fn default_mesh_path() -> String {
     "meshes.json".to_string()
 }
 
-fn default_render_pass_path() -> String {
-    "render_passes.json".to_string()
-}
-
 fn default_shader_layout_path() -> String {
     "shaders.json".to_string()
 }
@@ -61,8 +57,6 @@ pub struct DatabaseLayoutFile {
     pub meshes: String,
     #[serde(default = "default_model_path")]
     pub models: String,
-    #[serde(default = "default_render_pass_path")]
-    pub render_passes: String,
     #[serde(default = "default_shader_layout_path")]
     pub shader_layouts: String,
     #[serde(default = "default_shader_module_path")]
@@ -97,32 +91,6 @@ pub struct ModelLayoutFile {
 pub struct ShaderLayoutFile {
     #[serde(default)]
     pub shaders: HashMap<String, GraphicsShaderLayout>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RenderPassLayoutFile {
-    #[serde(default)]
-    pub render_passes: HashMap<String, RenderPassLayout>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RenderPassLayout {
-    #[serde(default)]
-    pub debug_name: Option<String>,
-    #[serde(default)]
-    pub viewport: Viewport,
-    #[serde(default)]
-    pub subpasses: Vec<RenderSubpassLayout>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RenderSubpassLayout {
-    #[serde(default)]
-    pub color_attachments: Vec<AttachmentDescription>,
-    #[serde(default)]
-    pub depth_stencil_attachment: Option<AttachmentDescription>,
-    #[serde(default)]
-    pub subpass_dependencies: Vec<SubpassDependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -195,9 +163,9 @@ pub struct GraphicsShaderLayout {
     #[serde(default, rename = "tessellation_evaluation")]
     pub tessellation_evaluation: Option<String>,
     #[serde(default)]
-    pub subpass: u8,
+    pub color_formats: Vec<Format>,
     #[serde(default)]
-    pub render_pass: Option<String>,
+    pub depth_format: Option<Format>,
     #[serde(default)]
     pub furikake_state: FurikakeState,
 }
@@ -209,7 +177,6 @@ pub struct MetaLayout {
     pub meshes: HashMap<String, MeshLayout>,
     pub models: HashMap<String, ModelLayout>,
     pub shaders: HashMap<String, GraphicsShaderLayout>,
-    pub render_passes: HashMap<String, RenderPassLayout>,
 }
 
 impl MetaLayout {
@@ -219,7 +186,6 @@ impl MetaLayout {
             && self.meshes.is_empty()
             && self.models.is_empty()
             && self.shaders.is_empty()
-            && self.render_passes.is_empty()
     }
 }
 
@@ -233,7 +199,6 @@ impl Default for DatabaseLayoutFile {
             materials: default_material_path(),
             meshes: default_mesh_path(),
             models: default_model_path(),
-            render_passes: default_render_pass_path(),
             shader_layouts: default_shader_layout_path(),
             shaders: default_shader_module_path(),
         }
