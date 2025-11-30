@@ -84,6 +84,7 @@ fn load_meta_layout(
     }
     if let Some(file) = shader_layouts {
         meta_layout.shaders = file.shaders;
+        meta_layout.compute_shaders = file.compute_shaders;
     }
 
     if meta_layout.is_empty() {
@@ -103,7 +104,9 @@ pub fn validate_database_layout(
         return Ok(());
     };
 
-    validate_meta_layout(&meta_layout)
+    let shader_modules = ShaderDB::new(&format!("{}/{}", base_dir, layout.shaders));
+
+    validate_meta_layout(&meta_layout, Some(&shader_modules))
 }
 
 ////////////////////////////////////////////////
@@ -130,7 +133,7 @@ impl DB {
         let meta_layout = load_meta_layout(info.base_dir, &layout)?;
 
         if let Some(layout) = meta_layout.as_ref() {
-            validate_meta_layout(layout)?;
+            validate_meta_layout(layout, Some(&shaders))?;
         }
 
         Ok(Self {
@@ -498,11 +501,14 @@ fn validate_model_links(layout: &MetaLayout) -> Result<(), NorenError> {
     Ok(())
 }
 
-fn validate_meta_layout(layout: &MetaLayout) -> Result<(), NorenError> {
+fn validate_meta_layout(
+    layout: &MetaLayout,
+    shader_modules: Option<&ShaderDB>,
+) -> Result<(), NorenError> {
     validate_material_links(layout)?;
     validate_mesh_links(layout)?;
     validate_model_links(layout)?;
-    validate_shader_layouts(layout)
+    validate_shader_layouts(layout, shader_modules)
 }
 
 fn build_material_components<Texture, Image, MakeTexture, FetchImage, LoadShader>(
@@ -635,8 +641,11 @@ fn normalize_binding_entries(
     Ok(normalized)
 }
 
-fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
-    use std::collections::HashMap;
+fn validate_shader_layouts(
+    layout: &MetaLayout,
+    shader_modules: Option<&ShaderDB>,
+) -> Result<(), NorenError> {
+    use std::collections::{HashMap, HashSet};
 
     let mut shader_to_materials: HashMap<&str, Vec<String>> = HashMap::new();
     for (material_key, material) in &layout.materials {
@@ -663,6 +672,9 @@ fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
         }
     }
 
+    let available_modules: Option<HashSet<String>> =
+        shader_modules.map(|db| db.enumerate_entries().into_iter().collect());
+
     let mut errors = Vec::new();
 
     for (shader_key, shader_layout) in &layout.shaders {
@@ -674,6 +686,35 @@ fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
             && shader_layout.tessellation_evaluation.is_none()
         {
             issues.push("no shader stages specified".to_string());
+        }
+
+        if let Some(modules) = &available_modules {
+            let stages = [
+                ("vertex", shader_layout.vertex.as_deref()),
+                ("fragment", shader_layout.fragment.as_deref()),
+                ("geometry", shader_layout.geometry.as_deref()),
+                (
+                    "tessellation_control",
+                    shader_layout.tessellation_control.as_deref(),
+                ),
+                (
+                    "tessellation_evaluation",
+                    shader_layout.tessellation_evaluation.as_deref(),
+                ),
+            ];
+
+            for (stage, entry) in stages {
+                if let Some(entry) = entry {
+                    if entry.is_empty() {
+                        issues.push(format!("{stage} shader entry is empty"));
+                    } else if !modules.contains(entry) {
+                        issues.push(format!(
+                            "{stage} shader module '{}' is missing from shader modules",
+                            entry
+                        ));
+                    }
+                }
+            }
         }
 
         if shader_layout.color_formats.is_empty() && shader_layout.depth_format.is_none() {
@@ -698,6 +739,42 @@ fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
                 materials,
                 models,
             });
+        }
+    }
+
+    if let Some(modules) = &available_modules {
+        for (shader_key, compute_layout) in &layout.compute_shaders {
+            let mut issues = Vec::new();
+
+            let Some(entry) = compute_layout.entry.as_deref() else {
+                issues.push("no compute shader entry specified".to_string());
+                let diag = ShaderValidationError {
+                    shader: shader_key.clone(),
+                    issues,
+                    materials: Vec::new(),
+                    models: Vec::new(),
+                };
+                errors.push(diag);
+                continue;
+            };
+
+            if entry.is_empty() {
+                issues.push("compute shader entry is empty".to_string());
+            } else if !modules.contains(entry) {
+                issues.push(format!(
+                    "compute shader module '{}' is missing from shader modules",
+                    entry
+                ));
+            }
+
+            if !issues.is_empty() {
+                errors.push(ShaderValidationError {
+                    shader: shader_key.clone(),
+                    issues,
+                    materials: Vec::new(),
+                    models: Vec::new(),
+                });
+            }
         }
     }
 
@@ -961,8 +1038,9 @@ impl DB {
 mod tests {
     use super::*;
     use crate::parsing::{
-        GraphicsShaderLayout, MaterialLayout, MaterialLayoutFile, MeshLayout, MeshLayoutFile,
-        ModelLayout, ModelLayoutFile, ShaderLayoutFile, TextureLayout, TextureLayoutFile,
+        ComputeShaderLayout, GraphicsShaderLayout, MaterialLayout, MaterialLayoutFile, MeshLayout,
+        MeshLayoutFile, ModelLayout, ModelLayoutFile, ShaderLayoutFile, TextureLayout,
+        TextureLayoutFile,
     };
     use crate::rdb::{
         ShaderModule,
@@ -1219,6 +1297,47 @@ mod tests {
         let device_shader = device_mat.shader.as_ref().unwrap();
         assert!(device_shader.vertex.is_some());
         assert!(device_shader.fragment.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_compute_shader_references() -> Result<(), NorenError> {
+        let base = tempdir()?;
+        let mut shaders = ShaderLayoutFile::default();
+        shaders.compute_shaders.insert(
+            "shader/compute".into(),
+            ComputeShaderLayout {
+                name: Some("Compute".into()),
+                entry: Some("shader/compute.comp".into()),
+                furikake_state: FurikakeState::None,
+            },
+        );
+
+        std::fs::write(
+            base.path().join("shaders.json"),
+            serde_json::to_vec(&shaders).unwrap(),
+        )?;
+
+        let shader_rdb = RDBFile::new();
+        shader_rdb.save(base.path().join("shaders.rdb"))?;
+
+        let error = validate_database_layout(base.path().to_str().unwrap(), None)
+            .expect_err("validation should fail for missing compute module");
+
+        match error {
+            NorenError::InvalidShaderLayout(errors) => {
+                assert_eq!(errors.len(), 1);
+                let diag = &errors[0];
+                assert_eq!(diag.shader, "shader/compute");
+                assert!(
+                    diag.issues
+                        .iter()
+                        .any(|issue| issue.contains("compute shader module"))
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
 
         Ok(())
     }
