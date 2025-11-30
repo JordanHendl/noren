@@ -69,9 +69,6 @@ fn load_meta_layout(
     let models = load_json_file::<ModelLayoutFile>(&format!("{}/{}", base_dir, layout.models))?;
     let shader_layouts =
         load_json_file::<ShaderLayoutFile>(&format!("{}/{}", base_dir, layout.shader_layouts))?;
-    let render_pass_layouts =
-        load_json_file::<RenderPassLayoutFile>(&format!("{}/{}", base_dir, layout.render_passes))?;
-
     let mut meta_layout = MetaLayout::default();
     if let Some(file) = textures {
         meta_layout.textures = file.textures;
@@ -88,9 +85,6 @@ fn load_meta_layout(
     if let Some(file) = shader_layouts {
         meta_layout.shaders = file.shaders;
     }
-    if let Some(file) = render_pass_layouts {
-        meta_layout.render_passes = file.render_passes;
-    }
 
     if meta_layout.is_empty() {
         Ok(None)
@@ -99,7 +93,7 @@ fn load_meta_layout(
     }
 }
 
-/// Validates that shader, material, and render pass references in the layout are consistent.
+/// Validates that shader, material, and attachment-format references in the layout are consistent.
 pub fn validate_database_layout(
     base_dir: &str,
     layout_file: Option<&str>,
@@ -682,6 +676,10 @@ fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
             issues.push("no shader stages specified".to_string());
         }
 
+        if shader_layout.color_formats.is_empty() && shader_layout.depth_format.is_none() {
+            issues.push("no attachment formats specified".to_string());
+        }
+
         if !issues.is_empty() {
             let materials = shader_to_materials
                 .get(shader_key.as_str())
@@ -1063,8 +1061,8 @@ mod tests {
                 geometry: None,
                 tessellation_control: None,
                 tessellation_evaluation: None,
-                subpass: 0,
-                render_pass: None,
+                color_formats: vec![dashi::Format::RGBA8],
+                depth_format: None,
                 furikake_state: FurikakeState::None,
             },
         );
@@ -1112,7 +1110,7 @@ mod tests {
             .shaders
             .get(SHADER_PROGRAM_ENTRY)
             .expect("shader entry");
-        assert!(parsed_shader.render_pass.is_none());
+        assert!(parsed_shader.depth_format.is_none());
 
         let mut geom_rdb = RDBFile::new();
         let geom = HostGeometry {
@@ -1259,6 +1257,7 @@ mod tests {
             "shader".into(),
             GraphicsShaderLayout {
                 vertex: Some("shader.vert".into()),
+                color_formats: vec![dashi::Format::RGBA8],
                 ..Default::default()
             },
         );
@@ -1410,8 +1409,8 @@ mod tests {
         let shader_rdb = RDBFile::new();
         shader_rdb.save(base.join("shaders.rdb"))?;
 
-        let mut ctx = dashi::Context::headless(&Default::default())
-            .expect("create headless context");
+        let mut ctx =
+            dashi::Context::headless(&Default::default()).expect("create headless context");
         let db_info = DBInfo {
             ctx: &mut ctx,
             base_dir: base.to_str().unwrap(),
@@ -1493,8 +1492,8 @@ mod tests {
         let shader_rdb = RDBFile::new();
         shader_rdb.save(base.join("shaders.rdb"))?;
 
-        let mut ctx = dashi::Context::headless(&Default::default())
-            .expect("create headless context");
+        let mut ctx =
+            dashi::Context::headless(&Default::default()).expect("create headless context");
         let db_info = DBInfo {
             ctx: &mut ctx,
             base_dir: base.to_str().unwrap(),

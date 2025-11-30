@@ -8,10 +8,9 @@ Meta data now lives in per-entity files under both `sample_pre/` and `db/`:
 - `materials.json` – material bindings and metadata (bindless layers, camera defaults, etc.)
 - `meshes.json` – mesh entries that point to geometry and optional materials
 - `models.json` – logical models that bundle together meshes
-- `shaders.json` – shader layout metadata that references compiled modules in `shaders.rdb`
-- `render_passes.json` – render pass layouts consumed by shader definitions
+- `shaders.json` – shader layout metadata (including attachment formats) that references compiled modules in `shaders.rdb`
 
-Every shader in `shaders.json` must specify the `render_pass` it targets, and that value must match one of the names inside `render_passes.json`. The loader will look up the matching pass definition before it finalizes the pipeline, which keeps asset authors in control of how attachments, viewports, and subpasses line up with the shader code.
+Every graphics shader in `shaders.json` must declare the attachment formats it targets (via `color_formats` and optional `depth_format`). These values inform pipeline creation without requiring a render pass to be present in the database.
 
 When you just need to add a single resource, you can skip `norenbuild.json` entirely and write straight into an `.rdb`:
 
