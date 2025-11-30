@@ -91,6 +91,8 @@ pub struct ModelLayoutFile {
 pub struct ShaderLayoutFile {
     #[serde(default)]
     pub shaders: HashMap<String, GraphicsShaderLayout>,
+    #[serde(default)]
+    pub compute_shaders: HashMap<String, ComputeShaderLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -170,6 +172,16 @@ pub struct GraphicsShaderLayout {
     pub furikake_state: FurikakeState,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComputeShaderLayout {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub entry: Option<String>,
+    #[serde(default)]
+    pub furikake_state: FurikakeState,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MetaLayout {
     pub textures: HashMap<String, TextureLayout>,
@@ -177,6 +189,7 @@ pub struct MetaLayout {
     pub meshes: HashMap<String, MeshLayout>,
     pub models: HashMap<String, ModelLayout>,
     pub shaders: HashMap<String, GraphicsShaderLayout>,
+    pub compute_shaders: HashMap<String, ComputeShaderLayout>,
 }
 
 impl MetaLayout {
@@ -186,6 +199,7 @@ impl MetaLayout {
             && self.meshes.is_empty()
             && self.models.is_empty()
             && self.shaders.is_empty()
+            && self.compute_shaders.is_empty()
     }
 }
 
