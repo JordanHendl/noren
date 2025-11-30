@@ -1343,4 +1343,175 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn mesh_override_missing_material_fails() -> Result<(), NorenError> {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path();
+
+        let mut textures = TextureLayoutFile::default();
+        textures.textures.insert(
+            MESH_TEXTURE_ENTRY.to_string(),
+            TextureLayout {
+                image: IMAGE_ENTRY.to_string(),
+                name: None,
+            },
+        );
+
+        let mut materials = MaterialLayoutFile::default();
+        materials.materials.insert(
+            MATERIAL_ENTRY.to_string(),
+            MaterialLayout {
+                name: Some("Base Material".to_string()),
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+                shader: None,
+                metadata: Default::default(),
+            },
+        );
+
+        let mut meshes = MeshLayoutFile::default();
+        meshes.meshes.insert(
+            MESH_ENTRY.to_string(),
+            MeshLayout {
+                name: Some("Simple Mesh".to_string()),
+                geometry: GEOMETRY_ENTRY.to_string(),
+                material: Some(MATERIAL_ENTRY.to_string()),
+                textures: vec![],
+            },
+        );
+
+        serde_json::to_writer(File::create(base.join("textures.json"))?, &textures)?;
+        serde_json::to_writer(File::create(base.join("materials.json"))?, &materials)?;
+        serde_json::to_writer(File::create(base.join("meshes.json"))?, &meshes)?;
+
+        let mut geom_rdb = RDBFile::new();
+        let geom = HostGeometry {
+            vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
+            indices: Some(vec![0, 1, 2]),
+        };
+        geom_rdb.add(GEOMETRY_ENTRY, &geom)?;
+        geom_rdb.save(base.join("geometry.rdb"))?;
+
+        let image_info = ImageInfo {
+            name: IMAGE_ENTRY.to_string(),
+            dim: [1, 1, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        let host_image = HostImage {
+            info: image_info,
+            data: vec![255, 255, 255, 255],
+        };
+        let mut img_rdb = RDBFile::new();
+        img_rdb.add(IMAGE_ENTRY, &host_image)?;
+        img_rdb.save(base.join("imagery.rdb"))?;
+
+        let shader_rdb = RDBFile::new();
+        shader_rdb.save(base.join("shaders.rdb"))?;
+
+        let mut ctx = dashi::Context::headless(&Default::default())
+            .expect("create headless context");
+        let db_info = DBInfo {
+            ctx: &mut ctx,
+            base_dir: base.to_str().unwrap(),
+            layout_file: None,
+        };
+
+        let mut db = DB::new(&db_info)?;
+        let host_err = db
+            .fetch_mesh_with_material(MESH_ENTRY, "material/missing")
+            .expect_err("missing material override should fail");
+        assert!(matches!(host_err, NorenError::LookupFailure()));
+
+        let device_err = db
+            .fetch_gpu_mesh_with_material(MESH_ENTRY, "material/missing")
+            .expect_err("missing material override should fail");
+        assert!(matches!(device_err, NorenError::LookupFailure()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn mesh_override_without_geometry_fails() -> Result<(), NorenError> {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path();
+
+        let mut meshes = MeshLayoutFile::default();
+        meshes.meshes.insert(
+            MESH_MISSING_GEOMETRY.to_string(),
+            MeshLayout {
+                name: Some("No Geometry".to_string()),
+                geometry: String::new(),
+                material: Some(MATERIAL_ENTRY.to_string()),
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+            },
+        );
+
+        let mut materials = MaterialLayoutFile::default();
+        materials.materials.insert(
+            MATERIAL_ENTRY.to_string(),
+            MaterialLayout {
+                name: None,
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+                shader: None,
+                metadata: Default::default(),
+            },
+        );
+
+        let mut textures = TextureLayoutFile::default();
+        textures.textures.insert(
+            MESH_TEXTURE_ENTRY.to_string(),
+            TextureLayout {
+                image: IMAGE_ENTRY.to_string(),
+                name: None,
+            },
+        );
+
+        serde_json::to_writer(File::create(base.join("textures.json"))?, &textures)?;
+        serde_json::to_writer(File::create(base.join("materials.json"))?, &materials)?;
+        serde_json::to_writer(File::create(base.join("meshes.json"))?, &meshes)?;
+
+        let geom_rdb = RDBFile::new();
+        geom_rdb.save(base.join("geometry.rdb"))?;
+
+        let image_info = ImageInfo {
+            name: IMAGE_ENTRY.to_string(),
+            dim: [1, 1, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        let host_image = HostImage {
+            info: image_info,
+            data: vec![255, 255, 255, 255],
+        };
+        let mut img_rdb = RDBFile::new();
+        img_rdb.add(IMAGE_ENTRY, &host_image)?;
+        img_rdb.save(base.join("imagery.rdb"))?;
+
+        let shader_rdb = RDBFile::new();
+        shader_rdb.save(base.join("shaders.rdb"))?;
+
+        let mut ctx = dashi::Context::headless(&Default::default())
+            .expect("create headless context");
+        let db_info = DBInfo {
+            ctx: &mut ctx,
+            base_dir: base.to_str().unwrap(),
+            layout_file: None,
+        };
+
+        let mut db = DB::new(&db_info)?;
+        let host_err = db
+            .fetch_mesh_with_material(MESH_MISSING_GEOMETRY, MATERIAL_ENTRY)
+            .expect_err("mesh with empty geometry should fail");
+        assert!(matches!(host_err, NorenError::LookupFailure()));
+
+        let device_err = db
+            .fetch_gpu_mesh_with_material(MESH_MISSING_GEOMETRY, MATERIAL_ENTRY)
+            .expect_err("mesh with empty geometry should fail");
+        assert!(matches!(device_err, NorenError::LookupFailure()));
+
+        Ok(())
+    }
 }
