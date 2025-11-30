@@ -14,7 +14,6 @@ use rdb::*;
 use serde::de::DeserializeOwned;
 use utils::*;
 
-
 pub use parsing::DatabaseLayoutFile;
 pub use utils::error::{NorenError, RdbErr};
 pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView, type_tag_for};
@@ -295,6 +294,57 @@ impl DB {
         )
     }
 
+    /// Builds a CPU-side mesh using the provided material entry instead of the layout default.
+    pub fn fetch_mesh_with_material(
+        &mut self,
+        mesh_entry: DatabaseEntry<'_>,
+        material_entry: &str,
+    ) -> Result<HostMesh, NorenError> {
+        self.assemble_mesh(
+            mesh_entry,
+            Some(material_entry),
+            &mut |geometry_db, entry| geometry_db.fetch_raw_geometry(entry),
+            &mut |imagery_db, entry| imagery_db.fetch_raw_image(entry),
+            &mut |name, image| HostTexture { name, image },
+            &mut |name, textures, shader| HostMaterial {
+                name,
+                textures,
+                shader,
+            },
+            &mut |name, geometry, textures, material| HostMesh {
+                name,
+                geometry,
+                textures,
+                material,
+            },
+            &mut |shader_db, shader_key, shader_layout| {
+                Self::load_graphics_shader(shader_db, shader_key, shader_layout)
+            },
+        )?
+        .ok_or_else(NorenError::LookupFailure)
+    }
+
+    /// Builds a GPU-ready mesh using the provided material entry instead of the layout default.
+    pub fn fetch_gpu_mesh_with_material(
+        &mut self,
+        mesh_entry: DatabaseEntry<'_>,
+        material_entry: &str,
+    ) -> Result<DeviceMesh, NorenError> {
+        self.assemble_mesh(
+            mesh_entry,
+            Some(material_entry),
+            &mut |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
+            &mut |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
+            &mut |_, image| DeviceTexture::new(image),
+            &mut |_, textures, shader| DeviceMaterial::new(textures, shader),
+            &mut |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
+            &mut |shader_db, shader_key, shader_layout| {
+                Self::load_graphics_shader(shader_db, shader_key, shader_layout)
+            },
+        )?
+        .ok_or_else(NorenError::LookupFailure)
+    }
+
     /// Builds a CPU-side material with host images and optional shader.
     pub fn fetch_host_material(&mut self, entry: &str) -> Result<HostMaterial, NorenError> {
         let layout = self
@@ -473,8 +523,11 @@ fn build_material_components<Texture, Image, MakeTexture, FetchImage, LoadShader
 where
     MakeTexture: FnMut(String, Image) -> Texture,
     FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
-    LoadShader:
-        FnMut(&mut ShaderDB, &str, &GraphicsShaderLayout) -> Result<Option<GraphicsShader>, NorenError>,
+    LoadShader: FnMut(
+        &mut ShaderDB,
+        &str,
+        &GraphicsShaderLayout,
+    ) -> Result<Option<GraphicsShader>, NorenError>,
 {
     let Some(material_def) = layout.materials.get(material_key) else {
         return Ok(None);
@@ -658,6 +711,98 @@ fn validate_shader_layouts(layout: &MetaLayout) -> Result<(), NorenError> {
 }
 
 impl DB {
+    fn assemble_mesh<
+        Mesh,
+        Material,
+        Texture,
+        Geometry,
+        Image,
+        FetchGeometry,
+        FetchImage,
+        MakeTexture,
+        MakeMaterial,
+        MakeMesh,
+        LoadShader,
+    >(
+        &mut self,
+        mesh_key: &str,
+        material_override: Option<&str>,
+        fetch_geometry: &mut FetchGeometry,
+        fetch_image: &mut FetchImage,
+        make_texture: &mut MakeTexture,
+        make_material: &mut MakeMaterial,
+        make_mesh: &mut MakeMesh,
+        load_shader: &mut LoadShader,
+    ) -> Result<Option<Mesh>, NorenError>
+    where
+        FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry<'_>) -> Result<Geometry, NorenError>,
+        FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
+        MakeTexture: FnMut(String, Image) -> Texture,
+        MakeMaterial: FnMut(String, Vec<Texture>, Option<GraphicsShader>) -> Material,
+        MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
+        LoadShader: FnMut(
+            &mut ShaderDB,
+            &str,
+            &GraphicsShaderLayout,
+        ) -> Result<Option<GraphicsShader>, NorenError>,
+    {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let mesh_def = match layout.meshes.get(mesh_key) {
+            Some(mesh) => mesh,
+            None => return Ok(None),
+        };
+
+        if mesh_def.geometry.is_empty() {
+            return Ok(None);
+        }
+
+        let geometry = fetch_geometry(&mut self.geometry, mesh_def.geometry.as_str())?;
+        let mesh_name = mesh_def
+            .name
+            .clone()
+            .unwrap_or_else(|| mesh_key.to_string());
+
+        let mut mesh_textures = Vec::new();
+        append_texture_bindings(
+            &mut mesh_textures,
+            &mesh_def.textures,
+            layout,
+            &mut self.imagery,
+            make_texture,
+            fetch_image,
+        )?;
+
+        let material_key = material_override.or_else(|| mesh_def.material.as_deref());
+        let material = if let Some(material_key) = material_key {
+            match build_material_components(
+                layout,
+                &mut self.imagery,
+                &mut self.shaders,
+                material_key,
+                make_texture,
+                fetch_image,
+                load_shader,
+            )? {
+                Some((name, textures, shader)) => Some(make_material(name, textures, shader)),
+                None if material_override.is_some() => return Err(NorenError::LookupFailure()),
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(Some(make_mesh(
+            mesh_name,
+            geometry,
+            mesh_textures,
+            material,
+        )))
+    }
+
     fn assemble_model<
         Model,
         Mesh,
@@ -690,66 +835,43 @@ impl DB {
         MakeMaterial: FnMut(String, Vec<Texture>, Option<GraphicsShader>) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
         MakeModel: FnMut(String, Vec<Mesh>) -> Model,
-        LoadShader:
-            FnMut(&mut ShaderDB, &str, &GraphicsShaderLayout) -> Result<Option<GraphicsShader>, NorenError>,
+        LoadShader: FnMut(
+            &mut ShaderDB,
+            &str,
+            &GraphicsShaderLayout,
+        ) -> Result<Option<GraphicsShader>, NorenError>,
     {
-        let layout = self
-            .meta_layout
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?;
+        let (model_name, mesh_keys) = {
+            let layout = self
+                .meta_layout
+                .as_ref()
+                .ok_or_else(|| NorenError::LookupFailure())?;
 
-        let model = layout
-            .models
-            .get(entry)
-            .ok_or_else(|| NorenError::LookupFailure())?;
+            let model = layout
+                .models
+                .get(entry)
+                .ok_or_else(|| NorenError::LookupFailure())?;
 
-        let model_name = model.name.clone().unwrap_or_else(|| entry.to_string());
+            (
+                model.name.clone().unwrap_or_else(|| entry.to_string()),
+                model.meshes.clone(),
+            )
+        };
         let mut meshes = Vec::new();
 
-        for mesh_key in &model.meshes {
-            let mesh_def = match layout.meshes.get(mesh_key) {
-                Some(mesh) => mesh,
-                None => continue,
-            };
-
-            if mesh_def.geometry.is_empty() {
-                continue;
+        for mesh_key in &mesh_keys {
+            if let Some(mesh) = self.assemble_mesh(
+                mesh_key,
+                None,
+                &mut fetch_geometry,
+                &mut fetch_image,
+                &mut make_texture,
+                &mut make_material,
+                &mut make_mesh,
+                &mut load_shader,
+            )? {
+                meshes.push(mesh);
             }
-
-            let geometry = fetch_geometry(&mut self.geometry, mesh_def.geometry.as_str())?;
-
-            let mesh_name = mesh_def.name.clone().unwrap_or_else(|| mesh_key.clone());
-
-            let mut mesh_textures = Vec::new();
-            for tex_key in &mesh_def.textures {
-                if let Some(tex_def) = layout.textures.get(tex_key) {
-                    if tex_def.image.is_empty() {
-                        continue;
-                    }
-
-                    let image = fetch_image(&mut self.imagery, tex_def.image.as_str())?;
-                    let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-                    mesh_textures.push(make_texture(name, image));
-                }
-            }
-
-            let material = if let Some(material_key) = &mesh_def.material {
-                let material = build_material_components(
-                    layout,
-                    &mut self.imagery,
-                    &mut self.shaders,
-                    material_key,
-                    &mut make_texture,
-                    &mut fetch_image,
-                    &mut load_shader,
-                )?;
-
-                material.map(|(name, textures, shader)| make_material(name, textures, shader))
-            } else {
-                None
-            };
-
-            meshes.push(make_mesh(mesh_name, geometry, mesh_textures, material));
         }
 
         Ok(make_model(model_name, meshes))
@@ -854,11 +976,11 @@ mod tests {
     use std::fs::File;
     use tempfile::tempdir;
 
-
     const MODEL_ENTRY: DatabaseEntry<'static> = "model/simple";
     const GEOMETRY_ENTRY: &str = "geom/simple_mesh";
     const IMAGE_ENTRY: &str = "imagery/sample_texture";
     const MATERIAL_ENTRY: &str = "material/simple";
+    const ALT_MATERIAL_ENTRY: &str = "material/alternative";
     const MESH_ENTRY: &str = "mesh/simple_mesh";
     const MESH_MISSING_GEOMETRY: &str = "mesh/no_geometry";
     const MESH_TEXTURE_ENTRY: &str = "texture/mesh_texture";
@@ -918,6 +1040,16 @@ mod tests {
                     MISSING_TEXTURE_ENTRY.to_string(),
                 ],
                 shader: Some(SHADER_PROGRAM_ENTRY.to_string()),
+                metadata: Default::default(),
+            },
+        );
+
+        materials.materials.insert(
+            ALT_MATERIAL_ENTRY.to_string(),
+            MaterialLayout {
+                name: Some("Override Material".to_string()),
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+                shader: None,
                 metadata: Default::default(),
             },
         );
@@ -1053,6 +1185,20 @@ mod tests {
             &[0x0723_0203, 4, 5, 6]
         );
 
+        let overridden_mesh = db.fetch_mesh_with_material(MESH_ENTRY, ALT_MATERIAL_ENTRY)?;
+        assert_eq!(overridden_mesh.name, "Simple Mesh");
+        let override_mat = overridden_mesh.material.as_ref().unwrap();
+        assert_eq!(override_mat.name, "Override Material");
+        assert_eq!(override_mat.textures.len(), 1);
+        assert_eq!(override_mat.textures[0].name, MESH_TEXTURE_ENTRY);
+        assert!(override_mat.shader.is_none());
+
+        let device_override = db.fetch_gpu_mesh_with_material(MESH_ENTRY, ALT_MATERIAL_ENTRY)?;
+        assert_eq!(device_override.textures.len(), 1);
+        let device_override_mat = device_override.material.as_ref().unwrap();
+        assert_eq!(device_override_mat.textures.len(), 1);
+        assert!(device_override_mat.shader.is_none());
+
         let fetched_shader = db.fetch_graphics_shader(SHADER_PROGRAM_ENTRY)?;
         assert_eq!(fetched_shader.name, SHADER_PROGRAM_ENTRY);
         assert!(fetched_shader.vertex.is_some());
@@ -1155,10 +1301,9 @@ mod tests {
             },
         );
         let mut shaders = ShaderLayoutFile::default();
-        shaders.shaders.insert(
-            "shader".into(),
-            GraphicsShaderLayout::default(),
-        );
+        shaders
+            .shaders
+            .insert("shader".into(), GraphicsShaderLayout::default());
 
         std::fs::write(
             base.join("meshes.json"),
@@ -1195,6 +1340,177 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn mesh_override_missing_material_fails() -> Result<(), NorenError> {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path();
+
+        let mut textures = TextureLayoutFile::default();
+        textures.textures.insert(
+            MESH_TEXTURE_ENTRY.to_string(),
+            TextureLayout {
+                image: IMAGE_ENTRY.to_string(),
+                name: None,
+            },
+        );
+
+        let mut materials = MaterialLayoutFile::default();
+        materials.materials.insert(
+            MATERIAL_ENTRY.to_string(),
+            MaterialLayout {
+                name: Some("Base Material".to_string()),
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+                shader: None,
+                metadata: Default::default(),
+            },
+        );
+
+        let mut meshes = MeshLayoutFile::default();
+        meshes.meshes.insert(
+            MESH_ENTRY.to_string(),
+            MeshLayout {
+                name: Some("Simple Mesh".to_string()),
+                geometry: GEOMETRY_ENTRY.to_string(),
+                material: Some(MATERIAL_ENTRY.to_string()),
+                textures: vec![],
+            },
+        );
+
+        serde_json::to_writer(File::create(base.join("textures.json"))?, &textures)?;
+        serde_json::to_writer(File::create(base.join("materials.json"))?, &materials)?;
+        serde_json::to_writer(File::create(base.join("meshes.json"))?, &meshes)?;
+
+        let mut geom_rdb = RDBFile::new();
+        let geom = HostGeometry {
+            vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
+            indices: Some(vec![0, 1, 2]),
+        };
+        geom_rdb.add(GEOMETRY_ENTRY, &geom)?;
+        geom_rdb.save(base.join("geometry.rdb"))?;
+
+        let image_info = ImageInfo {
+            name: IMAGE_ENTRY.to_string(),
+            dim: [1, 1, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        let host_image = HostImage {
+            info: image_info,
+            data: vec![255, 255, 255, 255],
+        };
+        let mut img_rdb = RDBFile::new();
+        img_rdb.add(IMAGE_ENTRY, &host_image)?;
+        img_rdb.save(base.join("imagery.rdb"))?;
+
+        let shader_rdb = RDBFile::new();
+        shader_rdb.save(base.join("shaders.rdb"))?;
+
+        let mut ctx = dashi::Context::headless(&Default::default())
+            .expect("create headless context");
+        let db_info = DBInfo {
+            ctx: &mut ctx,
+            base_dir: base.to_str().unwrap(),
+            layout_file: None,
+        };
+
+        let mut db = DB::new(&db_info)?;
+        let host_err = db
+            .fetch_mesh_with_material(MESH_ENTRY, "material/missing")
+            .expect_err("missing material override should fail");
+        assert!(matches!(host_err, NorenError::LookupFailure()));
+
+        let device_err = db
+            .fetch_gpu_mesh_with_material(MESH_ENTRY, "material/missing")
+            .expect_err("missing material override should fail");
+        assert!(matches!(device_err, NorenError::LookupFailure()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn mesh_override_without_geometry_fails() -> Result<(), NorenError> {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path();
+
+        let mut meshes = MeshLayoutFile::default();
+        meshes.meshes.insert(
+            MESH_MISSING_GEOMETRY.to_string(),
+            MeshLayout {
+                name: Some("No Geometry".to_string()),
+                geometry: String::new(),
+                material: Some(MATERIAL_ENTRY.to_string()),
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+            },
+        );
+
+        let mut materials = MaterialLayoutFile::default();
+        materials.materials.insert(
+            MATERIAL_ENTRY.to_string(),
+            MaterialLayout {
+                name: None,
+                textures: vec![MESH_TEXTURE_ENTRY.to_string()],
+                shader: None,
+                metadata: Default::default(),
+            },
+        );
+
+        let mut textures = TextureLayoutFile::default();
+        textures.textures.insert(
+            MESH_TEXTURE_ENTRY.to_string(),
+            TextureLayout {
+                image: IMAGE_ENTRY.to_string(),
+                name: None,
+            },
+        );
+
+        serde_json::to_writer(File::create(base.join("textures.json"))?, &textures)?;
+        serde_json::to_writer(File::create(base.join("materials.json"))?, &materials)?;
+        serde_json::to_writer(File::create(base.join("meshes.json"))?, &meshes)?;
+
+        let geom_rdb = RDBFile::new();
+        geom_rdb.save(base.join("geometry.rdb"))?;
+
+        let image_info = ImageInfo {
+            name: IMAGE_ENTRY.to_string(),
+            dim: [1, 1, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        let host_image = HostImage {
+            info: image_info,
+            data: vec![255, 255, 255, 255],
+        };
+        let mut img_rdb = RDBFile::new();
+        img_rdb.add(IMAGE_ENTRY, &host_image)?;
+        img_rdb.save(base.join("imagery.rdb"))?;
+
+        let shader_rdb = RDBFile::new();
+        shader_rdb.save(base.join("shaders.rdb"))?;
+
+        let mut ctx = dashi::Context::headless(&Default::default())
+            .expect("create headless context");
+        let db_info = DBInfo {
+            ctx: &mut ctx,
+            base_dir: base.to_str().unwrap(),
+            layout_file: None,
+        };
+
+        let mut db = DB::new(&db_info)?;
+        let host_err = db
+            .fetch_mesh_with_material(MESH_MISSING_GEOMETRY, MATERIAL_ENTRY)
+            .expect_err("mesh with empty geometry should fail");
+        assert!(matches!(host_err, NorenError::LookupFailure()));
+
+        let device_err = db
+            .fetch_gpu_mesh_with_material(MESH_MISSING_GEOMETRY, MATERIAL_ENTRY)
+            .expect_err("mesh with empty geometry should fail");
+        assert!(matches!(device_err, NorenError::LookupFailure()));
 
         Ok(())
     }
