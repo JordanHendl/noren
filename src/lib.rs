@@ -1081,15 +1081,10 @@ impl DB {
         }
     }
 
-    /// Builds or retrieves a cached graphics pipeline layout for the shader key.
-    pub fn make_pipeline_layout(
+    fn graphics_pipeline_inputs(
         &mut self,
         shader_key: &str,
-    ) -> Result<dashi::Handle<dashi::GraphicsPipelineLayout>, NorenError> {
-        if let Some(layout) = self.graphics_pipeline_layouts.get(shader_key) {
-            return Ok(*layout);
-        }
-
+    ) -> Result<GraphicsPipelineInputs, NorenError> {
         let shader_layout = self
             .meta_layout
             .as_ref()
@@ -1108,46 +1103,54 @@ impl DB {
             ));
         }
 
-        let mut shader_modules: Vec<(ShaderModule, dashi::ShaderType)> = Vec::new();
+        let shader = Self::load_graphics_shader(&mut self.shaders, shader_key, &shader_layout)?
+            .ok_or_else(|| {
+                NorenError::InvalidShaderState(format!(
+                    "graphics shader '{shader_key}' does not declare any stages"
+                ))
+            })?;
 
-        if let Some(name) = shader_layout.vertex.as_deref() {
-            let module = Self::fetch_shader_module(&mut self.shaders, name)?;
-            if module.artifact().stage != dashi::ShaderType::Vertex {
-                return Err(NorenError::InvalidShaderState(format!(
-                    "shader module '{}' stage does not match expected {:?}",
-                    name,
-                    dashi::ShaderType::Vertex
-                )));
-            }
-            shader_modules.push((module, dashi::ShaderType::Vertex));
+        crate::meta::graphics_pipeline_inputs(
+            unsafe { self.ctx.as_mut() },
+            shader_key,
+            &shader_layout,
+            shader,
+        )
+    }
+
+    fn build_graphics_pipeline_layout(
+        &mut self,
+        shader_key: &str,
+        inputs: &GraphicsPipelineInputs,
+    ) -> Result<dashi::Handle<dashi::GraphicsPipelineLayout>, NorenError> {
+        if let Some(layout) = self.graphics_pipeline_layouts.get(shader_key) {
+            return Ok(*layout);
         }
 
-        if let Some(name) = shader_layout.fragment.as_deref() {
-            let module = Self::fetch_shader_module(&mut self.shaders, name)?;
-            if module.artifact().stage != dashi::ShaderType::Fragment {
-                return Err(NorenError::InvalidShaderState(format!(
-                    "shader module '{}' stage does not match expected {:?}",
-                    name,
-                    dashi::ShaderType::Fragment
-                )));
-            }
-            shader_modules.push((module, dashi::ShaderType::Fragment));
-        }
-        let shader_infos: Vec<dashi::PipelineShaderInfo<'_>> = shader_modules
-            .iter()
-            .map(|(module, stage)| dashi::PipelineShaderInfo {
-                stage: *stage,
-                spirv: module.words(),
-                specialization: &[],
-            })
-            .collect();
         let vertex_info = Self::vertex_description();
+        let mut shader_infos: Vec<dashi::PipelineShaderInfo<'_>> = Vec::new();
+
+        if let Some(stage) = inputs.shader.vertex.as_ref() {
+            shader_infos.push(dashi::PipelineShaderInfo {
+                stage: stage.module.artifact().stage,
+                spirv: stage.module.words(),
+                specialization: &[],
+            });
+        }
+
+        if let Some(stage) = inputs.shader.fragment.as_ref() {
+            shader_infos.push(dashi::PipelineShaderInfo {
+                stage: stage.module.artifact().stage,
+                spirv: stage.module.words(),
+                specialization: &[],
+            });
+        }
 
         let layout_info = dashi::GraphicsPipelineLayoutInfo {
-            debug_name: shader_layout.name.as_deref().unwrap_or_else(|| shader_key),
+            debug_name: inputs.debug_name.as_str(),
             vertex_info,
-            bg_layouts: Default::default(),
-            bt_layouts: Default::default(),
+            bg_layouts: inputs.layouts.bg_layouts,
+            bt_layouts: inputs.layouts.bt_layouts,
             shaders: &shader_infos,
             details: Default::default(),
         };
@@ -1162,6 +1165,76 @@ impl DB {
         Ok(handle)
     }
 
+    fn compute_pipeline_inputs(
+        &mut self,
+        shader_key: &str,
+    ) -> Result<ComputePipelineInputs, NorenError> {
+        let shader_layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?
+            .compute_shaders
+            .get(shader_key)
+            .cloned()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let entry = shader_layout
+            .entry
+            .as_deref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        let stage = Self::load_shader_stage(&mut self.shaders, entry)?;
+
+        crate::meta::compute_pipeline_inputs(
+            unsafe { self.ctx.as_mut() },
+            shader_key,
+            &shader_layout,
+            stage,
+        )
+    }
+
+    fn build_compute_pipeline_layout(
+        &mut self,
+        shader_key: &str,
+        inputs: &ComputePipelineInputs,
+    ) -> Result<dashi::Handle<dashi::ComputePipelineLayout>, NorenError> {
+        if let Some(layout) = self.compute_pipeline_layouts.get(shader_key) {
+            return Ok(*layout);
+        }
+
+        let layout_info = dashi::ComputePipelineLayoutInfo {
+            bg_layouts: inputs.layouts.bg_layouts,
+            bt_layouts: inputs.layouts.bt_layouts,
+            shader: &dashi::PipelineShaderInfo {
+                stage: inputs.stage.module.artifact().stage,
+                spirv: inputs.stage.module.words(),
+                specialization: &[],
+            },
+        };
+
+        let handle = unsafe { self.ctx.as_mut() }
+            .make_compute_pipeline_layout(&layout_info)
+            .map_err(|_| NorenError::UploadFailure())?;
+
+        self.compute_pipeline_layouts
+            .insert(shader_key.to_string(), handle);
+
+        Ok(handle)
+    }
+
+    /// Builds or retrieves a cached graphics pipeline layout for the shader key.
+    pub fn make_pipeline_layout(
+        &mut self,
+        shader_key: &str,
+    ) -> Result<dashi::Handle<dashi::GraphicsPipelineLayout>, NorenError> {
+        if let Some(layout) = self.graphics_pipeline_layouts.get(shader_key) {
+            return Ok(*layout);
+        }
+
+        let inputs = self.graphics_pipeline_inputs(shader_key)?;
+        self.build_graphics_pipeline_layout(shader_key, &inputs)
+    }
+
     /// Builds or retrieves a cached graphics pipeline for the shader key.
     pub fn make_graphics_pipeline(
         &mut self,
@@ -1171,29 +1244,15 @@ impl DB {
             return Ok(*pipeline);
         }
 
-        let shader_layout = self
-            .meta_layout
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?
-            .shaders
-            .get(shader_key)
-            .cloned()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let pipeline_layout = self.make_pipeline_layout(shader_key)?;
-        let subpass_samples = dashi::SubpassSampleInfo {
-            color_samples: vec![dashi::SampleCount::S1; shader_layout.color_formats.len()],
-            depth_sample: shader_layout
-                .depth_format
-                .map(|_| dashi::SampleCount::S1),
-        };
+        let inputs = self.graphics_pipeline_inputs(shader_key)?;
+        let pipeline_layout = self.build_graphics_pipeline_layout(shader_key, &inputs)?;
 
         let pipeline_info = dashi::GraphicsPipelineInfo {
-            debug_name: shader_layout.name.as_deref().unwrap_or_else(|| shader_key),
+            debug_name: inputs.debug_name.as_str(),
             layout: pipeline_layout,
-            attachment_formats: shader_layout.color_formats,
-            depth_format: shader_layout.depth_format,
-            subpass_samples,
+            attachment_formats: inputs.color_formats,
+            depth_format: inputs.depth_format,
+            subpass_samples: inputs.subpass_samples,
             subpass_id: 0,
         };
 
@@ -1216,50 +1275,8 @@ impl DB {
             return Ok(*layout);
         }
 
-        let shader_layout = self
-            .meta_layout
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?
-            .compute_shaders
-            .get(shader_key)
-            .cloned()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let entry = shader_layout
-            .entry
-            .as_deref()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let module = Self::fetch_shader_module(&mut self.shaders, entry)?;
-
-        if module.artifact().stage != dashi::ShaderType::Compute {
-            return Err(NorenError::InvalidShaderState(format!(
-                "shader module '{}' stage does not match expected {:?}",
-                entry,
-                dashi::ShaderType::Compute
-            )));
-        }
-
-        let shader_info = dashi::PipelineShaderInfo {
-            stage: module.artifact().stage,
-            spirv: module.words(),
-            specialization: &[],
-        };
-
-        let layout_info = dashi::ComputePipelineLayoutInfo {
-            bg_layouts: Default::default(),
-            bt_layouts: Default::default(),
-            shader: &shader_info,
-        };
-
-        let handle = unsafe { self.ctx.as_mut() }
-            .make_compute_pipeline_layout(&layout_info)
-            .map_err(|_| NorenError::UploadFailure())?;
-
-        self.compute_pipeline_layouts
-            .insert(shader_key.to_string(), handle);
-
-        Ok(handle)
+        let inputs = self.compute_pipeline_inputs(shader_key)?;
+        self.build_compute_pipeline_layout(shader_key, &inputs)
     }
 
     /// Builds or retrieves a cached compute pipeline for the shader key.
@@ -1271,19 +1288,11 @@ impl DB {
             return Ok(*pipeline);
         }
 
-        let shader_layout = self
-            .meta_layout
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?
-            .compute_shaders
-            .get(shader_key)
-            .cloned()
-            .ok_or_else(|| NorenError::LookupFailure())?;
-
-        let pipeline_layout = self.make_compute_pipeline_layout(shader_key)?;
+        let inputs = self.compute_pipeline_inputs(shader_key)?;
+        let pipeline_layout = self.build_compute_pipeline_layout(shader_key, &inputs)?;
 
         let pipeline_info = dashi::ComputePipelineInfo {
-            debug_name: shader_layout.name.as_deref().unwrap_or_else(|| shader_key),
+            debug_name: inputs.debug_name.as_str(),
             layout: pipeline_layout,
         };
 
