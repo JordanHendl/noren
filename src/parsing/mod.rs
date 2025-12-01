@@ -21,6 +21,14 @@ fn default_texture_path() -> String {
     "textures.json".to_string()
 }
 
+fn default_skeleton_path() -> String {
+    "skeletons.rdb".to_string()
+}
+
+fn default_animation_path() -> String {
+    "animations.rdb".to_string()
+}
+
 fn default_model_path() -> String {
     "models.json".to_string()
 }
@@ -49,6 +57,10 @@ pub struct DatabaseLayoutFile {
     pub imagery: String,
     #[serde(default = "default_audio_path")]
     pub audio: String,
+    #[serde(default = "default_skeleton_path")]
+    pub skeletons: String,
+    #[serde(default = "default_animation_path")]
+    pub animations: String,
     #[serde(default = "default_texture_path")]
     pub textures: String,
     #[serde(default = "default_material_path")]
@@ -209,6 +221,8 @@ impl Default for DatabaseLayoutFile {
             geometry: default_geometry_path(),
             imagery: default_imagery_path(),
             audio: default_audio_path(),
+            skeletons: default_skeleton_path(),
+            animations: default_animation_path(),
             textures: default_texture_path(),
             materials: default_material_path(),
             meshes: default_mesh_path(),
