@@ -36,6 +36,8 @@ pub struct DB {
     geometry: GeometryDB,
     imagery: ImageDB,
     audio: AudioDB,
+    skeletons: SkeletonDB,
+    animations: AnimationDB,
     shaders: ShaderDB,
     ctx: NonNull<dashi::Context>,
     meta_layout: Option<MetaLayout>,
@@ -135,6 +137,8 @@ impl DB {
         let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
         let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let audio = AudioDB::new(&format!("{}/{}", info.base_dir, layout.audio));
+        let skeletons = SkeletonDB::new(&format!("{}/{}", info.base_dir, layout.skeletons));
+        let animations = AnimationDB::new(&format!("{}/{}", info.base_dir, layout.animations));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
         let meta_layout = load_meta_layout(info.base_dir, &layout)?;
 
@@ -147,6 +151,8 @@ impl DB {
             geometry,
             imagery,
             audio,
+            skeletons,
+            animations,
             shaders,
             ctx: NonNull::new(info.ctx).expect("Null GPU Context"),
             meta_layout,
@@ -187,6 +193,26 @@ impl DB {
         &mut self.audio
     }
 
+    /// Returns an immutable reference to the skeleton database.
+    pub fn skeletons(&self) -> &SkeletonDB {
+        &self.skeletons
+    }
+
+    /// Returns a mutable reference to the skeleton database.
+    pub fn skeletons_mut(&mut self) -> &mut SkeletonDB {
+        &mut self.skeletons
+    }
+
+    /// Returns an immutable reference to the animation database.
+    pub fn animations(&self) -> &AnimationDB {
+        &self.animations
+    }
+
+    /// Returns a mutable reference to the animation database.
+    pub fn animations_mut(&mut self) -> &mut AnimationDB {
+        &mut self.animations
+    }
+
     /// Returns an immutable reference to the shader database.
     pub fn shaders(&self) -> &ShaderDB {
         &self.shaders
@@ -215,6 +241,16 @@ impl DB {
     /// Enumerates all audio clips available in the backing database.
     pub fn enumerate_audio_clips(&self) -> Vec<String> {
         self.audio.enumerate_entries()
+    }
+
+    /// Enumerates skeleton assets available in the backing database.
+    pub fn enumerate_skeletons(&self) -> Vec<String> {
+        self.skeletons.enumerate_entries()
+    }
+
+    /// Enumerates animation clips available in the backing database.
+    pub fn enumerate_animations(&self) -> Vec<String> {
+        self.animations.enumerate_entries()
     }
 
     /// Enumerates shader module entries available for program creation.
