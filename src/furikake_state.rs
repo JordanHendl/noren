@@ -18,15 +18,23 @@ pub fn validate_furikake_state(
     shader: &GraphicsShader,
     state: FurikakeState,
 ) -> Result<(), NorenError> {
+    let stages = shader_stages(shader);
+    validate_shader_stages(&stages, state)
+}
+
+pub fn validate_shader_stages(
+    stages: &[&crate::meta::ShaderStage],
+    state: FurikakeState,
+) -> Result<(), NorenError> {
     match state {
         FurikakeState::None => Ok(()),
-        FurikakeState::Default => validate_reserved_bindings::<DefaultState>(shader, state),
-        FurikakeState::Bindless => validate_reserved_bindings::<BindlessState>(shader, state),
+        FurikakeState::Default => validate_reserved_bindings::<DefaultState>(stages, state),
+        FurikakeState::Bindless => validate_reserved_bindings::<BindlessState>(stages, state),
     }
 }
 
 fn validate_reserved_bindings<T: GPUState>(
-    shader: &GraphicsShader,
+    stages: &[&crate::meta::ShaderStage],
     state: FurikakeState,
 ) -> Result<(), NorenError> {
     let reserved = T::reserved_metadata();
@@ -35,7 +43,7 @@ fn validate_reserved_bindings<T: GPUState>(
     let mut variables: Vec<&bento::ShaderVariable> = Vec::new();
     let mut saw_stage = false;
 
-    for stage in shader_stages(shader) {
+    for stage in stages.iter().copied() {
         saw_stage = true;
         let artifact = stage.module.artifact();
         validate_reserved_not_in_metadata(&reserved_names, &artifact.metadata, state)?;
