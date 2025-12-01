@@ -232,3 +232,109 @@ fn recipe_layouts<T: GPUState>(
 
     Ok(book.recipes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SPIRV_MAGIC_WORD: u32 = 0x0723_0203;
+
+    fn mock_stage(stage: dashi::ShaderType) -> ShaderStage {
+        let module = ShaderModule::from_compilation(bento::CompilationResult {
+            name: Some(format!("mock-{stage:?}")),
+            file: None,
+            lang: bento::ShaderLang::Glsl,
+            stage,
+            variables: Vec::new(),
+            spirv: vec![SPIRV_MAGIC_WORD, stage as u32],
+            metadata: Default::default(),
+        });
+
+        ShaderStage::new("main".to_string(), module)
+    }
+
+    #[test]
+    fn graphics_pipeline_requires_vertex_stage() {
+        let mut ctx = dashi::Context::headless(&Default::default()).expect("headless context");
+        let layout = crate::parsing::GraphicsShaderLayout {
+            name: Some("Pipeline Test".into()),
+            fragment: Some("frag".into()),
+            color_formats: vec![dashi::Format::RGBA8],
+            ..Default::default()
+        };
+
+        let shader = GraphicsShader {
+            fragment: Some(mock_stage(dashi::ShaderType::Fragment)),
+            ..GraphicsShader::new("pipeline".into())
+        };
+
+        let result = graphics_pipeline_inputs(&mut ctx, "pipeline", &layout, shader);
+
+        assert!(matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("missing a vertex stage")));
+    }
+
+    #[test]
+    fn graphics_pipeline_requires_formats() {
+        let mut ctx = dashi::Context::headless(&Default::default()).expect("headless context");
+        let layout = crate::parsing::GraphicsShaderLayout {
+            vertex: Some("vert".into()),
+            ..Default::default()
+        };
+
+        let shader = GraphicsShader {
+            vertex: Some(mock_stage(dashi::ShaderType::Vertex)),
+            ..GraphicsShader::new("formats".into())
+        };
+
+        let result = graphics_pipeline_inputs(&mut ctx, "formats", &layout, shader);
+
+        assert!(matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("does not specify any color or depth formats")));
+    }
+
+    #[test]
+    fn graphics_pipeline_validates_stage_type() {
+        let mut ctx = dashi::Context::headless(&Default::default()).expect("headless context");
+        let layout = crate::parsing::GraphicsShaderLayout {
+            name: None,
+            vertex: Some("vert".into()),
+            color_formats: vec![dashi::Format::RGBA8],
+            ..Default::default()
+        };
+
+        let shader = GraphicsShader {
+            vertex: Some(mock_stage(dashi::ShaderType::Compute)),
+            ..GraphicsShader::new("stage-check".into())
+        };
+
+        let result = graphics_pipeline_inputs(&mut ctx, "stage-check", &layout, shader);
+
+        assert!(matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("expected Vertex")));
+    }
+
+    #[test]
+    fn graphics_pipeline_populates_subpass_samples() {
+        let mut ctx = dashi::Context::headless(&Default::default()).expect("headless context");
+        let layout = crate::parsing::GraphicsShaderLayout {
+            name: Some("Named Layout".into()),
+            vertex: Some("vert".into()),
+            fragment: Some("frag".into()),
+            color_formats: vec![dashi::Format::RGBA8, dashi::Format::BGRA8Unorm],
+            depth_format: Some(dashi::Format::D24S8),
+            ..Default::default()
+        };
+
+        let shader = GraphicsShader {
+            name: "Named Layout".into(),
+            vertex: Some(mock_stage(dashi::ShaderType::Vertex)),
+            fragment: Some(mock_stage(dashi::ShaderType::Fragment)),
+            ..Default::default()
+        };
+
+        let inputs = graphics_pipeline_inputs(&mut ctx, "named", &layout, shader)
+            .expect("valid pipeline inputs");
+
+        assert_eq!(inputs.debug_name, "Named Layout");
+        assert_eq!(inputs.subpass_samples.color_samples.len(), 2);
+        assert!(inputs.subpass_samples.depth_sample.is_some());
+    }
+}
