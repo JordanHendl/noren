@@ -17,7 +17,7 @@ use noren::{
         MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile, TextureLayout, TextureLayoutFile,
     },
     rdb::{
-        AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, ShaderModule,
+        AudioClip, AudioFormat, GeometryLayer, HostGeometry, HostImage, ImageInfo, ShaderModule,
         primitives::Vertex,
     },
     validate_database_layout,
@@ -229,6 +229,7 @@ fn parse_geometry_append(
             file: PathBuf::from(file.ok_or_else(|| "--gltf is required".to_string())?),
             mesh,
             primitive,
+            lods: Vec::new(),
         },
     })
 }
@@ -603,10 +604,53 @@ fn append_geometry(
 }
 
 fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry, BuildError> {
-    let path = resolve_path(base_dir, &entry.file);
+    let base = load_geometry_layer(
+        base_dir,
+        &entry.file,
+        entry.mesh.as_deref(),
+        entry.primitive,
+    )?;
+
+    let lods = entry
+        .lods
+        .iter()
+        .map(|lod| GeometryLoadSource::from_entries(entry, lod))
+        .map(|source| load_geometry_layer(base_dir, source.file, source.mesh, source.primitive))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(HostGeometry {
+        vertices: base.vertices,
+        indices: base.indices,
+        lods,
+    })
+}
+
+struct GeometryLoadSource<'a> {
+    file: &'a PathBuf,
+    mesh: Option<&'a str>,
+    primitive: Option<usize>,
+}
+
+impl<'a> GeometryLoadSource<'a> {
+    fn from_entries(base: &'a GeometryEntry, lod: &'a GeometryLodEntry) -> Self {
+        Self {
+            file: lod.file.as_ref().unwrap_or(&base.file),
+            mesh: lod.mesh.as_deref().or_else(|| base.mesh.as_deref()),
+            primitive: lod.primitive.or(base.primitive),
+        }
+    }
+}
+
+fn load_geometry_layer(
+    base_dir: &Path,
+    file: &Path,
+    mesh_name: Option<&str>,
+    primitive_index: Option<usize>,
+) -> Result<GeometryLayer, BuildError> {
+    let path = resolve_path(base_dir, file);
     let (doc, buffers, _) = gltf::import(path)?;
 
-    let mesh = if let Some(ref mesh_name) = entry.mesh {
+    let mesh = if let Some(mesh_name) = mesh_name {
         doc.meshes()
             .find(|m| m.name().map(|n| n == mesh_name).unwrap_or(false))
             .ok_or_else(|| BuildError::message(format!("mesh '{}' not found", mesh_name)))?
@@ -616,7 +660,7 @@ fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry,
             .ok_or_else(|| BuildError::message("geometry file did not contain any meshes"))?
     };
 
-    let primitive_index = entry.primitive.unwrap_or(0);
+    let primitive_index = primitive_index.unwrap_or(0);
     let primitive = mesh
         .primitives()
         .nth(primitive_index)
@@ -665,7 +709,7 @@ fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry,
         })
         .collect();
 
-    Ok(HostGeometry { vertices, indices })
+    Ok(GeometryLayer { vertices, indices })
 }
 
 fn inject_default_geometry(
@@ -720,6 +764,7 @@ fn make_quad_geometry() -> HostGeometry {
     HostGeometry {
         vertices,
         indices: Some(indices),
+        ..Default::default()
     }
 }
 
@@ -736,6 +781,7 @@ fn make_plane_geometry() -> HostGeometry {
     HostGeometry {
         vertices,
         indices: Some(indices),
+        ..Default::default()
     }
 }
 
@@ -881,6 +927,7 @@ fn make_cube_geometry(half_extent: f32) -> HostGeometry {
     HostGeometry {
         vertices,
         indices: Some(indices),
+        ..Default::default()
     }
 }
 
@@ -925,6 +972,7 @@ fn make_sphere_geometry(radius: f32, slices: u32, stacks: u32) -> HostGeometry {
     HostGeometry {
         vertices,
         indices: Some(indices.into_iter().map(|i| i as u32).collect()),
+        ..Default::default()
     }
 }
 
@@ -989,6 +1037,7 @@ fn make_cylinder_geometry(radius: f32, height: f32, segments: u32) -> HostGeomet
     HostGeometry {
         vertices,
         indices: Some(indices),
+        ..Default::default()
     }
 }
 
@@ -1036,6 +1085,7 @@ fn make_cone_geometry(radius: f32, height: f32, segments: u32) -> HostGeometry {
     HostGeometry {
         vertices,
         indices: Some(indices),
+        ..Default::default()
     }
 }
 
@@ -1400,6 +1450,18 @@ struct GeometryEntry {
     mesh: Option<String>,
     #[serde(default)]
     primitive: Option<usize>,
+    #[serde(default)]
+    lods: Vec<GeometryLodEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+struct GeometryLodEntry {
+    #[serde(default)]
+    file: Option<PathBuf>,
+    #[serde(default)]
+    mesh: Option<String>,
+    #[serde(default)]
+    primitive: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1731,6 +1793,7 @@ mod tests {
                 file: PathBuf::from("gltf/quad.gltf"),
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
+                lods: Vec::new(),
             }],
             shaders: vec![
                 ShaderEntry {
@@ -1871,6 +1934,7 @@ mod tests {
                 file: PathBuf::from("gltf/quad.gltf"),
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
+                lods: Vec::new(),
             }],
             shaders: Vec::new(),
             models: vec![ModelEntry {
@@ -1958,6 +2022,7 @@ mod tests {
                 file: PathBuf::from("gltf/quad.gltf"),
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
+                lods: Vec::new(),
             }],
             shaders: Vec::new(),
             models: Vec::new(),
@@ -2061,6 +2126,7 @@ mod tests {
                 file: PathBuf::from("gltf/quad.gltf"),
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
+                lods: Vec::new(),
             }],
             shaders: Vec::new(),
             models: Vec::new(),
@@ -2097,6 +2163,7 @@ mod tests {
                 file: PathBuf::from("gltf/quad.gltf"),
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
+                lods: Vec::new(),
             }],
             shaders: Vec::new(),
             models: Vec::new(),
@@ -2151,6 +2218,7 @@ mod tests {
                 file: PathBuf::from("gltf/quad.gltf"),
                 mesh: Some("Quad".into()),
                 primitive: Some(0),
+                lods: Vec::new(),
             }],
             shaders: Vec::new(),
             models: Vec::new(),
@@ -2171,6 +2239,7 @@ mod tests {
                     file: tmp_root.join("sample_pre/gltf/quad.gltf"),
                     mesh: Some("Quad".into()),
                     primitive: Some(0),
+                    lods: Vec::new(),
                 },
             },
             &logger,

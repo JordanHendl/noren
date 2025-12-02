@@ -1503,6 +1503,7 @@ mod tests {
         let geom = HostGeometry {
             vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
             indices: Some(vec![0, 1, 2]),
+            lods: Vec::new(),
         };
         geom_rdb.add(GEOMETRY_ENTRY, &geom)?;
         geom_rdb.save(base_dir.join("geometry.rdb"))?;
@@ -1815,6 +1816,7 @@ mod tests {
         let geom = HostGeometry {
             vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
             indices: Some(vec![0, 1, 2]),
+            lods: Vec::new(),
         };
         geom_rdb.add(GEOMETRY_ENTRY, &geom)?;
         geom_rdb.save(base.join("geometry.rdb"))?;
