@@ -15,17 +15,32 @@ const UNLOAD_DELAY: Duration = Duration::from_secs(0);
 const UNLOAD_DELAY: Duration = Duration::from_secs(5);
 
 #[repr(C)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HostGeometry {
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct GeometryLayer {
     pub vertices: Vec<Vertex>,
     pub indices: Option<Vec<u32>>,
 }
 
 #[repr(C)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct HostGeometry {
+    pub vertices: Vec<Vertex>,
+    pub indices: Option<Vec<u32>>,
+    #[serde(default)]
+    pub lods: Vec<GeometryLayer>,
+}
+
+#[repr(C)]
 #[derive(Clone, Debug, Default)]
-pub struct DeviceGeometry {
+pub struct DeviceGeometryLayer {
     pub vertices: Handle<Buffer>,
     pub indices: Handle<Buffer>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DeviceGeometry {
+    pub base: DeviceGeometryLayer,
+    pub lods: Vec<DeviceGeometryLayer>,
 }
 
 pub struct GeometryDB {
@@ -60,43 +75,25 @@ impl GeometryDB {
         let device_geom = if cfg!(test) {
             DeviceGeometry::default()
         } else {
-            let HostGeometry { vertices, indices } = geom;
-            let vertex_bytes = bytemuck::cast_slice(&vertices);
+            let HostGeometry {
+                vertices,
+                indices,
+                lods,
+            } = geom;
             let ctx = unsafe { self.ctx.as_mut() };
 
-            let vertex_buffer = ctx
-                .make_buffer(&BufferInfo {
-                    debug_name: entry,
-                    byte_size: vertex_bytes.len() as u32,
-                    visibility: MemoryVisibility::Gpu,
-                    usage: BufferUsage::VERTEX,
-                    initial_data: Some(vertex_bytes),
+            let base = Self::upload_layer(ctx, entry, &GeometryLayer { vertices, indices })?;
+
+            let lods = lods
+                .into_iter()
+                .enumerate()
+                .map(|(idx, layer)| {
+                    let debug_name = format!("{entry}::lod{idx}");
+                    Self::upload_layer(ctx, &debug_name, &layer)
                 })
-                .map_err(|_| NorenError::UploadFailure())?;
+                .collect::<Result<Vec<_>, _>>()?;
 
-            let index_handle = if let Some(indices) = indices {
-                if indices.is_empty() {
-                    Handle::default()
-                } else {
-                    let index_bytes = bytemuck::cast_slice(&indices);
-                    let debug_name = format!("{}::indices", entry);
-                    ctx.make_buffer(&BufferInfo {
-                        debug_name: &debug_name,
-                        byte_size: index_bytes.len() as u32,
-                        visibility: MemoryVisibility::Gpu,
-                        usage: BufferUsage::INDEX,
-                        initial_data: Some(index_bytes),
-                    })
-                    .map_err(|_| NorenError::UploadFailure())?
-                }
-            } else {
-                Handle::default()
-            };
-
-            DeviceGeometry {
-                vertices: vertex_buffer,
-                indices: index_handle,
-            }
+            DeviceGeometry { base, lods }
         };
 
         let cache_entry = self.cache.insert_or_increment(entry, || device_geom);
@@ -171,13 +168,65 @@ impl GeometryDB {
 
         let ctx = unsafe { self.ctx.as_mut() };
         for (_key, entry) in expired {
-            if entry.payload.vertices.valid() {
-                ctx.destroy_buffer(entry.payload.vertices);
+            if entry.payload.base.vertices.valid() {
+                ctx.destroy_buffer(entry.payload.base.vertices);
             }
-            if entry.payload.indices.valid() {
-                ctx.destroy_buffer(entry.payload.indices);
+            if entry.payload.base.indices.valid() {
+                ctx.destroy_buffer(entry.payload.base.indices);
+            }
+            for lod in entry.payload.lods.iter() {
+                if lod.vertices.valid() {
+                    ctx.destroy_buffer(lod.vertices);
+                }
+                if lod.indices.valid() {
+                    ctx.destroy_buffer(lod.indices);
+                }
             }
         }
+    }
+}
+
+impl GeometryDB {
+    fn upload_layer(
+        ctx: &mut Context,
+        debug_name: &str,
+        layer: &GeometryLayer,
+    ) -> Result<DeviceGeometryLayer, NorenError> {
+        let vertex_bytes = bytemuck::cast_slice(&layer.vertices);
+
+        let vertex_buffer = ctx
+            .make_buffer(&BufferInfo {
+                debug_name,
+                byte_size: vertex_bytes.len() as u32,
+                visibility: MemoryVisibility::Gpu,
+                usage: BufferUsage::VERTEX,
+                initial_data: Some(vertex_bytes),
+            })
+            .map_err(|_| NorenError::UploadFailure())?;
+
+        let index_handle = if let Some(indices) = &layer.indices {
+            if indices.is_empty() {
+                Handle::default()
+            } else {
+                let index_bytes = bytemuck::cast_slice(indices);
+                let index_debug_name = format!("{debug_name}::indices");
+                ctx.make_buffer(&BufferInfo {
+                    debug_name: &index_debug_name,
+                    byte_size: index_bytes.len() as u32,
+                    visibility: MemoryVisibility::Gpu,
+                    usage: BufferUsage::INDEX,
+                    initial_data: Some(index_bytes),
+                })
+                .map_err(|_| NorenError::UploadFailure())?
+            }
+        } else {
+            Handle::default()
+        };
+
+        Ok(DeviceGeometryLayer {
+            vertices: vertex_buffer,
+            indices: index_handle,
+        })
     }
 }
 
@@ -201,6 +250,7 @@ mod tests {
         let host_geom = HostGeometry {
             vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
             indices: Some(vec![0, 1, 2]),
+            lods: Vec::new(),
         };
         file.add(entry, &host_geom)?;
         file.save(path)?;
