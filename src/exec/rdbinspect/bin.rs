@@ -2,7 +2,7 @@ use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 
 use bincode::deserialize;
 use noren::{
-    RDBView,
+    RDBView, RDBEntryMeta,
     rdb::{AnimationClip, HostGeometry, HostImage, ShaderModule, Skeleton},
     type_tag_for,
 };
@@ -27,6 +27,7 @@ fn run() -> Result<(), String> {
 
     let mut path: Option<PathBuf> = None;
     let mut entry_to_dump: Option<String> = None;
+    let mut all_entries = false;
     let mut hex_limit: usize = 256;
     let mut show_hex = true;
 
@@ -36,6 +37,9 @@ fn run() -> Result<(), String> {
             "-h" | "--help" => {
                 print_usage(&program);
                 return Ok(());
+            }
+            "-all-entries" | "--all-entries" => {
+                all_entries = true;
             }
             "--entry" => {
                 let value = iter
@@ -134,6 +138,17 @@ fn run() -> Result<(), String> {
         println!("\nTotal payload bytes: {total_bytes}");
     }
 
+    if all_entries && entry_to_dump.is_some() {
+        return Err("--all-entries cannot be combined with --entry".to_string());
+    }
+
+    if all_entries {
+        for meta in &entries {
+            inspect_entry(&view, meta, show_hex, hex_limit)?;
+        }
+        return Ok(());
+    }
+
     if let Some(name) = entry_to_dump {
         let meta = entries
             .iter()
@@ -141,37 +156,18 @@ fn run() -> Result<(), String> {
             .cloned()
             .ok_or_else(|| format!("entry '{name}' not found"))?;
 
-        println!("\nEntry: {}", meta.name);
-        let entry_type_label = type_label(meta.type_tag);
-        println!("  Type: {entry_type_label}");
-        println!("  Type (hex): {:#010X}", meta.type_tag);
-        println!("  Offset: {}", meta.offset);
-        println!("  Length: {} bytes", meta.len);
-
-        let bytes = view
-            .entry_bytes(&meta.name)
-            .map_err(|err| format!("unable to read entry '{}': {err}", meta.name))?;
-
-        if let Some(known) = known_type(meta.type_tag) {
-            println!("\nDeserialized as {}:", known.display_name());
-            match (known.describe)(bytes) {
-                Ok(text) => println!("{text}"),
-                Err(err) => println!("(failed to decode {}: {err})", known.display_name()),
-            }
-        }
-
-        if show_hex {
-            println!("\nHex dump (showing up to {hex_limit} bytes):");
-            hexdump(bytes, hex_limit);
-        }
+        inspect_entry(&view, &meta, show_hex, hex_limit)?;
     }
 
     Ok(())
 }
 
 fn print_usage(program: &str) {
-    println!("Usage: {program} <RDB_FILE> [--entry <NAME>] [--limit <BYTES>] [--no-hex]");
+    println!(
+        "Usage: {program} <RDB_FILE> [--entry <NAME>] [--all-entries] [--limit <BYTES>] [--no-hex]"
+    );
     println!("\nOptions:");
+    println!("  --all-entries   Inspect all entries and display their metadata");
     println!("  --entry <NAME>   Inspect a specific entry and display its metadata");
     println!("  --limit <BYTES>  Limit the number of bytes shown in the hex dump (default 256)");
     println!("  --no-hex         Skip the hex dump when inspecting an entry");
@@ -210,6 +206,39 @@ fn type_label(tag: u32) -> String {
     }
 
     ascii_type(tag).unwrap_or_else(|| "-".to_string())
+}
+
+fn inspect_entry(
+    view: &RDBView,
+    meta: &RDBEntryMeta,
+    show_hex: bool,
+    hex_limit: usize,
+) -> Result<(), String> {
+    println!("\nEntry: {}", meta.name);
+    let entry_type_label = type_label(meta.type_tag);
+    println!("  Type: {entry_type_label}");
+    println!("  Type (hex): {:#010X}", meta.type_tag);
+    println!("  Offset: {}", meta.offset);
+    println!("  Length: {} bytes", meta.len);
+
+    let bytes = view
+        .entry_bytes(&meta.name)
+        .map_err(|err| format!("unable to read entry '{}': {err}", meta.name))?;
+
+    if let Some(known) = known_type(meta.type_tag) {
+        println!("\nDeserialized as {}:", known.display_name());
+        match (known.describe)(bytes) {
+            Ok(text) => println!("{text}"),
+            Err(err) => println!("(failed to decode {}: {err})", known.display_name()),
+        }
+    }
+
+    if show_hex {
+        println!("\nHex dump (showing up to {hex_limit} bytes):");
+        hexdump(bytes, hex_limit);
+    }
+
+    Ok(())
 }
 
 struct KnownType {
