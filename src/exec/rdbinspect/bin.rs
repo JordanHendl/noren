@@ -255,9 +255,35 @@ impl KnownType {
 }
 
 fn describe_geometry(geometry: &HostGeometry) -> String {
-    let vertex_count = geometry.vertices.len();
-    let indices = geometry.indices.as_ref();
+    let mut description = describe_geometry_layer(
+        "Base",
+        geometry.vertices.len(),
+        geometry.indices.as_ref(),
+        "  ",
+    );
 
+    if !geometry.lods.is_empty() {
+        description.push_str(&format!("\n  LODs: {}", geometry.lods.len()));
+        for (idx, lod) in geometry.lods.iter().enumerate() {
+            description.push('\n');
+            description.push_str(&describe_geometry_layer(
+                &format!("LOD {idx}"),
+                lod.vertices.len(),
+                lod.indices.as_ref(),
+                "    ",
+            ));
+        }
+    }
+
+    description
+}
+
+fn describe_geometry_layer(
+    name: &str,
+    vertex_count: usize,
+    indices: Option<&Vec<u32>>,
+    indent: &str,
+) -> String {
     let (index_summary, triangle_hint) = match indices {
         Some(list) if !list.is_empty() => {
             let triangle_count = list.len() / 3;
@@ -267,7 +293,7 @@ fn describe_geometry(geometry: &HostGeometry) -> String {
                     list.len(),
                     list.len() * std::mem::size_of::<u32>()
                 ),
-                format!("  ~ Estimated triangles: {triangle_count}"),
+                format!("\n{indent}  ~ Estimated triangles: {triangle_count}"),
             )
         }
         Some(_) => ("0 indices (empty buffer)".to_string(), String::new()),
@@ -275,12 +301,7 @@ fn describe_geometry(geometry: &HostGeometry) -> String {
     };
 
     format!(
-        "  Vertices: {vertex_count}\n  Indices: {index_summary}{}",
-        if triangle_hint.is_empty() {
-            String::new()
-        } else {
-            format!("\n{triangle_hint}")
-        }
+        "{indent}{name}:\n{indent}  Vertices: {vertex_count}\n{indent}  Indices: {index_summary}{triangle_hint}",
     )
 }
 
