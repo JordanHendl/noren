@@ -10,17 +10,95 @@ pub struct AnimationClip {
     #[serde(default)]
     pub duration_seconds: f32,
     #[serde(default)]
+    pub samplers: Vec<AnimationSampler>,
+    #[serde(default)]
+    pub channels: Vec<AnimationChannel>,
+    /// Reserved for future binary payloads.
+    #[serde(default)]
     pub data: Vec<u8>,
 }
 
 impl AnimationClip {
-    pub fn new(name: impl Into<String>, duration_seconds: f32, data: Vec<u8>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        duration_seconds: f32,
+        samplers: Vec<AnimationSampler>,
+        channels: Vec<AnimationChannel>,
+    ) -> Self {
         Self {
             name: name.into(),
             duration_seconds,
-            data,
+            samplers,
+            channels,
+            data: Vec::new(),
         }
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AnimationInterpolation {
+    Linear,
+    Step,
+    CubicSpline,
+}
+
+impl Default for AnimationInterpolation {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AnimationTargetPath {
+    Translation,
+    Rotation,
+    Scale,
+    Weights,
+}
+
+impl Default for AnimationTargetPath {
+    fn default() -> Self {
+        Self::Translation
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AnimationOutput {
+    Translations(Vec<[f32; 3]>),
+    Rotations(Vec<[f32; 4]>),
+    Scales(Vec<[f32; 3]>),
+    Weights(Vec<f32>),
+}
+
+impl Default for AnimationOutput {
+    fn default() -> Self {
+        Self::Translations(Vec::new())
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AnimationSampler {
+    #[serde(default)]
+    pub interpolation: AnimationInterpolation,
+    #[serde(default)]
+    pub input: Vec<f32>,
+    #[serde(default)]
+    pub output: AnimationOutput,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AnimationChannel {
+    #[serde(default)]
+    pub sampler_index: usize,
+    #[serde(default)]
+    pub target_node: usize,
+    #[serde(default)]
+    pub target_path: AnimationTargetPath,
 }
 
 #[derive(Default)]
@@ -69,7 +147,7 @@ mod tests {
 
     #[test]
     fn fetch_animation_clip() {
-        let clip = AnimationClip::new("wave", 1.5, vec![5, 6, 7, 8]);
+        let clip = AnimationClip::new("wave", 1.5, Vec::new(), Vec::new());
         let mut file = RDBFile::new();
         file.add(ENTRY, &clip).expect("add animation");
 

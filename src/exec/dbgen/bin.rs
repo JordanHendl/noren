@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     f32::consts::PI,
     fs::{self, File},
     io::BufReader,
@@ -10,6 +10,7 @@ use std::{
 use bento::{
     BentoError, Compiler as BentoCompiler, OptimizationLevel, Request as BentoRequest, ShaderLang,
 };
+use gltf::animation::util::ReadOutputs;
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
@@ -17,8 +18,9 @@ use noren::{
         MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile, TextureLayout, TextureLayoutFile,
     },
     rdb::{
-        AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, ShaderModule,
-        primitives::Vertex,
+        AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
+        AnimationTargetPath, AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, Joint,
+        ShaderModule, Skeleton, primitives::Vertex,
     },
     validate_database_layout,
 };
@@ -81,6 +83,8 @@ fn main() {
         }
         Command::Validate(args) => run_validation(&args, &logger),
         Command::AppendGeometry(args) => append_geometry(&args, &logger, cli.write_binaries),
+        Command::AppendSkeleton(args) => append_skeleton(&args, &logger, cli.write_binaries),
+        Command::AppendAnimation(args) => append_animation(&args, &logger, cli.write_binaries),
         Command::AppendImagery(args) => append_imagery(&args, &logger, cli.write_binaries),
         Command::AppendAudio(args) => append_audio(&args, &logger, cli.write_binaries),
         Command::AppendShader(args) => append_shader(&args, &logger, cli.write_binaries),
@@ -180,6 +184,8 @@ fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Comman
 
     match kind.as_str() {
         "geometry" => parse_geometry_append(args).map(Command::AppendGeometry),
+        "skeleton" => parse_skeleton_append(args).map(Command::AppendSkeleton),
+        "animation" => parse_animation_append(args).map(Command::AppendAnimation),
         "imagery" => parse_imagery_append(args).map(Command::AppendImagery),
         "audio" => parse_audio_append(args).map(Command::AppendAudio),
         "shader" => parse_shader_append(args).map(Command::AppendShader),
@@ -229,6 +235,80 @@ fn parse_geometry_append(
             file: PathBuf::from(file.ok_or_else(|| "--gltf is required".to_string())?),
             mesh,
             primitive,
+        },
+    })
+}
+
+fn parse_skeleton_append(
+    mut args: impl Iterator<Item = String>,
+) -> Result<SkeletonAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut skin = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--gltf" => {
+                file = Some(next_value("--gltf", &mut args)?);
+            }
+            "--skin" => {
+                skin = Some(next_value("--skin", &mut args)?);
+            }
+            other => return Err(format!("unexpected argument to append skeleton: {other}")),
+        }
+    }
+
+    Ok(SkeletonAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: SkeletonEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--gltf is required".to_string())?),
+            skin,
+        },
+    })
+}
+
+fn parse_animation_append(
+    mut args: impl Iterator<Item = String>,
+) -> Result<AnimationAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut animation = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--gltf" => {
+                file = Some(next_value("--gltf", &mut args)?);
+            }
+            "--animation" => {
+                animation = Some(next_value("--animation", &mut args)?);
+            }
+            other => return Err(format!("unexpected argument to append animation: {other}")),
+        }
+    }
+
+    Ok(AnimationAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: AnimationEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--gltf is required".to_string())?),
+            animation,
         },
     })
 }
@@ -377,6 +457,8 @@ enum Command {
     Build { append: bool, spec: PathBuf },
     Validate(ValidateArgs),
     AppendGeometry(GeometryAppendArgs),
+    AppendSkeleton(SkeletonAppendArgs),
+    AppendAnimation(AnimationAppendArgs),
     AppendImagery(ImageAppendArgs),
     AppendAudio(AudioAppendArgs),
     AppendShader(ShaderAppendArgs),
@@ -392,6 +474,18 @@ struct ValidateArgs {
 struct GeometryAppendArgs {
     rdb: PathBuf,
     entry: GeometryEntry,
+}
+
+#[derive(Debug)]
+struct SkeletonAppendArgs {
+    rdb: PathBuf,
+    entry: SkeletonEntry,
+}
+
+#[derive(Debug)]
+struct AnimationAppendArgs {
+    rdb: PathBuf,
+    entry: AnimationEntry,
 }
 
 #[derive(Debug)]
@@ -432,6 +526,8 @@ fn run_from_path(
         output,
         imagery,
         audio,
+        skeletons,
+        animations,
         geometry,
         shaders,
         models,
@@ -443,6 +539,8 @@ fn run_from_path(
     let geometry_path = resolve_string_path(&output_dir, &output.layout.geometry);
     let imagery_path = resolve_string_path(&output_dir, &output.layout.imagery);
     let audio_path = resolve_string_path(&output_dir, &output.layout.audio);
+    let skeletons_path = resolve_string_path(&output_dir, &output.layout.skeletons);
+    let animations_path = resolve_string_path(&output_dir, &output.layout.animations);
     let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
     let meshes_path = resolve_string_path(&output_dir, &output.layout.meshes);
     let models_path = resolve_string_path(&output_dir, &output.layout.models);
@@ -469,6 +567,22 @@ fn run_from_path(
         &base_dir,
         &audio_path,
         &audio,
+        append,
+        write_binaries,
+        logger,
+    )?;
+    build_skeletons(
+        &base_dir,
+        &skeletons_path,
+        &skeletons,
+        append,
+        write_binaries,
+        logger,
+    )?;
+    build_animations(
+        &base_dir,
+        &animations_path,
+        &animations,
         append,
         write_binaries,
         logger,
@@ -1133,6 +1247,66 @@ fn append_audio(
     Ok(())
 }
 
+fn append_skeleton(
+    args: &SkeletonAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    logger.log(format!("append skeleton: {}", args.entry.entry));
+    let skeleton = load_skeleton(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &skeleton).map_err(BuildError::from)?;
+
+    if write_binaries {
+        logger.log(format!("append skeleton: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append skeleton: skipping binary output (--layouts-only)");
+    }
+
+    Ok(())
+}
+
+fn append_animation(
+    args: &AnimationAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    logger.log(format!("append animation: {}", args.entry.entry));
+    let clip = load_animation(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &clip).map_err(BuildError::from)?;
+
+    if write_binaries {
+        logger.log(format!("append animation: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append animation: skipping binary output (--layouts-only)");
+    }
+
+    Ok(())
+}
+
 fn build_audio(
     base_dir: &Path,
     output: &Path,
@@ -1166,6 +1340,80 @@ fn build_audio(
         rdb.save(output).map_err(BuildError::from)?;
     } else {
         logger.log("audio: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
+fn build_skeletons(
+    base_dir: &Path,
+    output: &Path,
+    entries: &[SkeletonEntry],
+    append: bool,
+    write_binaries: bool,
+    logger: &Logger,
+) -> Result<(), BuildError> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
+
+    for entry in entries {
+        logger.log(format!(
+            "skeleton: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
+        let skeleton = load_skeleton(base_dir, entry)?;
+        rdb.add(&entry.entry, &skeleton).map_err(BuildError::from)?;
+    }
+
+    if write_binaries {
+        logger.log(format!("skeleton: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("skeleton: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
+fn build_animations(
+    base_dir: &Path,
+    output: &Path,
+    entries: &[AnimationEntry],
+    append: bool,
+    write_binaries: bool,
+    logger: &Logger,
+) -> Result<(), BuildError> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
+
+    for entry in entries {
+        logger.log(format!(
+            "animation: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
+        let clip = load_animation(base_dir, entry)?;
+        rdb.add(&entry.entry, &clip).map_err(BuildError::from)?;
+    }
+
+    if write_binaries {
+        logger.log(format!("animation: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("animation: skipping binary output (--layouts-only)");
     }
     Ok(())
 }
@@ -1233,6 +1481,198 @@ fn load_audio(base_dir: &Path, entry: &AudioEntry) -> Result<AudioClip, BuildErr
     let format = infer_audio_format(&entry.file, entry.format.clone());
 
     Ok(AudioClip::new(entry.entry.clone(), format, data))
+}
+
+fn load_skeleton(base_dir: &Path, entry: &SkeletonEntry) -> Result<Skeleton, BuildError> {
+    let path = resolve_path(base_dir, &entry.file);
+    let (doc, buffers, _) = gltf::import(path)?;
+
+    let skin = if let Some(ref skin_name) = entry.skin {
+        doc.skins()
+            .find(|s| s.name().map(|n| n == skin_name).unwrap_or(false))
+            .ok_or_else(|| BuildError::message(format!("skin '{skin_name}' not found")))?
+    } else {
+        doc.skins()
+            .next()
+            .ok_or_else(|| BuildError::message("geometry file did not contain any skins"))?
+    };
+
+    let joints: Vec<_> = skin.joints().collect();
+    if joints.is_empty() {
+        return Err(BuildError::message("skin does not contain any joints"));
+    }
+
+    let mut node_to_joint: HashMap<usize, usize> = HashMap::new();
+    for (idx, joint) in joints.iter().enumerate() {
+        node_to_joint.insert(joint.index(), idx);
+    }
+
+    let mut parents: Vec<Option<usize>> = vec![None; joints.len()];
+    let mut children_per_joint: Vec<Vec<usize>> = vec![Vec::new(); joints.len()];
+    for (idx, joint) in joints.iter().enumerate() {
+        for child in joint.children() {
+            if let Some(child_idx) = node_to_joint.get(&child.index()) {
+                children_per_joint[idx].push(*child_idx);
+                parents[*child_idx] = Some(idx);
+            }
+        }
+    }
+
+    let reader = skin.reader(|buffer| Some(&buffers[buffer.index()].0[..]));
+    let inverse_bind_matrices: Vec<[[f32; 4]; 4]> = reader
+        .read_inverse_bind_matrices()
+        .map(|iter| iter.collect())
+        .unwrap_or_else(|| vec![identity_matrix(); joints.len()]);
+
+    let mut parsed_joints = Vec::new();
+    for (idx, joint) in joints.iter().enumerate() {
+        let (translation, rotation, scale) = joint.transform().decomposed();
+        let inverse_bind_matrix = inverse_bind_matrices
+            .get(idx)
+            .copied()
+            .unwrap_or_else(identity_matrix);
+
+        parsed_joints.push(Joint {
+            name: joint.name().map(|n| n.to_string()),
+            parent: parents[idx],
+            children: children_per_joint[idx].clone(),
+            inverse_bind_matrix,
+            translation,
+            rotation,
+            scale,
+        });
+    }
+
+    let root = skin
+        .skeleton()
+        .and_then(|node| node_to_joint.get(&node.index()).copied())
+        .or_else(|| parents.iter().position(|p| p.is_none()));
+    let name = skin
+        .name()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| entry.entry.clone());
+
+    Ok(Skeleton {
+        name,
+        joints: parsed_joints,
+        root,
+        data: Vec::new(),
+    })
+}
+
+fn load_animation(base_dir: &Path, entry: &AnimationEntry) -> Result<AnimationClip, BuildError> {
+    let path = resolve_path(base_dir, &entry.file);
+    let (doc, buffers, _) = gltf::import(path)?;
+
+    let animation = if let Some(ref name) = entry.animation {
+        doc.animations()
+            .find(|anim| anim.name().map(|n| n == name).unwrap_or(false))
+            .ok_or_else(|| BuildError::message(format!("animation '{name}' not found")))?
+    } else {
+        doc.animations()
+            .next()
+            .ok_or_else(|| BuildError::message("geometry file did not contain any animations"))?
+    };
+
+    let sampler_count = animation.samplers().count();
+    let mut samplers: Vec<Option<AnimationSampler>> = vec![None; sampler_count];
+    let mut channels = Vec::new();
+
+    for channel in animation.channels() {
+        let sampler = channel.sampler();
+        let sampler_index = sampler.index();
+
+        if samplers[sampler_index].is_none() {
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()].0[..]));
+            let input: Vec<f32> = reader
+                .read_inputs()
+                .ok_or_else(|| BuildError::message("animation is missing input keyframes"))?
+                .collect();
+
+            let output = reader
+                .read_outputs()
+                .ok_or_else(|| BuildError::message("animation is missing output values"))?;
+
+            let output = match output {
+                ReadOutputs::Translations(values) => {
+                    AnimationOutput::Translations(values.collect::<Vec<[f32; 3]>>())
+                }
+                ReadOutputs::Rotations(values) => {
+                    AnimationOutput::Rotations(values.into_f32().collect::<Vec<[f32; 4]>>())
+                }
+                ReadOutputs::Scales(values) => {
+                    AnimationOutput::Scales(values.collect::<Vec<[f32; 3]>>())
+                }
+                ReadOutputs::MorphTargetWeights(values) => {
+                    AnimationOutput::Weights(values.into_f32().collect::<Vec<f32>>())
+                }
+            };
+
+            let interpolation = match sampler.interpolation() {
+                gltf::animation::Interpolation::Linear => AnimationInterpolation::Linear,
+                gltf::animation::Interpolation::Step => AnimationInterpolation::Step,
+                gltf::animation::Interpolation::CubicSpline => AnimationInterpolation::CubicSpline,
+            };
+
+            samplers[sampler_index] = Some(AnimationSampler {
+                interpolation,
+                input,
+                output,
+            });
+        }
+
+        let target = channel.target();
+        let target_path = match target.property() {
+            gltf::animation::Property::Translation => AnimationTargetPath::Translation,
+            gltf::animation::Property::Rotation => AnimationTargetPath::Rotation,
+            gltf::animation::Property::Scale => AnimationTargetPath::Scale,
+            gltf::animation::Property::MorphTargetWeights => AnimationTargetPath::Weights,
+        };
+
+        channels.push(AnimationChannel {
+            sampler_index,
+            target_node: target.node().index(),
+            target_path,
+        });
+    }
+
+    let samplers: Vec<AnimationSampler> = samplers
+        .into_iter()
+        .enumerate()
+        .map(|(idx, sampler)| {
+            sampler.ok_or_else(|| {
+                BuildError::message(format!(
+                    "animation sampler {idx} was not referenced by a channel"
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    let duration_seconds = samplers
+        .iter()
+        .flat_map(|sampler| sampler.input.iter().copied())
+        .fold(0.0, f32::max);
+    let name = animation
+        .name()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| entry.entry.clone());
+
+    Ok(AnimationClip {
+        name,
+        duration_seconds,
+        samplers,
+        channels,
+        data: Vec::new(),
+    })
+}
+
+fn identity_matrix() -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 }
 
 fn to_rgba(image: DynamicImage) -> image::RgbaImage {
@@ -1336,6 +1776,12 @@ fn print_usage(program: &str) {
         "  {program} append geometry --rdb <geometry.rdb> --entry <name> --gltf <file> [--mesh <name>] [--primitive <index>]"
     );
     eprintln!(
+        "  {program} append skeleton --rdb <skeletons.rdb> --entry <name> --gltf <file> [--skin <name>]"
+    );
+    eprintln!(
+        "  {program} append animation --rdb <animations.rdb> --entry <name> --gltf <file> [--animation <name>]"
+    );
+    eprintln!(
         "  {program} append imagery --rdb <imagery.rdb> --entry <name> --image <file> [--layers <count>] [--mip-levels <count>] [--format <format>]"
     );
     eprintln!(
@@ -1366,6 +1812,10 @@ struct BuildSpec {
     imagery: Vec<ImageEntry>,
     #[serde(default)]
     audio: Vec<AudioEntry>,
+    #[serde(default)]
+    skeletons: Vec<SkeletonEntry>,
+    #[serde(default)]
+    animations: Vec<AnimationEntry>,
     #[serde(default)]
     geometry: Vec<GeometryEntry>,
     #[serde(default)]
@@ -1400,6 +1850,22 @@ struct GeometryEntry {
     mesh: Option<String>,
     #[serde(default)]
     primitive: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SkeletonEntry {
+    entry: String,
+    file: PathBuf,
+    #[serde(default)]
+    skin: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AnimationEntry {
+    entry: String,
+    file: PathBuf,
+    #[serde(default)]
+    animation: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1709,6 +2175,8 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            skeletons: Vec::new(),
+            animations: Vec::new(),
             audio: Vec::new(),
             imagery: vec![
                 ImageEntry {
@@ -1761,6 +2229,8 @@ mod tests {
         let output_dir = tmp_root.join("db");
         assert!(output_dir.join("geometry.rdb").exists());
         assert!(output_dir.join("imagery.rdb").exists());
+        assert!(output_dir.join("skeletons.rdb").exists());
+        assert!(output_dir.join("animations.rdb").exists());
         assert!(output_dir.join("textures.json").exists());
         assert!(output_dir.join("meshes.json").exists());
         assert!(output_dir.join("models.json").exists());
@@ -1801,6 +2271,8 @@ mod tests {
         let layout: DatabaseLayoutFile = serde_json::from_str(&layout_text).unwrap();
         assert_eq!(layout.geometry, "geometry.rdb");
         assert_eq!(layout.imagery, "imagery.rdb");
+        assert_eq!(layout.skeletons, "skeletons.rdb");
+        assert_eq!(layout.animations, "animations.rdb");
         assert_eq!(layout.textures, "textures.json");
         assert_eq!(layout.meshes, "meshes.json");
         assert_eq!(layout.models, "models.json");
@@ -1858,6 +2330,8 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            skeletons: Vec::new(),
+            animations: Vec::new(),
             audio: Vec::new(),
             imagery: vec![ImageEntry {
                 entry: "imagery/tulips".into(),
@@ -1890,6 +2364,8 @@ mod tests {
         let output_dir = tmp_root.join("db");
         assert!(!output_dir.join("geometry.rdb").exists());
         assert!(!output_dir.join("imagery.rdb").exists());
+        assert!(!output_dir.join("skeletons.rdb").exists());
+        assert!(!output_dir.join("animations.rdb").exists());
         assert!(!output_dir.join("shaders.rdb").exists());
         assert!(output_dir.join("textures.json").exists());
         assert!(output_dir.join("meshes.json").exists());
@@ -1921,6 +2397,15 @@ mod tests {
             .get("texture/imagery/tulips")
             .expect("texture entry exists");
         assert_eq!(texture.image, "imagery/tulips");
+
+        let mut layout_text = String::new();
+        File::open(output_dir.join("layout.json"))
+            .unwrap()
+            .read_to_string(&mut layout_text)
+            .unwrap();
+        let layout: DatabaseLayoutFile = serde_json::from_str(&layout_text).unwrap();
+        assert_eq!(layout.skeletons, "skeletons.rdb");
+        assert_eq!(layout.animations, "animations.rdb");
     }
 
     #[test]
@@ -1951,6 +2436,8 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            skeletons: Vec::new(),
+            animations: Vec::new(),
             audio: Vec::new(),
             imagery: Vec::new(),
             geometry: vec![GeometryEntry {
@@ -2048,6 +2535,8 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            skeletons: Vec::new(),
+            animations: Vec::new(),
             audio: Vec::new(),
             imagery: vec![ImageEntry {
                 entry: "imagery/tulips".into(),
@@ -2090,6 +2579,8 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            skeletons: Vec::new(),
+            animations: Vec::new(),
             audio: Vec::new(),
             imagery: vec![],
             geometry: vec![GeometryEntry {
@@ -2144,6 +2635,8 @@ mod tests {
                     shaders: "shaders.rdb".into(),
                 },
             },
+            skeletons: Vec::new(),
+            animations: Vec::new(),
             audio: Vec::new(),
             imagery: Vec::new(),
             geometry: vec![GeometryEntry {

@@ -1,5 +1,5 @@
 use crate::{furikake_state, furikake_state::FurikakeState, rdb::ShaderModule, utils::NorenError};
-use furikake::{recipe::RecipeBook, BindlessState, DefaultState, GPUState};
+use furikake::{BindlessState, DefaultState, GPUState, recipe::RecipeBook};
 
 #[derive(Clone, Debug)]
 pub struct BindLayouts {
@@ -144,7 +144,11 @@ pub fn compute_pipeline_inputs(
     })
 }
 
-fn ensure_stage_type(stage: &ShaderStage, expected: dashi::ShaderType, shader_key: &str) -> Result<(), NorenError> {
+fn ensure_stage_type(
+    stage: &ShaderStage,
+    expected: dashi::ShaderType,
+    shader_key: &str,
+) -> Result<(), NorenError> {
     let artifact = stage.module.artifact();
     if artifact.stage != expected {
         return Err(NorenError::InvalidShaderState(format!(
@@ -186,7 +190,11 @@ fn furikake_layouts(
     };
 
     for recipe in bg_recipes {
-        let set = recipe.bindings.first().map(|b| b.var.set).unwrap_or_default();
+        let set = recipe
+            .bindings
+            .first()
+            .map(|b| b.var.set)
+            .unwrap_or_default();
         let Some(slot) = layouts.bg_layouts.get_mut(set as usize) else {
             return Err(NorenError::InvalidShaderState(format!(
                 "shader '{shader_key}' uses bind group set {set} which exceeds the supported limit"
@@ -201,7 +209,11 @@ fn furikake_layouts(
     }
 
     for recipe in bt_recipes {
-        let set = recipe.bindings.first().map(|b| b.var.set).unwrap_or_default();
+        let set = recipe
+            .bindings
+            .first()
+            .map(|b| b.var.set)
+            .unwrap_or_default();
         let Some(slot) = layouts.bt_layouts.get_mut(set as usize) else {
             return Err(NorenError::InvalidShaderState(format!(
                 "shader '{shader_key}' uses bind table set {set} which exceeds the supported limit"
@@ -223,7 +235,13 @@ fn recipe_layouts<T: GPUState>(
     shader_key: &str,
     state: &T,
     artifacts: &mut [bento::CompilationResult],
-) -> Result<(Vec<furikake::recipe::BindGroupRecipe>, Vec<furikake::recipe::BindTableRecipe>), NorenError> {
+) -> Result<
+    (
+        Vec<furikake::recipe::BindGroupRecipe>,
+        Vec<furikake::recipe::BindTableRecipe>,
+    ),
+    NorenError,
+> {
     let book = RecipeBook::new(ctx, state, artifacts).map_err(|err| {
         NorenError::InvalidShaderState(format!(
             "furikake validation failed for shader '{shader_key}': {err}"
@@ -270,7 +288,9 @@ mod tests {
 
         let result = graphics_pipeline_inputs(&mut ctx, "pipeline", &layout, shader);
 
-        assert!(matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("missing a vertex stage")));
+        assert!(
+            matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("missing a vertex stage"))
+        );
     }
 
     #[test]
@@ -288,7 +308,9 @@ mod tests {
 
         let result = graphics_pipeline_inputs(&mut ctx, "formats", &layout, shader);
 
-        assert!(matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("does not specify any color or depth formats")));
+        assert!(
+            matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("does not specify any color or depth formats"))
+        );
     }
 
     #[test]
@@ -308,7 +330,9 @@ mod tests {
 
         let result = graphics_pipeline_inputs(&mut ctx, "stage-check", &layout, shader);
 
-        assert!(matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("expected Vertex")));
+        assert!(
+            matches!(result, Err(NorenError::InvalidShaderState(msg)) if msg.contains("expected Vertex"))
+        );
     }
 
     #[test]

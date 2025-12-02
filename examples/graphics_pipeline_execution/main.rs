@@ -41,7 +41,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let layout = db.make_pipeline_layout("shader/default")?;
     let pipeline = db.make_graphics_pipeline("shader/default")?;
 
-    println!("Created layout {:?} and pipeline {:?} for shader/default", layout, pipeline);
+    println!(
+        "Created layout {:?} and pipeline {:?} for shader/default",
+        layout, pipeline
+    );
 
     Ok(())
 }
