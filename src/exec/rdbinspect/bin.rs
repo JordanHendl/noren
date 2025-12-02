@@ -3,7 +3,7 @@ use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 use bincode::deserialize;
 use noren::{
     RDBView,
-    rdb::{HostGeometry, HostImage, ShaderModule},
+    rdb::{AnimationClip, HostGeometry, HostImage, ShaderModule, Skeleton},
     type_tag_for,
 };
 use serde::de::DeserializeOwned;
@@ -191,8 +191,10 @@ fn known_types() -> &'static [KnownType] {
     static KNOWN: OnceLock<Vec<KnownType>> = OnceLock::new();
     KNOWN.get_or_init(|| {
         vec![
+            KnownType::with::<AnimationClip>(describe_animation),
             KnownType::with::<HostGeometry>(describe_geometry),
             KnownType::with::<HostImage>(describe_image),
+            KnownType::with::<Skeleton>(describe_skeleton),
             KnownType::with::<ShaderModule>(describe_shader),
         ]
     })
@@ -343,6 +345,62 @@ fn describe_shader(module: &ShaderModule) -> String {
         artifact.spirv.len(),
         bindings
     )
+}
+
+fn describe_animation(clip: &AnimationClip) -> String {
+    let mut lines = vec![
+        format!("  Name: {}", clip.name),
+        format!("  Duration: {:.3} seconds", clip.duration_seconds),
+        format!("  Samplers: {}", clip.samplers.len()),
+        format!("  Channels: {}", clip.channels.len()),
+    ];
+
+    if !clip.channels.is_empty() {
+        let channel_summaries: Vec<String> = clip
+            .channels
+            .iter()
+            .enumerate()
+            .map(|(idx, channel)| {
+                format!(
+                    "    [{idx}] sampler {} -> node {} ({:?})",
+                    channel.sampler_index, channel.target_node, channel.target_path
+                )
+            })
+            .collect();
+        lines.push("  Channel map:".to_string());
+        lines.extend(channel_summaries);
+    }
+
+    lines.join("\n")
+}
+
+fn describe_skeleton(skeleton: &Skeleton) -> String {
+    let mut lines = vec![
+        format!("  Name: {}", skeleton.name),
+        format!("  Joints: {}", skeleton.joints.len()),
+    ];
+
+    match skeleton.root {
+        Some(root) => lines.push(format!("  Root joint: {root}")),
+        None => lines.push("  Root joint: (unset)".to_string()),
+    }
+
+    if !skeleton.joints.is_empty() {
+        lines.push("  Joint summary:".to_string());
+        lines.extend(skeleton.joints.iter().enumerate().map(|(idx, joint)| {
+            let name = joint.name.as_deref().unwrap_or("(unnamed)");
+            let parent = joint
+                .parent
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            format!(
+                "    [{idx}] {name} (parent: {parent}, children: {})",
+                joint.children.len()
+            )
+        }));
+    }
+
+    lines.join("\n")
 }
 
 fn truncated_name(name: &str, width: usize) -> String {
