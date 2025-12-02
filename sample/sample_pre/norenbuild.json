@@ -9,6 +9,8 @@
       "materials": "materials.json",
       "meshes": "meshes.json",
       "models": "models.json",
+      "skeletons": "skeletons.rdb",
+      "animations": "animations.rdb",
       "shader_layouts": "shaders.json",
       "shaders": "shaders.rdb"
     }
@@ -19,6 +21,22 @@
       "file": "gltf/quad.gltf",
       "mesh": "Quad",
       "primitive": 0
+    },
+    {
+      "entry": "geometry/simple_skin",
+      "file": "gltf/SimpleSkin.gltf"
+    }
+  ],
+  "skeletons": [
+    {
+      "entry": "skeletons/simple_skin",
+      "file": "gltf/SimpleSkin.gltf"
+    }
+  ],
+  "animations": [
+    {
+      "entry": "animations/simple_skin",
+      "file": "gltf/SimpleSkin.gltf"
     }
   ],
   "imagery": [
@@ -39,6 +57,11 @@
         "imagery/tulips",
         "imagery/peppers"
       ]
+    },
+    {
+      "name": "simple_skin",
+      "geometry": "geometry/simple_skin",
+      "textures": []
     }
   ],
   "shaders": [

@@ -5,6 +5,12 @@
       "meshes": [
         "mesh/quad"
       ]
+    },
+    "model/simple_skin": {
+      "name": "Simple Skin",
+      "meshes": [
+        "mesh/simple_skin"
+      ]
     }
   }
 }

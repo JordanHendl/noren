@@ -1,5 +1,11 @@
 {
   "meshes": {
+    "mesh/simple_skin": {
+      "name": "simple_skin",
+      "geometry": "geometry/simple_skin",
+      "material": null,
+      "textures": []
+    },
     "mesh/quad": {
       "name": "quad",
       "geometry": "geometry/quad",
