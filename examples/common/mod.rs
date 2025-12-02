@@ -34,6 +34,14 @@ pub const SAMPLE_TEXTURE_ENTRY: DatabaseEntry = "imagery/tulips";
 #[allow(dead_code)]
 pub const SAMPLE_MODEL_ENTRY: DatabaseEntry = "model/quad";
 
+/// Entry name for the bundled skinned skeleton.
+#[allow(dead_code)]
+pub const SAMPLE_SKELETON_ENTRY: DatabaseEntry = "skeletons/simple_skin";
+
+/// Entry name for the bundled animation clip.
+#[allow(dead_code)]
+pub const SAMPLE_ANIMATION_ENTRY: DatabaseEntry = "animations/simple_skin";
+
 /// Convenience wrapper that creates a headless GPU context suitable for the
 /// examples. When the host system lacks a Vulkan device the failure is
 /// propagated so that callers can gracefully skip the demo.

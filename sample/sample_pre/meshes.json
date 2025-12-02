@@ -8,6 +8,11 @@
         "texture/imagery/tulips",
         "texture/imagery/peppers"
       ]
+    },
+    "mesh/simple_skin": {
+      "name": "Simple Skin Mesh",
+      "geometry": "geometry/simple_skin",
+      "textures": []
     }
   }
 }

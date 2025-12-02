@@ -40,11 +40,26 @@ cargo run --bin dbgen -- sample/sample_pre/norenbuild.json
 ```
 
 The command produces a `sample/db/` folder with `geometry.rdb`, `imagery.rdb`,
-`shaders.rdb`, and metadata JSON files (`materials.json`, `textures.json`,
-`meshes.json`, `models.json`, `shaders.json`). Use the `--append` flag to
-incrementally add new entries without rebuilding from scratch, or call `dbgen
-append` to inject a single resource (geometry, imagery, or shader) into an
-existing `.rdb` file.
+`skeletons.rdb`, `animations.rdb`, `shaders.rdb`, and metadata JSON files
+(`materials.json`, `textures.json`, `meshes.json`, `models.json`,
+`shaders.json`). Use the `--append` flag to incrementally add new entries
+without rebuilding from scratch or the `--layouts-only` flag to refresh the JSON
+layouts without touching the binary `.rdb` payloads. You can also call `dbgen
+append` to inject a single resource (geometry, imagery, skeleton, animation, or
+shader) into an existing database file.
+
+### Loading animated assets
+
+The staging area now ships with `sample/sample_pre/gltf/SimpleSkin.gltf`, a
+minimal skinned mesh with a rotation animation. After rebuilding the sample
+database, you can verify that runtime loading works with:
+
+```bash
+cargo run --example skeleton_animation_load
+```
+
+The example prints the joint count and animation clip duration for the bundled
+assets while reusing the generated database.
 
 ## Running examples
 
