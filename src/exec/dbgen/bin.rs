@@ -19,10 +19,8 @@ use noren::{
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
-        AnimationTargetPath, AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, Joint,
-        ShaderModule, Skeleton, primitives::Vertex,
-        AudioClip, AudioFormat, GeometryLayer, HostGeometry, HostImage, ImageInfo, ShaderModule,
-        primitives::Vertex,
+        AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostGeometry, HostImage, Joint,
+        ShaderModule, Skeleton, primitives::Vertex, ImageInfo,
     },
     validate_database_layout,
 };
