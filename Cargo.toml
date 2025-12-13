@@ -11,8 +11,8 @@ gltf = "1.4.1"  # For reading glTF files
 glam = "0.24.0"  # For vector math (Vec2 and Vec3)
 image = "0.24"
 dashi = {git = "https://github.com/JordanHendl/dashi", features = ["dashi-serde"]}
-bento = {git = "https://github.com/JordanHendl/bento"}
-furikake = {git = "https://github.com/JordanHendl/furikake"}
+bento = {git = "https://github.com/JordanHendl/gohan"}
+furikake = {git = "https://github.com/JordanHendl/gohan"}
 serde = {version = "1.0.210", features = ["derive"]}
 serde_json = "1.0.128"
 unzip3 = "1.0.0"
