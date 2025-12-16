@@ -177,7 +177,7 @@ fn furikake_layouts(
         return Ok(layouts);
     }
 
-    let (bg_recipes, bt_recipes) = match state {
+    let bt_recipes = match state {
         FurikakeState::Default => {
             let fk_state = DefaultState::new(ctx);
             recipe_layouts(ctx, shader_key, &fk_state, &mut artifacts)?
@@ -188,25 +188,6 @@ fn furikake_layouts(
         }
         FurikakeState::None => unreachable!(),
     };
-
-    for recipe in bg_recipes {
-        let set = recipe
-            .bindings
-            .first()
-            .map(|b| b.var.set)
-            .unwrap_or_default();
-        let Some(slot) = layouts.bg_layouts.get_mut(set as usize) else {
-            return Err(NorenError::InvalidShaderState(format!(
-                "shader '{shader_key}' uses bind group set {set} which exceeds the supported limit"
-            )));
-        };
-
-        if slot.replace(recipe.layout).is_some() {
-            return Err(NorenError::InvalidShaderState(format!(
-                "shader '{shader_key}' declares multiple bind group layouts for set {set}"
-            )));
-        }
-    }
 
     for recipe in bt_recipes {
         let set = recipe
@@ -235,13 +216,7 @@ fn recipe_layouts<T: GPUState>(
     shader_key: &str,
     state: &T,
     artifacts: &mut [bento::CompilationResult],
-) -> Result<
-    (
-        Vec<furikake::recipe::BindGroupRecipe>,
-        Vec<furikake::recipe::BindTableRecipe>,
-    ),
-    NorenError,
-> {
+) -> Result<Vec<furikake::recipe::BindTableRecipe>, NorenError> {
     let book = RecipeBook::new(ctx, state, artifacts).map_err(|err| {
         NorenError::InvalidShaderState(format!(
             "furikake validation failed for shader '{shader_key}': {err}"

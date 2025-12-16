@@ -114,7 +114,7 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 [[package]]
 name = "bento"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#81331fa52b9121260b62312dba104dbed9998910"
+source = "git+https://github.com/JordanHendl/gohan#d7f9076670c061f06abaca8091bf04a1de798099"
 dependencies = [
  "bincode",
  "clap",
@@ -487,7 +487,7 @@ dependencies = [
 [[package]]
 name = "dashi"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/dashi#b704a77ab479661a1e45c27f806b1798958eba91"
+source = "git+https://github.com/JordanHendl/dashi#e866b4bd8757ad6864553db181b25bcb326d282f"
 dependencies = [
  "anyhow",
  "ash",
@@ -636,7 +636,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 [[package]]
 name = "furikake"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#81331fa52b9121260b62312dba104dbed9998910"
+source = "git+https://github.com/JordanHendl/gohan#d7f9076670c061f06abaca8091bf04a1de798099"
 dependencies = [
  "bento",
  "dashi",
@@ -984,9 +984,9 @@ dependencies = [
 
 [[package]]
 name = "moxcms"
-version = "0.7.10"
+version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80986bbbcf925ebd3be54c26613d861255284584501595cf418320c078945608"
+checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
@@ -2093,9 +2093,9 @@ dependencies = [
 
 [[package]]
 name = "zune-jpeg"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f520eebad972262a1dde0ec455bce4f8b298b1e5154513de58c114c4c54303e8"
+checksum = "51d915729b0e7d5fe35c2f294c5dc10b30207cc637920e5b59077bfa3da63f28"
 dependencies = [
  "zune-core",
 ]
