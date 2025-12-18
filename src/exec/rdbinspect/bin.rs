@@ -2,7 +2,7 @@ use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 
 use bincode::deserialize;
 use noren::{
-    RDBView, RDBEntryMeta,
+    RDBEntryMeta, RDBView,
     rdb::{AnimationClip, HostGeometry, HostImage, ShaderModule, Skeleton},
     type_tag_for,
 };

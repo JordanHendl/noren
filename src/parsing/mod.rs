@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use crate::furikake_state::FurikakeState;
 use dashi::Format;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 fn default_geometry_path() -> String {
     "geometry.rdb".to_string()
@@ -121,11 +120,9 @@ pub struct MaterialLayout {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub textures: Vec<String>,
+    pub render_mask: u16,
     #[serde(default)]
-    pub shader: Option<String>,
-    #[serde(default)]
-    pub metadata: MaterialMetadata,
+    pub texture_lookups: MaterialTextureLookups,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -149,17 +146,17 @@ pub struct ModelLayout {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MaterialMetadata {
+pub struct MaterialTextureLookups {
     #[serde(default)]
-    pub bindings: Vec<MaterialBinding>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MaterialBinding {
+    pub base_color: Option<String>,
     #[serde(default)]
-    pub name: Option<String>,
+    pub normal: Option<String>,
     #[serde(default)]
-    pub defaults: Value,
+    pub metallic_roughness: Option<String>,
+    #[serde(default)]
+    pub occlusion: Option<String>,
+    #[serde(default)]
+    pub emissive: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

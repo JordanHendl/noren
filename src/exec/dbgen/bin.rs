@@ -1793,6 +1793,7 @@ fn compile_shader(
         stage: entry.stage.to_shader_type()?,
         optimization: OptimizationLevel::Performance,
         debug_symbols: false,
+        defines: HashMap::new(),
     };
 
     let path_str = path
