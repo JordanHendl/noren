@@ -2,214 +2,24 @@
   "materials": {
     "material/quad": {
       "name": "Quad Material",
-      "textures": [
-        "texture/imagery/tulips"
-      ],
-      "shader": "shader/default",
-      "metadata": {
-        "bindings": []
+      "render_mask": 1,
+      "texture_lookups": {
+        "base_color": "texture/imagery/tulips"
       }
     },
     "material/multi_bind": {
       "name": "Multi Bind Quad",
-      "textures": [
-        "texture/imagery/tulips",
-        "texture/imagery/peppers"
-      ],
-      "shader": "shader/multi_bind",
-      "metadata": {
-        "bindings": [
-          {
-            "name": "noren_camera",
-            "defaults": {
-              "view_proj": [
-                [
-                  1.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  1.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  1.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  1.0
-                ]
-              ],
-              "eye": [
-                0.0,
-                0.0,
-                3.0
-              ],
-              "exposure": 1.0
-            }
-          },
-          {
-            "name": "noren_instances",
-            "defaults": {
-              "models": [
-                [
-                  [
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0
-                  ],
-                  [
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0
-                  ],
-                  [
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0
-                  ],
-                  [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ]
-                ]
-              ]
-            }
-          },
-          {
-            "name": "noren_lights",
-            "defaults": {
-              "positions": [
-                [
-                  2.0,
-                  2.0,
-                  2.0,
-                  1.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                [
-                  0.0,
-                  0.0,
-                  0.0,
-                  0.0
-                ]
-              ]
-            }
-          },
-          {
-            "name": "material_layers",
-            "defaults": {}
-          },
-          {
-            "name": "bindless_layers",
-            "defaults": {
-              "count": 64,
-              "slots": [
-                0,
-                1
-              ]
-            }
-          }
-        ]
+      "render_mask": 3,
+      "texture_lookups": {
+        "base_color": "texture/imagery/tulips",
+        "emissive": "texture/imagery/peppers"
       }
     },
     "material/bind_table": {
       "name": "Bind Table Quad",
-      "textures": [
-        "texture/imagery/peppers"
-      ],
-      "shader": "shader/bind_table",
-      "metadata": {
-        "bindings": [
-          {
-            "name": "noren_post_settings",
-            "defaults": {
-              "exposure": 1.0,
-              "gamma": 2.2,
-              "_padding": [
-                0.0,
-                0.0
-              ]
-            }
-          },
-          {
-            "name": "noren_exposure",
-            "defaults": {
-              "exposure": 2.0,
-              "gamma": 2.2,
-              "_padding": [
-                0.0,
-                0.0
-              ]
-            }
-          },
-          {
-            "name": "bindless_layers",
-            "defaults": {
-              "count": 64,
-              "slots": [
-                0
-              ]
-            }
-          },
-          {
-            "name": "noren_indices",
-            "defaults": {
-              "indices": [
-                0,
-                1
-              ]
-            }
-          }
-        ]
+      "render_mask": 2,
+      "texture_lookups": {
+        "base_color": "texture/imagery/peppers"
       }
     }
   }

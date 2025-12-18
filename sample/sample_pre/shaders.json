@@ -1,22 +1,4 @@
 {
-  "shaders": {
-    "shader/default": {
-      "name": "Default Shader",
-      "vertex": "shader/quad.vert",
-      "fragment": "shader/quad.frag",
-      "color_formats": ["RGBA8"]
-    },
-    "shader/multi_bind": {
-      "name": "Multi Bind Shader",
-      "vertex": "shader/multi_bind.vert",
-      "fragment": "shader/multi_bind.frag",
-      "color_formats": ["RGBA8"]
-    },
-    "shader/bind_table": {
-      "name": "Bind Table Shader",
-      "vertex": "shader/bind_table.vert",
-      "fragment": "shader/bind_table.frag",
-      "color_formats": ["RGBA8"]
-    }
-  }
+  "shaders": {},
+  "compute_shaders": {}
 }
