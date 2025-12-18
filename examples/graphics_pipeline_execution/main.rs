@@ -29,7 +29,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let layout_str = layout_path.to_str().expect("layout utf-8");
 
     let info = noren::DBInfo {
-        ctx: &mut ctx,
+        ctx: Some(&mut ctx),
         base_dir: base_dir_str,
         layout_file: Some(layout_str),
     };
