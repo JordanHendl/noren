@@ -33,6 +33,7 @@ pub enum NorenError {
     InvalidModel(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
     InvalidShaderState(String),
+    FurikakeError(String),
     JSONError(serde_json::Error),
     YAMLError(serde_yaml::Error),
     IOFailure(std::io::Error),
@@ -76,6 +77,9 @@ impl std::fmt::Display for NorenError {
             NorenError::InvalidShaderState(reason) => {
                 write!(f, "Invalid shader state: {}", reason)
             }
+            NorenError::FurikakeError(reason) => {
+                write!(f, "Furikake integration failed: {}", reason)
+            }
             NorenError::RDBFileError(rdb_err) => write!(f, "RDB file error: {}", rdb_err),
             NorenError::IOFailure(error) => write!(f, "I/O failure: {}", error),
             NorenError::JSONError(error) => write!(f, "JSON processing error: {}", error),
@@ -105,6 +109,12 @@ impl From<serde_yaml::Error> for NorenError {
 impl From<std::io::Error> for NorenError {
     fn from(value: std::io::Error) -> Self {
         return NorenError::IOFailure(value);
+    }
+}
+
+impl From<furikake::error::FurikakeError> for NorenError {
+    fn from(value: furikake::error::FurikakeError) -> Self {
+        NorenError::FurikakeError(value.to_string())
     }
 }
 

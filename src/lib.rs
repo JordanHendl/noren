@@ -5,7 +5,13 @@ pub mod rdb;
 mod utils;
 use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 
-use furikake::types::Material as FurikakeMaterial;
+use furikake::{
+    BindlessState,
+    reservations::{
+        bindless_materials::ReservedBindlessMaterials, bindless_textures::ReservedBindlessTextures,
+    },
+    types::Material as FurikakeMaterial,
+};
 pub use furikake_state::FurikakeState;
 use meta::*;
 use parsing::*;
@@ -31,6 +37,26 @@ pub struct ShaderValidationError {
     pub models: Vec<String>,
 }
 
+struct FurikakeBindings {
+    state: NonNull<BindlessState>,
+    textures: HashMap<String, u16>,
+    materials: HashMap<String, dashi::Handle<FurikakeMaterial>>,
+}
+
+impl FurikakeBindings {
+    fn new(state: &mut BindlessState) -> Self {
+        Self {
+            state: NonNull::from(state),
+            textures: HashMap::new(),
+            materials: HashMap::new(),
+        }
+    }
+
+    fn state_mut(&mut self) -> &mut BindlessState {
+        unsafe { self.state.as_mut() }
+    }
+}
+
 pub struct DB {
     geometry: GeometryDB,
     imagery: ImageDB,
@@ -44,6 +70,7 @@ pub struct DB {
     graphics_pipelines: HashMap<String, dashi::Handle<dashi::GraphicsPipeline>>,
     compute_pipeline_layouts: HashMap<String, dashi::Handle<dashi::ComputePipelineLayout>>,
     compute_pipelines: HashMap<String, dashi::Handle<dashi::ComputePipeline>>,
+    furikake: Option<FurikakeBindings>,
 }
 
 fn read_database_layout(layout_file: Option<&str>) -> Result<DatabaseLayoutFile, NorenError> {
@@ -159,6 +186,7 @@ impl DB {
             graphics_pipelines: HashMap::new(),
             compute_pipeline_layouts: HashMap::new(),
             compute_pipelines: HashMap::new(),
+            furikake: None,
         })
     }
 
@@ -297,6 +325,11 @@ impl DB {
             .unwrap_or_default()
     }
 
+    /// Registers an existing bindless furikake state for asset imports.
+    pub fn import_furikake_state(&mut self, state: &mut BindlessState) {
+        self.furikake = Some(FurikakeBindings::new(state));
+    }
+
     /// Builds a CPU-side model composed of host geometry, textures, and materials.
     pub fn fetch_model(&mut self, entry: DatabaseEntry<'_>) -> Result<HostModel, NorenError> {
         self.assemble_model(
@@ -378,7 +411,13 @@ impl DB {
     }
 
     /// Builds a CPU-side material with host images and furikake definitions.
-    pub fn fetch_host_material(&mut self, entry: &str) -> Result<HostMaterial, NorenError> {
+    ///
+    /// Returns the material alongside an optional furikake bindless handle when a
+    /// bindless state has been imported.
+    pub fn fetch_host_material(
+        &mut self,
+        entry: &str,
+    ) -> Result<(HostMaterial, Option<dashi::Handle<FurikakeMaterial>>), NorenError> {
         let layout = self
             .meta_layout
             .as_ref()
@@ -393,15 +432,23 @@ impl DB {
         )?
         .ok_or_else(NorenError::LookupFailure)?;
 
-        Ok(HostMaterial {
+        let furikake_handle = self.ensure_furikake_material(entry).transpose()?;
+
+        Ok((HostMaterial {
             name,
             textures,
             material,
-        })
+        }, furikake_handle))
     }
 
     /// Builds a GPU-ready material with device textures and furikake definitions.
-    pub fn fetch_device_material(&mut self, entry: &str) -> Result<DeviceMaterial, NorenError> {
+    ///
+    /// Returns the material alongside an optional furikake bindless handle when a
+    /// bindless state has been imported.
+    pub fn fetch_device_material(
+        &mut self,
+        entry: &str,
+    ) -> Result<(DeviceMaterial, Option<dashi::Handle<FurikakeMaterial>>), NorenError> {
         let layout = self
             .meta_layout
             .as_ref()
@@ -416,7 +463,9 @@ impl DB {
         )?
         .ok_or_else(NorenError::LookupFailure)?;
 
-        Ok(DeviceMaterial::new(textures, material))
+        let furikake_handle = self.ensure_furikake_material(entry).transpose()?;
+
+        Ok((DeviceMaterial::new(textures, material), furikake_handle))
     }
 
     /// Fetches a graphics shader definition.
@@ -442,6 +491,179 @@ impl DB {
         furikake_state::validate_furikake_state(&shader, shader.furikake_state)?;
 
         Ok(shader)
+    }
+
+    fn furikake_bindings_mut(&mut self) -> Result<&mut FurikakeBindings, NorenError> {
+        self.furikake
+            .as_mut()
+            .ok_or_else(|| NorenError::FurikakeError("furikake state not imported".to_string()))
+    }
+
+    fn ensure_furikake_texture(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Option<Result<u16, NorenError>> {
+        let Some(_) = self.furikake else {
+            return None;
+        };
+
+        if let Some(id) = self
+            .furikake
+            .as_ref()
+            .and_then(|bindings| bindings.textures.get(entry))
+        {
+            return Some(Ok(*id));
+        }
+
+        let device_image = match self.imagery.fetch_gpu_image(entry) {
+            Ok(image) => image,
+            Err(err) => return Some(Err(err)),
+        };
+        let view = dashi::ImageView {
+            img: device_image.img,
+            ..Default::default()
+        };
+
+        let mut inserted_id = None;
+        {
+            let bindings = match self.furikake_bindings_mut() {
+                Ok(bindings) => bindings,
+                Err(err) => return Some(Err(err)),
+            };
+            let result = bindings.state_mut().reserved_mut::<ReservedBindlessTextures, _>(
+                "meshi_bindless_textures",
+                |textures| {
+                    inserted_id = Some(textures.add_texture(view));
+                },
+            );
+
+            if let Err(err) = result {
+                return Some(Err(err.into()));
+            }
+
+            let id = match inserted_id {
+                Some(id) => id,
+                None => {
+                    return Some(Err(NorenError::FurikakeError(
+                        "failed to allocate furikake texture slot".to_string(),
+                    )))
+                }
+            };
+
+            bindings.textures.insert(entry.to_string(), id);
+            Some(Ok(id))
+        }
+    }
+
+    fn ensure_furikake_material(
+        &mut self,
+        entry: &str,
+    ) -> Option<Result<dashi::Handle<FurikakeMaterial>, NorenError>> {
+        let Some(_) = self.furikake else {
+            return None;
+        };
+
+        if let Some(handle) = self
+            .furikake
+            .as_ref()
+            .and_then(|bindings| bindings.materials.get(entry))
+        {
+            return Some(Ok(*handle));
+        }
+
+        let layout = match self.meta_layout.as_ref() {
+            Some(layout) => layout,
+            None => return Some(Err(NorenError::LookupFailure())),
+        };
+
+        let Some(material_def) = layout.materials.get(entry) else {
+            return Some(Err(NorenError::LookupFailure()));
+        };
+
+        let mut furikake_material = FurikakeMaterial {
+            render_mask: material_def.render_mask,
+            ..Default::default()
+        };
+
+        let mut texture_ids: HashMap<String, u16> = HashMap::new();
+        let mut texture_entries: Vec<(MaterialTextureSlot, String, String)> = Vec::new();
+
+        for (slot, texture_key) in material_texture_lookups(&material_def.texture_lookups) {
+            let Some(tex_key) = texture_key else { continue };
+
+            let tex_def = match layout.textures.get(tex_key) {
+                Some(tex_def) => tex_def,
+                None => {
+                    return Some(Err(NorenError::InvalidMaterial(format!(
+                        "Material '{entry}' references missing texture '{tex_key}'",
+                    ))))
+                }
+            };
+
+            if tex_def.image.is_empty() {
+                return Some(Err(NorenError::InvalidMaterial(format!(
+                    "Material '{entry}' references texture '{tex_key}' without an image",
+                ))));
+            }
+
+            texture_entries.push((slot, tex_key.to_string(), tex_def.image.clone()));
+        }
+
+        for (slot, tex_key, image_entry) in texture_entries {
+            let id = if let Some(id) = texture_ids.get(&tex_key) {
+                *id
+            } else {
+                let id = match self.ensure_furikake_texture(image_entry.as_str()) {
+                    Some(Ok(id)) => id,
+                    Some(Err(err)) => return Some(Err(err)),
+                    None => return None,
+                };
+                texture_ids.insert(tex_key.clone(), id);
+                id
+            };
+
+            match slot {
+                MaterialTextureSlot::BaseColor => furikake_material.base_color_texture_id = id,
+                MaterialTextureSlot::Normal => furikake_material.normal_texture_id = id,
+                MaterialTextureSlot::MetallicRoughness => {
+                    furikake_material.metallic_roughness_texture_id = id
+                }
+                MaterialTextureSlot::Occlusion => furikake_material.occlusion_texture_id = id,
+                MaterialTextureSlot::Emissive => furikake_material.emissive_texture_id = id,
+            }
+        }
+
+        let mut handle = None;
+        {
+            let bindings = match self.furikake_bindings_mut() {
+                Ok(bindings) => bindings,
+                Err(err) => return Some(Err(err)),
+            };
+            let result = bindings.state_mut().reserved_mut::<ReservedBindlessMaterials, _>(
+                "meshi_bindless_materials",
+                |materials| {
+                    let material_handle = materials.add_material();
+                    *materials.material_mut(material_handle) = furikake_material;
+                    handle = Some(material_handle);
+                },
+            );
+
+            if let Err(err) = result {
+                return Some(Err(err.into()));
+            }
+
+            let handle = match handle {
+                Some(handle) => handle,
+                None => {
+                    return Some(Err(NorenError::FurikakeError(
+                        "failed to allocate furikake material slot".to_string(),
+                    )))
+                }
+            };
+
+            bindings.materials.insert(entry.to_string(), handle);
+            Some(Ok(handle))
+        }
     }
 }
 
