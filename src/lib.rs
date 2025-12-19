@@ -1673,7 +1673,7 @@ mod tests {
             base_dir: base_dir.to_str().expect("base dir to str"),
             layout_file: None,
         };
-        
+
         let mut db = DB::new(&db_info)?;
         db.import_dashi_context(&mut ctx);
         let host_model = db.fetch_model(MODEL_ENTRY)?;
