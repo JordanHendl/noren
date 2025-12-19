@@ -5,6 +5,7 @@ pub mod rdb;
 mod utils;
 use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 
+use dashi::Context;
 use furikake::{
     BindlessState,
     reservations::{
@@ -24,7 +25,6 @@ pub use utils::error::{NorenError, RdbErr};
 pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView, type_tag_for};
 
 pub struct DBInfo<'a> {
-    pub ctx: Option<*mut dashi::Context>,
     pub base_dir: &'a str,
     pub layout_file: Option<&'a str>,
 }
@@ -156,12 +156,16 @@ pub fn validate_database_layout(
 ////////////////////////////////////////////////
 
 impl DB {
-    /// Creates a database handle that can load assets using the provided configuration.
     pub fn new(info: &DBInfo) -> Result<Self, NorenError> {
+        Self::new_with_ctx(info, None)
+    }
+
+    /// Creates a database handle that can load assets using the provided configuration.
+    pub fn new_with_ctx(info: &DBInfo, ctx: Option<*mut Context>) -> Result<Self, NorenError> {
         let layout = read_database_layout(info.layout_file)?;
 
-        let geometry = GeometryDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.geometry));
-        let imagery = ImageDB::new(info.ctx, &format!("{}/{}", info.base_dir, layout.imagery));
+        let geometry = GeometryDB::new(ctx, &format!("{}/{}", info.base_dir, layout.geometry));
+        let imagery = ImageDB::new(ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let audio = AudioDB::new(&format!("{}/{}", info.base_dir, layout.audio));
         let skeletons = SkeletonDB::new(&format!("{}/{}", info.base_dir, layout.skeletons));
         let animations = AnimationDB::new(&format!("{}/{}", info.base_dir, layout.animations));
@@ -180,7 +184,7 @@ impl DB {
             skeletons,
             animations,
             shaders,
-            ctx: info.ctx.and_then(NonNull::new),
+            ctx: None,
             meta_layout,
             graphics_pipeline_layouts: HashMap::new(),
             graphics_pipelines: HashMap::new(),
@@ -1666,12 +1670,12 @@ mod tests {
             dashi::Context::headless(&Default::default()).expect("create headless context");
 
         let db_info = DBInfo {
-            ctx: Some(&mut ctx),
             base_dir: base_dir.to_str().expect("base dir to str"),
             layout_file: None,
         };
-
+        
         let mut db = DB::new(&db_info)?;
+        db.import_dashi_context(&mut ctx);
         let host_model = db.fetch_model(MODEL_ENTRY)?;
         assert_eq!(host_model.name, MODEL_ENTRY);
         assert_eq!(host_model.meshes.len(), 1);
@@ -1953,12 +1957,11 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
         let db_info = DBInfo {
-            ctx: Some(&mut ctx),
             base_dir: base.to_str().unwrap(),
             layout_file: None,
         };
 
-        let mut db = DB::new(&db_info)?;
+        let mut db = DB::new_with_ctx(&db_info, Some(&mut ctx))?;
         let host_err = db
             .fetch_mesh_with_material(MESH_ENTRY, "material/missing")
             .expect_err("missing material override should fail");
@@ -2038,12 +2041,11 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
         let db_info = DBInfo {
-            ctx: Some(&mut ctx),
             base_dir: base.to_str().unwrap(),
             layout_file: None,
         };
 
-        let mut db = DB::new(&db_info)?;
+        let mut db = DB::new_with_ctx(&db_info, Some(&mut ctx))?;
         let host_err = db
             .fetch_mesh_with_material(MESH_MISSING_GEOMETRY, MATERIAL_ENTRY)
             .expect_err("mesh with empty geometry should fail");

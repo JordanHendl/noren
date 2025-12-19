@@ -29,13 +29,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     let layout_str = layout_path.to_str().expect("layout utf-8");
 
     let info = noren::DBInfo {
-        ctx: Some(&mut ctx),
         base_dir: base_dir_str,
         layout_file: Some(layout_str),
     };
 
     let mut db = noren::DB::new(&info)?;
-
+    db.import_dashi_context(&mut ctx);
     // Create a pipeline layout for the default quad shader and immediately
     // build a graphics pipeline from it.
     let layout = db.make_pipeline_layout("shader/default")?;

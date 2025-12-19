@@ -58,12 +58,11 @@ pub fn open_sample_db(ctx: &mut gpu::Context) -> Result<DB, Box<dyn Error>> {
     let layout_str = path_to_string(&layout_path)?;
 
     let info = DBInfo {
-        ctx: Some(ctx),
         base_dir: &base_dir_str,
         layout_file: Some(&layout_str),
     };
 
-    Ok(DB::new(&info)?)
+    Ok(DB::new_with_ctx(&info, Some(ctx))?)
 }
 
 /// Resolve an input argument into a geometry database entry name.
