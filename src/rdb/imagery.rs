@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ptr::NonNull,
     time::{Duration, Instant},
 };
@@ -6,7 +7,11 @@ use std::{
 use dashi::{Context, Handle, Image};
 use serde::{Deserialize, Serialize};
 
-use crate::{DataCache, RDBView, utils::NorenError};
+use crate::{
+    DataCache, RDBView,
+    defaults::{DEFAULT_IMAGE_ENTRY, default_image},
+    utils::NorenError,
+};
 
 use super::DatabaseEntry;
 
@@ -104,6 +109,7 @@ pub struct ImageDB {
     cache: DataCache<DeviceImage>,
     ctx: Option<NonNull<Context>>,
     data: Option<RDBView>,
+    defaults: HashMap<String, HostImage>,
 }
 
 impl ImageDB {
@@ -118,6 +124,7 @@ impl ImageDB {
             data,
             ctx: ctx.and_then(NonNull::new),
             cache: Default::default(),
+            defaults: std::iter::once((DEFAULT_IMAGE_ENTRY.to_string(), default_image())).collect(),
         }
     }
 
@@ -165,10 +172,15 @@ impl ImageDB {
     /// Retrieves host image data from the backing database file.
     pub fn fetch_raw_image(&mut self, entry: DatabaseEntry<'_>) -> Result<HostImage, NorenError> {
         if let Some(rdb) = &mut self.data {
-            return Ok(rdb.fetch::<HostImage>(entry)?);
+            if let Ok(image) = rdb.fetch::<HostImage>(entry) {
+                return Ok(image);
+            }
         }
 
-        return Err(NorenError::DataFailure());
+        self.defaults
+            .get(entry)
+            .cloned()
+            .ok_or(NorenError::DataFailure())
     }
 
     /// Loads an image into GPU memory if needed and bumps its reference count.
@@ -325,6 +337,18 @@ mod tests {
         assert!(!db.is_loaded(&TEST_ENTRY));
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn default_image_available_without_file() -> Result<(), NorenError> {
+        let mut db = ImageDB::new(None, "./missing-image.rdb");
+
+        let image = db.fetch_raw_image(crate::defaults::DEFAULT_IMAGE_ENTRY)?;
+
+        assert_eq!(image.info.name, crate::defaults::DEFAULT_IMAGE_ENTRY);
+        assert_eq!(image.data.len(), 4);
+
+        Ok(())
     }
 
     fn build_image_with_name(name: &str) -> ImageInfo {

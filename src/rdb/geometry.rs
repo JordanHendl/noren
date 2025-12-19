@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ptr::NonNull,
     time::{Duration, Instant},
 };
@@ -7,7 +8,7 @@ use dashi::{Buffer, BufferInfo, BufferUsage, Context, Handle, MemoryVisibility};
 use serde::{Deserialize, Serialize};
 
 use super::{DatabaseEntry, primitives::Vertex};
-use crate::{DataCache, RDBView, error::NorenError};
+use crate::{DataCache, RDBView, defaults::default_primitives, error::NorenError};
 
 #[cfg(test)]
 const UNLOAD_DELAY: Duration = Duration::from_secs(0);
@@ -47,6 +48,7 @@ pub struct GeometryDB {
     cache: DataCache<DeviceGeometry>,
     ctx: Option<NonNull<Context>>,
     data: Option<RDBView>,
+    defaults: HashMap<String, HostGeometry>,
 }
 
 impl GeometryDB {
@@ -61,6 +63,7 @@ impl GeometryDB {
             data,
             ctx: ctx.and_then(NonNull::new),
             cache: Default::default(),
+            defaults: default_primitives().into_iter().collect(),
         }
     }
 
@@ -123,10 +126,15 @@ impl GeometryDB {
         entry: DatabaseEntry<'_>,
     ) -> Result<HostGeometry, NorenError> {
         if let Some(rdb) = &mut self.data {
-            return Ok(rdb.fetch::<HostGeometry>(entry)?);
+            if let Ok(geometry) = rdb.fetch::<HostGeometry>(entry) {
+                return Ok(geometry);
+            }
         }
 
-        return Err(NorenError::DataFailure());
+        self.defaults
+            .get(entry)
+            .cloned()
+            .ok_or(NorenError::DataFailure())
     }
 
     /// Ensures the geometry is loaded on the GPU and increments its reference count.
@@ -246,7 +254,10 @@ impl GeometryDB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::rdbfile::RDBFile;
+    use crate::{
+        defaults::{DEFAULT_GEOMETRY_ENTRIES, default_primitives},
+        utils::rdbfile::RDBFile,
+    };
 
     fn sample_vertex(x: f32) -> Vertex {
         Vertex {
@@ -281,6 +292,7 @@ mod tests {
             cache: DataCache::default(),
             ctx: None,
             data: Some(view),
+            defaults: default_primitives().into_iter().collect(),
         };
 
         // First fetch should load from disk and cache
@@ -303,6 +315,21 @@ mod tests {
         assert!(!db.is_loaded(&entry));
 
         std::fs::remove_file(&tmp_path).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn default_geometry_available_without_file() -> Result<(), NorenError> {
+        let mut db = GeometryDB {
+            cache: DataCache::default(),
+            ctx: None,
+            data: None,
+            defaults: default_primitives().into_iter().collect(),
+        };
+
+        let geometry = db.fetch_raw_geometry(DEFAULT_GEOMETRY_ENTRIES[0])?;
+
+        assert!(!geometry.vertices.is_empty());
         Ok(())
     }
 }

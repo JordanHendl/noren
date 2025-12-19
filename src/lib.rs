@@ -1,3 +1,4 @@
+pub mod defaults;
 mod furikake_state;
 pub mod meta;
 pub mod parsing;
@@ -6,6 +7,7 @@ mod utils;
 use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 
 use dashi::Context;
+use defaults::inject_default_layouts;
 use furikake::{
     BindlessState,
     reservations::{
@@ -119,6 +121,8 @@ fn load_meta_layout(
         meta_layout.shaders = file.shaders;
         meta_layout.compute_shaders = file.compute_shaders;
     }
+
+    inject_default_layouts(&mut meta_layout);
 
     if meta_layout.is_empty() {
         Ok(None)
