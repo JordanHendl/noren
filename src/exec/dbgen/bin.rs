@@ -15,7 +15,8 @@ use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
     parsing::{
-        MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile, TextureLayout, TextureLayoutFile,
+        MaterialLayout, MaterialLayoutFile, MaterialTextureLookups, MeshLayout, MeshLayoutFile,
+        ModelLayout, ModelLayoutFile, TextureLayout, TextureLayoutFile,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -25,6 +26,18 @@ use noren::{
     validate_database_layout,
 };
 use serde::{Deserialize, Serialize};
+
+const DEFAULT_IMAGE_ENTRY: &str = "imagery/default";
+const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
+const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
+const DEFAULT_GEOMETRY_ENTRIES: [&str; 6] = [
+    "geometry/sphere",
+    "geometry/cube",
+    "geometry/quad",
+    "geometry/plane",
+    "geometry/cylinder",
+    "geometry/cone",
+];
 
 #[derive(Clone, Default)]
 struct Logger {
@@ -543,6 +556,7 @@ fn run_from_path(
     let skeletons_path = resolve_string_path(&output_dir, &output.layout.skeletons);
     let animations_path = resolve_string_path(&output_dir, &output.layout.animations);
     let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
+    let materials_path = resolve_string_path(&output_dir, &output.layout.materials);
     let meshes_path = resolve_string_path(&output_dir, &output.layout.meshes);
     let models_path = resolve_string_path(&output_dir, &output.layout.models);
     let shaders_path = resolve_string_path(&output_dir, &output.layout.shaders);
@@ -598,6 +612,12 @@ fn run_from_path(
     )?;
 
     let model_layouts = build_model_layout(&models);
+
+    if let Some(parent) = materials_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let materials_file = File::create(&materials_path)?;
+    serde_json::to_writer_pretty(materials_file, &model_layouts.materials)?;
 
     if let Some(parent) = textures_path.parent() {
         fs::create_dir_all(parent)?;
@@ -842,17 +862,43 @@ fn inject_default_geometry(
 }
 
 fn default_primitives() -> Vec<(String, HostGeometry)> {
+    let [sphere, cube, quad, plane, cylinder, cone] = DEFAULT_GEOMETRY_ENTRIES;
+
     vec![
-        ("geometry/sphere".into(), make_sphere_geometry(0.5, 32, 16)),
-        ("geometry/cube".into(), make_cube_geometry(0.5)),
-        ("geometry/quad".into(), make_quad_geometry()),
-        ("geometry/plane".into(), make_plane_geometry()),
-        (
-            "geometry/cylinder".into(),
-            make_cylinder_geometry(0.5, 1.0, 32),
-        ),
-        ("geometry/cone".into(), make_cone_geometry(0.5, 1.0, 32)),
+        (sphere.into(), make_sphere_geometry(0.5, 32, 16)),
+        (cube.into(), make_cube_geometry(0.5)),
+        (quad.into(), make_quad_geometry()),
+        (plane.into(), make_plane_geometry()),
+        (cylinder.into(), make_cylinder_geometry(0.5, 1.0, 32)),
+        (cone.into(), make_cone_geometry(0.5, 1.0, 32)),
     ]
+}
+
+fn default_image() -> HostImage {
+    let info = ImageInfo {
+        name: DEFAULT_IMAGE_ENTRY.into(),
+        dim: [1, 1, 1],
+        layers: 1,
+        format: dashi::Format::RGBA8,
+        mip_levels: 1,
+    };
+
+    HostImage::new(info, vec![255, 255, 255, 255])
+}
+
+fn inject_default_imagery(rdb: &mut RDBFile, logger: &Logger) -> Result<(), BuildError> {
+    let has_default = rdb
+        .entries()
+        .iter()
+        .any(|meta| meta.name == DEFAULT_IMAGE_ENTRY);
+
+    if !has_default {
+        logger.log(format!("imagery: injecting {DEFAULT_IMAGE_ENTRY}"));
+        rdb.add(DEFAULT_IMAGE_ENTRY, &default_image())
+            .map_err(BuildError::from)?;
+    }
+
+    Ok(())
 }
 
 fn make_vertex(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
@@ -1221,6 +1267,7 @@ fn append_imagery(
     let image = load_image(Path::new("."), &args.entry)?;
     let entry_name = args.entry.entry.clone();
     rdb.add(&entry_name, &image).map_err(BuildError::from)?;
+    inject_default_imagery(&mut rdb, logger)?;
     if write_binaries {
         logger.log(format!("append imagery: writing {}", args.rdb.display()));
         rdb.save(&args.rdb).map_err(BuildError::from)?;
@@ -1257,6 +1304,8 @@ fn build_imagery(
         let image = load_image(base_dir, entry)?;
         rdb.add(&entry.entry, &image).map_err(BuildError::from)?;
     }
+
+    inject_default_imagery(&mut rdb, logger)?;
 
     if write_binaries {
         logger.log(format!("imagery: writing {}", output.display()));
@@ -2047,12 +2096,14 @@ struct ModelEntry {
 
 struct GeneratedModelLayouts {
     textures: TextureLayoutFile,
+    materials: MaterialLayoutFile,
     meshes: MeshLayoutFile,
     models: ModelLayoutFile,
 }
 
 fn build_model_layout(entries: &[ModelEntry]) -> GeneratedModelLayouts {
     let mut textures = TextureLayoutFile::default();
+    let materials = MaterialLayoutFile::default();
     let mut meshes = MeshLayoutFile::default();
     let mut models = ModelLayoutFile::default();
 
@@ -2093,10 +2144,65 @@ fn build_model_layout(entries: &[ModelEntry]) -> GeneratedModelLayouts {
         );
     }
 
-    GeneratedModelLayouts {
+    let mut layouts = GeneratedModelLayouts {
         textures,
+        materials,
         meshes,
         models,
+    };
+
+    ensure_default_assets(&mut layouts);
+
+    layouts
+}
+
+fn ensure_default_assets(layouts: &mut GeneratedModelLayouts) {
+    layouts
+        .textures
+        .textures
+        .entry(DEFAULT_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_IMAGE_ENTRY.into(),
+            name: Some("Default Texture".into()),
+        });
+
+    layouts
+        .materials
+        .materials
+        .entry(DEFAULT_MATERIAL_ENTRY.into())
+        .or_insert(MaterialLayout {
+            name: Some("Default Material".into()),
+            render_mask: 0,
+            texture_lookups: MaterialTextureLookups {
+                base_color: Some(DEFAULT_TEXTURE_ENTRY.into()),
+                ..Default::default()
+            },
+        });
+
+    for geometry in DEFAULT_GEOMETRY_ENTRIES {
+        let mesh_name = geometry.trim_start_matches("geometry/");
+        let mesh_key = format!("mesh/{mesh_name}");
+        let model_key = format!("model/{mesh_name}");
+
+        layouts
+            .meshes
+            .meshes
+            .entry(mesh_key.clone())
+            .or_insert(MeshLayout {
+                name: Some(mesh_name.to_string()),
+                geometry: geometry.to_string(),
+                material: Some(DEFAULT_MATERIAL_ENTRY.into()),
+                textures: vec![DEFAULT_TEXTURE_ENTRY.into()],
+            });
+
+        layouts
+            .models
+            .models
+            .entry(model_key)
+            .or_insert(ModelLayout {
+                name: Some(mesh_name.to_string()),
+                meshes: vec![mesh_key],
+            });
     }
 }
 
@@ -2295,6 +2401,7 @@ mod tests {
         assert!(output_dir.join("imagery.rdb").exists());
         assert!(output_dir.join("skeletons.rdb").exists());
         assert!(output_dir.join("animations.rdb").exists());
+        assert!(output_dir.join("materials.json").exists());
         assert!(output_dir.join("textures.json").exists());
         assert!(output_dir.join("meshes.json").exists());
         assert!(output_dir.join("models.json").exists());
@@ -2305,6 +2412,9 @@ mod tests {
             serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap()).unwrap();
         let mesh_layout: MeshLayoutFile =
             serde_json::from_reader(File::open(output_dir.join("meshes.json")).unwrap()).unwrap();
+        let material_layout: MaterialLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("materials.json")).unwrap())
+                .unwrap();
         let texture_layout: TextureLayoutFile =
             serde_json::from_reader(File::open(output_dir.join("textures.json")).unwrap()).unwrap();
 
@@ -2326,6 +2436,38 @@ mod tests {
             .get("texture/imagery/tulips")
             .expect("texture entry exists");
         assert_eq!(texture.image, "imagery/tulips");
+
+        let default_material = material_layout
+            .materials
+            .get(DEFAULT_MATERIAL_ENTRY)
+            .expect("default material");
+        assert_eq!(
+            default_material.texture_lookups.base_color.as_deref(),
+            Some(DEFAULT_TEXTURE_ENTRY)
+        );
+
+        let default_texture = texture_layout
+            .textures
+            .get(DEFAULT_TEXTURE_ENTRY)
+            .expect("default texture entry");
+        assert_eq!(default_texture.image, DEFAULT_IMAGE_ENTRY);
+
+        let sphere_model = model_layout
+            .models
+            .get("model/sphere")
+            .expect("default model");
+        assert_eq!(sphere_model.meshes, vec!["mesh/sphere"]);
+
+        let sphere_mesh = mesh_layout.meshes.get("mesh/sphere").expect("default mesh");
+        assert_eq!(sphere_mesh.geometry, "geometry/sphere");
+        assert_eq!(
+            sphere_mesh.material.as_deref(),
+            Some(DEFAULT_MATERIAL_ENTRY)
+        );
+        assert_eq!(
+            sphere_mesh.textures,
+            vec![DEFAULT_TEXTURE_ENTRY.to_string()]
+        );
 
         let mut layout_text = String::new();
         File::open(output_dir.join("layout.json"))
@@ -2432,6 +2574,7 @@ mod tests {
         assert!(!output_dir.join("skeletons.rdb").exists());
         assert!(!output_dir.join("animations.rdb").exists());
         assert!(!output_dir.join("shaders.rdb").exists());
+        assert!(output_dir.join("materials.json").exists());
         assert!(output_dir.join("textures.json").exists());
         assert!(output_dir.join("meshes.json").exists());
         assert!(output_dir.join("models.json").exists());
@@ -2441,6 +2584,9 @@ mod tests {
             serde_json::from_reader(File::open(output_dir.join("models.json")).unwrap()).unwrap();
         let mesh_layout: MeshLayoutFile =
             serde_json::from_reader(File::open(output_dir.join("meshes.json")).unwrap()).unwrap();
+        let material_layout: MaterialLayoutFile =
+            serde_json::from_reader(File::open(output_dir.join("materials.json")).unwrap())
+                .unwrap();
         let texture_layout: TextureLayoutFile =
             serde_json::from_reader(File::open(output_dir.join("textures.json")).unwrap()).unwrap();
 
@@ -2462,6 +2608,15 @@ mod tests {
             .get("texture/imagery/tulips")
             .expect("texture entry exists");
         assert_eq!(texture.image, "imagery/tulips");
+
+        let default_material = material_layout
+            .materials
+            .get(DEFAULT_MATERIAL_ENTRY)
+            .expect("default material");
+        assert_eq!(
+            default_material.texture_lookups.base_color.as_deref(),
+            Some(DEFAULT_TEXTURE_ENTRY)
+        );
 
         let mut layout_text = String::new();
         File::open(output_dir.join("layout.json"))
@@ -2557,6 +2712,18 @@ mod tests {
             .get("texture/imagery/sample")
             .expect("texture key");
         assert_eq!(texture.image, "imagery/sample");
+
+        layout
+            .materials
+            .materials
+            .get(DEFAULT_MATERIAL_ENTRY)
+            .expect("default material present");
+
+        layout
+            .models
+            .models
+            .get("model/sphere")
+            .expect("default model present");
     }
 
     fn temp_dir() -> PathBuf {
