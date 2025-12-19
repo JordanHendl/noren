@@ -29,6 +29,7 @@ pub enum NorenError {
     LookupFailure(),
     UploadFailure(),
     DataFailure(),
+    DashiContext(),
     InvalidMaterial(String),
     InvalidModel(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
@@ -49,6 +50,7 @@ impl std::fmt::Display for NorenError {
             }
             NorenError::UploadFailure() => write!(f, "Failed to upload data."),
             NorenError::DataFailure() => write!(f, "Data processing failed."),
+            NorenError::DashiContext() => write!(f, "Dashi context was not provided."),
             NorenError::InvalidMaterial(reason) => {
                 write!(f, "Invalid material: {}", reason)
             }
@@ -153,6 +155,10 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::DataFailure()),
             "Data processing failed."
+        );
+        assert_eq!(
+            format!("{}", NorenError::DashiContext()),
+            "Dashi context was not provided."
         );
         assert_eq!(
             format!("{}", NorenError::InvalidMaterial("reason".into())),

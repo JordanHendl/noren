@@ -102,13 +102,13 @@ pub struct DeviceImage {
 
 pub struct ImageDB {
     cache: DataCache<DeviceImage>,
-    ctx: NonNull<Context>,
+    ctx: Option<NonNull<Context>>,
     data: Option<RDBView>,
 }
 
 impl ImageDB {
     /// Creates an image database helper for the provided GPU context and backing module.
-    pub fn new(ctx: *mut Context, module_path: &str) -> Self {
+    pub fn new(ctx: Option<*mut Context>, module_path: &str) -> Self {
         let data = match RDBView::load(module_path) {
             Ok(d) => Some(d),
             Err(_) => None,
@@ -116,9 +116,20 @@ impl ImageDB {
 
         Self {
             data,
-            ctx: NonNull::new(ctx).expect("Null GPU Context"),
+            ctx: ctx.and_then(NonNull::new),
             cache: Default::default(),
         }
+    }
+
+    pub fn import_ctx(&mut self, ctx: NonNull<Context>) {
+        self.ctx = Some(ctx);
+    }
+
+    fn ctx_mut(&mut self) -> Result<&mut Context, NorenError> {
+        self.ctx
+            .as_mut()
+            .map(|ctx| unsafe { ctx.as_mut() })
+            .ok_or(NorenError::DashiContext())
     }
 
     /// Uploads a host image to the GPU and returns its handle and metadata.
@@ -127,7 +138,7 @@ impl ImageDB {
         entry: DatabaseEntry<'_>,
         image: HostImage,
     ) -> Result<DeviceImage, NorenError> {
-        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+        let ctx: &mut Context = self.ctx_mut()?;
 
         let HostImage { info, data } = image;
 
@@ -197,7 +208,9 @@ impl ImageDB {
             return;
         }
 
-        let ctx: &mut Context = unsafe { self.ctx.as_mut() };
+        let Ok(ctx) = self.ctx_mut() else {
+            return;
+        };
         for (_key, entry) in expired {
             ctx.destroy_image(entry.payload.img);
         }
@@ -255,7 +268,7 @@ mod tests {
 
         let path_string = path.to_string_lossy().to_string();
 
-        let mut db = ImageDB::new(&mut ctx, &path_string);
+        let mut db = ImageDB::new(Some(&mut ctx), &path_string);
 
         assert!(!db.is_loaded(&TEST_ENTRY));
 
@@ -289,7 +302,7 @@ mod tests {
 
         let path_string = path.to_string_lossy().to_string();
 
-        let mut db = ImageDB::new(&mut ctx, &path_string);
+        let mut db = ImageDB::new(Some(&mut ctx), &path_string);
 
         db.fetch_gpu_image(TEST_ENTRY)
             .expect("initial gpu image load");

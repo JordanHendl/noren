@@ -24,7 +24,7 @@ pub use utils::error::{NorenError, RdbErr};
 pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView, type_tag_for};
 
 pub struct DBInfo<'a> {
-    pub ctx: *mut dashi::Context,
+    pub ctx: Option<*mut dashi::Context>,
     pub base_dir: &'a str,
     pub layout_file: Option<&'a str>,
 }
@@ -64,7 +64,7 @@ pub struct DB {
     skeletons: SkeletonDB,
     animations: AnimationDB,
     shaders: ShaderDB,
-    ctx: NonNull<dashi::Context>,
+    ctx: Option<NonNull<dashi::Context>>,
     meta_layout: Option<MetaLayout>,
     graphics_pipeline_layouts: HashMap<String, dashi::Handle<dashi::GraphicsPipelineLayout>>,
     graphics_pipelines: HashMap<String, dashi::Handle<dashi::GraphicsPipeline>>,
@@ -180,7 +180,7 @@ impl DB {
             skeletons,
             animations,
             shaders,
-            ctx: NonNull::new(info.ctx).expect("Null GPU Context"),
+            ctx: info.ctx.and_then(NonNull::new),
             meta_layout,
             graphics_pipeline_layouts: HashMap::new(),
             graphics_pipelines: HashMap::new(),
@@ -188,6 +188,21 @@ impl DB {
             compute_pipelines: HashMap::new(),
             furikake: None,
         })
+    }
+
+    /// Registers a dashi context for GPU-backed resource requests.
+    pub fn import_dashi_context(&mut self, ctx: &mut dashi::Context) {
+        let ctx = NonNull::from(ctx);
+        self.ctx = Some(ctx);
+        self.geometry.import_ctx(ctx);
+        self.imagery.import_ctx(ctx);
+    }
+
+    fn ctx_mut(&mut self) -> Result<&mut dashi::Context, NorenError> {
+        self.ctx
+            .as_mut()
+            .map(|ctx| unsafe { ctx.as_mut() })
+            .ok_or(NorenError::DashiContext())
     }
 
     /// Returns an immutable reference to the geometry database.
@@ -434,11 +449,14 @@ impl DB {
 
         let furikake_handle = self.ensure_furikake_material(entry).transpose()?;
 
-        Ok((HostMaterial {
-            name,
-            textures,
-            material,
-        }, furikake_handle))
+        Ok((
+            HostMaterial {
+                name,
+                textures,
+                material,
+            },
+            furikake_handle,
+        ))
     }
 
     /// Builds a GPU-ready material with device textures and furikake definitions.
@@ -530,12 +548,14 @@ impl DB {
                 Ok(bindings) => bindings,
                 Err(err) => return Some(Err(err)),
             };
-            let result = bindings.state_mut().reserved_mut::<ReservedBindlessTextures, _>(
-                "meshi_bindless_textures",
-                |textures| {
-                    inserted_id = Some(textures.add_texture(view));
-                },
-            );
+            let result = bindings
+                .state_mut()
+                .reserved_mut::<ReservedBindlessTextures, _>(
+                    "meshi_bindless_textures",
+                    |textures| {
+                        inserted_id = Some(textures.add_texture(view));
+                    },
+                );
 
             if let Err(err) = result {
                 return Some(Err(err.into()));
@@ -546,7 +566,7 @@ impl DB {
                 None => {
                     return Some(Err(NorenError::FurikakeError(
                         "failed to allocate furikake texture slot".to_string(),
-                    )))
+                    )));
                 }
             };
 
@@ -596,7 +616,7 @@ impl DB {
                 None => {
                     return Some(Err(NorenError::InvalidMaterial(format!(
                         "Material '{entry}' references missing texture '{tex_key}'",
-                    ))))
+                    ))));
                 }
             };
 
@@ -639,14 +659,16 @@ impl DB {
                 Ok(bindings) => bindings,
                 Err(err) => return Some(Err(err)),
             };
-            let result = bindings.state_mut().reserved_mut::<ReservedBindlessMaterials, _>(
-                "meshi_bindless_materials",
-                |materials| {
-                    let material_handle = materials.add_material();
-                    *materials.material_mut(material_handle) = furikake_material;
-                    handle = Some(material_handle);
-                },
-            );
+            let result = bindings
+                .state_mut()
+                .reserved_mut::<ReservedBindlessMaterials, _>(
+                    "meshi_bindless_materials",
+                    |materials| {
+                        let material_handle = materials.add_material();
+                        *materials.material_mut(material_handle) = furikake_material;
+                        handle = Some(material_handle);
+                    },
+                );
 
             if let Err(err) = result {
                 return Some(Err(err.into()));
@@ -657,7 +679,7 @@ impl DB {
                 None => {
                     return Some(Err(NorenError::FurikakeError(
                         "failed to allocate furikake material slot".to_string(),
-                    )))
+                    )));
                 }
             };
 
@@ -1256,12 +1278,9 @@ impl DB {
                 ))
             })?;
 
-        crate::meta::graphics_pipeline_inputs(
-            unsafe { self.ctx.as_mut() },
-            shader_key,
-            &shader_layout,
-            shader,
-        )
+        let ctx = self.ctx_mut()?;
+
+        crate::meta::graphics_pipeline_inputs(ctx, shader_key, &shader_layout, shader)
     }
 
     fn build_graphics_pipeline_layout(
@@ -1301,9 +1320,11 @@ impl DB {
             details: Default::default(),
         };
 
-        let handle = unsafe { self.ctx.as_mut() }
-            .make_graphics_pipeline_layout(&layout_info)
-            .map_err(|_| NorenError::UploadFailure())?;
+        let handle = {
+            let ctx = self.ctx_mut()?;
+            ctx.make_graphics_pipeline_layout(&layout_info)
+                .map_err(|_| NorenError::UploadFailure())?
+        };
 
         self.graphics_pipeline_layouts
             .insert(shader_key.to_string(), handle);
@@ -1331,12 +1352,9 @@ impl DB {
 
         let stage = Self::load_shader_stage(&mut self.shaders, entry)?;
 
-        crate::meta::compute_pipeline_inputs(
-            unsafe { self.ctx.as_mut() },
-            shader_key,
-            &shader_layout,
-            stage,
-        )
+        let ctx = self.ctx_mut()?;
+
+        crate::meta::compute_pipeline_inputs(ctx, shader_key, &shader_layout, stage)
     }
 
     fn build_compute_pipeline_layout(
@@ -1358,9 +1376,11 @@ impl DB {
             },
         };
 
-        let handle = unsafe { self.ctx.as_mut() }
-            .make_compute_pipeline_layout(&layout_info)
-            .map_err(|_| NorenError::UploadFailure())?;
+        let handle = {
+            let ctx = self.ctx_mut()?;
+            ctx.make_compute_pipeline_layout(&layout_info)
+                .map_err(|_| NorenError::UploadFailure())?
+        };
 
         self.compute_pipeline_layouts
             .insert(shader_key.to_string(), handle);
@@ -1402,9 +1422,11 @@ impl DB {
             subpass_id: 0,
         };
 
-        let handle = unsafe { self.ctx.as_mut() }
-            .make_graphics_pipeline(&pipeline_info)
-            .map_err(|_| NorenError::UploadFailure())?;
+        let handle = {
+            let ctx = self.ctx_mut()?;
+            ctx.make_graphics_pipeline(&pipeline_info)
+                .map_err(|_| NorenError::UploadFailure())?
+        };
 
         self.graphics_pipelines
             .insert(shader_key.to_string(), handle);
@@ -1442,9 +1464,11 @@ impl DB {
             layout: pipeline_layout,
         };
 
-        let handle = unsafe { self.ctx.as_mut() }
-            .make_compute_pipeline(&pipeline_info)
-            .map_err(|_| NorenError::UploadFailure())?;
+        let handle = {
+            let ctx = self.ctx_mut()?;
+            ctx.make_compute_pipeline(&pipeline_info)
+                .map_err(|_| NorenError::UploadFailure())?
+        };
 
         self.compute_pipelines
             .insert(shader_key.to_string(), handle);
@@ -1642,7 +1666,7 @@ mod tests {
             dashi::Context::headless(&Default::default()).expect("create headless context");
 
         let db_info = DBInfo {
-            ctx: &mut ctx,
+            ctx: Some(&mut ctx),
             base_dir: base_dir.to_str().expect("base dir to str"),
             layout_file: None,
         };
@@ -1929,7 +1953,7 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
         let db_info = DBInfo {
-            ctx: &mut ctx,
+            ctx: Some(&mut ctx),
             base_dir: base.to_str().unwrap(),
             layout_file: None,
         };
@@ -2014,7 +2038,7 @@ mod tests {
         let mut ctx =
             dashi::Context::headless(&Default::default()).expect("create headless context");
         let db_info = DBInfo {
-            ctx: &mut ctx,
+            ctx: Some(&mut ctx),
             base_dir: base.to_str().unwrap(),
             layout_file: None,
         };

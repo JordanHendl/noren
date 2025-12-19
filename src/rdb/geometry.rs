@@ -45,13 +45,13 @@ pub struct DeviceGeometry {
 
 pub struct GeometryDB {
     cache: DataCache<DeviceGeometry>,
-    ctx: NonNull<Context>,
+    ctx: Option<NonNull<Context>>,
     data: Option<RDBView>,
 }
 
 impl GeometryDB {
     /// Creates a geometry database loader for the provided GPU context and module path.
-    pub fn new(ctx: *mut Context, module_path: &str) -> Self {
+    pub fn new(ctx: Option<*mut Context>, module_path: &str) -> Self {
         let data = match RDBView::load(module_path) {
             Ok(d) => Some(d),
             Err(_) => None,
@@ -59,9 +59,20 @@ impl GeometryDB {
 
         Self {
             data,
-            ctx: NonNull::new(ctx).expect("Null GPU Context"),
+            ctx: ctx.and_then(NonNull::new),
             cache: Default::default(),
         }
+    }
+
+    pub fn import_ctx(&mut self, ctx: NonNull<Context>) {
+        self.ctx = Some(ctx);
+    }
+
+    fn ctx_mut(&mut self) -> Result<&mut Context, NorenError> {
+        self.ctx
+            .as_mut()
+            .map(|ctx| unsafe { ctx.as_mut() })
+            .ok_or(NorenError::DashiContext())
     }
 
     /// Uploads host geometry into GPU buffers and caches the result.
@@ -80,7 +91,7 @@ impl GeometryDB {
                 indices,
                 lods,
             } = geom;
-            let ctx = unsafe { self.ctx.as_mut() };
+            let ctx = self.ctx_mut()?;
 
             let base = Self::upload_layer(ctx, entry, &GeometryLayer { vertices, indices })?;
 
@@ -166,7 +177,9 @@ impl GeometryDB {
             return;
         }
 
-        let ctx = unsafe { self.ctx.as_mut() };
+        let Ok(ctx) = self.ctx_mut() else {
+            return;
+        };
         for (_key, entry) in expired {
             if entry.payload.base.vertices.valid() {
                 ctx.destroy_buffer(entry.payload.base.vertices);
@@ -266,7 +279,7 @@ mod tests {
         let view = RDBView::load(&tmp_path)?;
         let mut db = GeometryDB {
             cache: DataCache::default(),
-            ctx: NonNull::dangling(),
+            ctx: None,
             data: Some(view),
         };
 
