@@ -100,13 +100,6 @@ impl HostGeometry {
     }
 }
 
-pub struct GeometryDB {
-    cache: DataCache<DeviceGeometry>,
-    ctx: Option<NonNull<Context>>,
-    data: Option<RDBView>,
-    defaults: HashMap<String, HostGeometry>,
-}
-
 impl GeometryDBBuilder {
     pub fn new(ctx: Option<*mut Context>, module_path: &str) -> Self {
         Self {
@@ -377,8 +370,8 @@ impl GeometryDB {
                 .lods
                 .into_iter()
                 .map(|lod| DeviceGeometryLayer {
-                    vertices: Handle::default(),
-                    indices: Handle::default(),
+                    vertices: Default::default(),
+                    indices: Default::default(),
                     vertex_count: lod.vertex_count,
                     index_count: lod.index_count,
                 })
@@ -386,8 +379,8 @@ impl GeometryDB {
 
             DeviceGeometry {
                 base: DeviceGeometryLayer {
-                    vertices: Handle::default(),
-                    indices: Handle::default(),
+                    vertices: Default::default(),
+                    indices: Default::default(),
                     vertex_count: geom.vertex_count,
                     index_count: geom.index_count,
                 },
@@ -403,7 +396,7 @@ impl GeometryDB {
                 index_count,
                 lods,
             } = geom;
-            let ctx = self.ctx_mut()?;
+            let ctx = unsafe{self.ctx.unwrap().as_mut()};
 
             let base_layer = GeometryLayer {
                 vertices,
@@ -412,14 +405,14 @@ impl GeometryDB {
                 index_count,
             };
 
-            let base = Self::upload_layer(ctx, entry, &base_layer)?;
+            let base = self.upload_layer(ctx, entry, &base_layer)?;
 
             let lods = lods
                 .into_iter()
                 .enumerate()
                 .map(|(idx, layer)| {
                     let debug_name = format!("{entry}::lod{idx}");
-                    Self::upload_layer(ctx, &debug_name, &layer)
+                    self.upload_layer(ctx, &debug_name, &layer)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -630,6 +623,8 @@ impl GeometryDB {
         Ok(DeviceGeometryLayer {
             vertices: GeometryBufferRef::Slice(vertex_slice),
             indices: index_buffer,
+            vertex_count: vertex_slice.size,
+            index_count: Some(layer.indices.as_slice().len() as u32),
         })
     }
 }
