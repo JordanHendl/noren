@@ -743,6 +743,8 @@ fn load_geometry(base_dir: &Path, entry: &GeometryEntry) -> Result<HostGeometry,
     Ok(HostGeometry {
         vertices: base.vertices,
         indices: base.indices,
+        vertex_count: base.vertex_count,
+        index_count: base.index_count,
         lods,
     })
 }
@@ -831,7 +833,14 @@ fn load_geometry_layer(
         })
         .collect();
 
-    Ok(GeometryLayer { vertices, indices })
+    Ok(GeometryLayer {
+        vertex_count: vertex_count.try_into().unwrap_or(u32::MAX),
+        index_count: indices
+            .as_ref()
+            .map(|list| list.len().try_into().unwrap_or(u32::MAX)),
+        vertices,
+        indices,
+    })
 }
 
 fn inject_default_geometry(
