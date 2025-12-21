@@ -4,7 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dashi::{Buffer, BufferInfo, BufferUsage, BufferView, Context, Handle, MemoryVisibility};
+use dashi::{
+    Buffer, BufferInfo, BufferUsage, BufferView, Context, Handle, MemoryVisibility,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{DatabaseEntry, primitives::Vertex};
@@ -258,7 +260,10 @@ impl GeometryUploadPool {
         ))
     }
 
-    fn ensure_capacity(&mut self, ctx: &mut Context) -> Result<Option<Handle<Buffer>>, NorenError> {
+    fn ensure_capacity(
+        &mut self,
+        ctx: &mut Context,
+    ) -> Result<Option<Handle<Buffer>>, NorenError> {
         let needed = self.data.len() as u32;
         if self.buffer.valid() && needed <= self.capacity {
             return Ok(None);
@@ -316,6 +321,7 @@ impl GeometryUploadPool {
         mapped[..bytes.len()].copy_from_slice(bytes);
 
         ctx.flush_buffer(BufferView::new(buffer))
+            .and_then(|_| ctx.unmap_buffer(buffer))
             .map_err(|_| NorenError::UploadFailure())
     }
 }
@@ -622,8 +628,8 @@ impl GeometryDB {
         Ok(DeviceGeometryLayer {
             vertices: GeometryBufferRef::Slice(vertex_slice),
             indices: index_buffer,
-            vertex_count: vertex_slice.size,
-            index_count: Some(layer.indices.as_slice().len() as u32),
+            vertex_count: layer.vertex_count,
+            index_count: layer.index_count,
         })
     }
 }
@@ -635,6 +641,7 @@ mod tests {
         defaults::{DEFAULT_GEOMETRY_ENTRIES, default_primitives},
         utils::rdbfile::RDBFile,
     };
+    use tempfile::tempdir;
 
     fn sample_vertex(x: f32) -> Vertex {
         Vertex {
@@ -657,6 +664,171 @@ mod tests {
         .with_counts();
         file.add(entry, &host_geom)?;
         file.save(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn populates_counts_for_base_and_lods() -> Result<(), NorenError> {
+        let base_vertices = vec![sample_vertex(0.0), sample_vertex(1.0)];
+        let lod_vertices = vec![sample_vertex(0.0)];
+        let mut host_geom = HostGeometry {
+            vertices: base_vertices.clone(),
+            indices: Some(vec![0, 1]),
+            lods: vec![GeometryLayer {
+                vertices: lod_vertices.clone(),
+                indices: Some(vec![0]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        host_geom.populate_counts();
+
+        assert_eq!(host_geom.vertex_count, base_vertices.len() as u32);
+        assert_eq!(host_geom.index_count, Some(2));
+        assert_eq!(host_geom.lods[0].vertex_count, lod_vertices.len() as u32);
+        assert_eq!(host_geom.lods[0].index_count, Some(1));
+
+        let mut db = GeometryDB {
+            cache: DataCache::default(),
+            ctx: None,
+            data: None,
+            defaults: default_primitives().into_iter().collect(),
+            pooled_uploads: false,
+            vertex_pool: GeometryUploadPool::new(BufferUsage::VERTEX, "geometry::vertices"),
+            index_pool: GeometryUploadPool::new(BufferUsage::INDEX, "geometry::indices"),
+        };
+
+        let device = db.enter_gpu_geometry("geom/lod_mesh", host_geom.clone())?;
+
+        assert_eq!(device.vertex_count, host_geom.vertex_count);
+        assert_eq!(device.index_count, host_geom.index_count);
+        assert_eq!(device.lods.len(), 1);
+        assert_eq!(device.lods[0].vertex_count, host_geom.lods[0].vertex_count);
+        assert_eq!(device.lods[0].index_count, host_geom.lods[0].index_count);
+
+        Ok(())
+    }
+
+    #[test]
+    fn sample_geometry_counts_match_lengths() -> Result<(), NorenError> {
+        let tmp = tempdir().expect("create temp dir");
+        let entry = DEFAULT_GEOMETRY_ENTRIES[0];
+        let mut file = RDBFile::new();
+        let mut host_geom = default_primitives()
+            .into_iter()
+            .find(|(name, _)| name == entry)
+            .map(|(_, geom)| geom)
+            .expect("default geometry available");
+        host_geom.populate_counts();
+        file.add(entry, &host_geom)?;
+        let path = tmp.path().join("sample_geometry.rdb");
+        file.save(&path)?;
+
+        let mut db = GeometryDB::new(None, path.to_str().unwrap());
+        let loaded = db.fetch_raw_geometry(entry)?;
+
+        assert_eq!(loaded.vertex_count, loaded.vertices.len() as u32);
+        assert_eq!(
+            loaded.index_count,
+            loaded.indices.as_ref().map(|i| i.len() as u32)
+        );
+        assert!(
+            loaded
+                .lods
+                .iter()
+                .all(|lod| lod.vertex_count as usize == lod.vertices.len())
+        );
+
+        let device = db.enter_gpu_geometry(entry, loaded.clone())?;
+        assert_eq!(device.vertex_count, loaded.vertex_count);
+        assert_eq!(device.index_count, loaded.index_count);
+        assert_eq!(device.lods.len(), loaded.lods.len());
+        for (lod_device, lod_host) in device.lods.iter().zip(loaded.lods.iter()) {
+            assert_eq!(lod_device.vertex_count, lod_host.vertex_count);
+            assert_eq!(lod_device.index_count, lod_host.index_count);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn pooled_uploads_share_buffers_and_offsets() -> Result<(), NorenError> {
+        let mut ctx =
+            dashi::Context::headless(&Default::default()).expect("create headless context");
+        let mut db = GeometryDB {
+            cache: DataCache::default(),
+            ctx: None,
+            data: None,
+            defaults: default_primitives().into_iter().collect(),
+            pooled_uploads: true,
+            vertex_pool: GeometryUploadPool::new(BufferUsage::VERTEX, "geometry::vertices"),
+            index_pool: GeometryUploadPool::new(BufferUsage::INDEX, "geometry::indices"),
+        };
+
+        let mesh_a = GeometryLayer {
+            vertices: vec![sample_vertex(0.0)],
+            indices: Some(vec![0]),
+            ..Default::default()
+        }
+        .with_counts();
+
+        let mesh_b = GeometryLayer {
+            vertices: vec![sample_vertex(1.0)],
+            indices: Some(vec![0]),
+            ..Default::default()
+        }
+        .with_counts();
+
+        let mut layer_a = db.upload_layer_pooled(&mut ctx, "mesh/a", &mesh_a)?;
+        let layer_b = db.upload_layer_pooled(&mut ctx, "mesh/b", &mesh_b)?;
+
+        if let GeometryBufferRef::Slice(slice) = layer_a.vertices.clone() {
+            if slice.buffer != db.vertex_pool.buffer_handle() {
+                layer_a.replace_handles(slice.buffer, db.vertex_pool.buffer_handle());
+            }
+        }
+
+        if let GeometryBufferRef::Slice(slice) = layer_a.indices.clone() {
+            if slice.buffer != db.index_pool.buffer_handle() {
+                layer_a.replace_handles(slice.buffer, db.index_pool.buffer_handle());
+            }
+        }
+
+        let (verts_a, verts_b) = match (layer_a.vertices.clone(), layer_b.vertices.clone()) {
+            (GeometryBufferRef::Slice(a), GeometryBufferRef::Slice(b)) => (a, b),
+            _ => panic!("expected pooled vertex slices"),
+        };
+
+        assert_eq!(verts_a.buffer, verts_b.buffer);
+        assert_eq!(verts_a.offset, 0);
+        let vertex_stride = std::mem::size_of::<Vertex>() as u32;
+        assert_eq!(verts_a.size, mesh_a.vertices.len() as u32 * vertex_stride);
+        assert_eq!(verts_b.offset, verts_a.size);
+        assert_eq!(verts_b.size, mesh_b.vertices.len() as u32 * vertex_stride);
+
+        let (indices_a, indices_b) = match (layer_a.indices.clone(), layer_b.indices.clone()) {
+            (GeometryBufferRef::Slice(a), GeometryBufferRef::Slice(b)) => (a, b),
+            _ => panic!("expected pooled index slices"),
+        };
+
+        assert_eq!(indices_a.buffer, indices_b.buffer);
+        assert_eq!(indices_a.offset, 0);
+        assert_eq!(
+            indices_a.size,
+            (mesh_a.indices.as_ref().unwrap().len() * 4) as u32
+        );
+        assert_eq!(indices_b.offset, indices_a.size);
+        assert_eq!(
+            indices_b.size,
+            (mesh_b.indices.as_ref().unwrap().len() * 4) as u32
+        );
+
+        assert_eq!(layer_a.vertex_count, mesh_a.vertex_count);
+        assert_eq!(layer_a.index_count, mesh_a.index_count);
+        assert_eq!(layer_b.vertex_count, mesh_b.vertex_count);
+        assert_eq!(layer_b.index_count, mesh_b.index_count);
+
         Ok(())
     }
 
