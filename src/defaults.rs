@@ -106,6 +106,15 @@ fn make_vertex(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
     }
 }
 
+fn make_geometry(vertices: Vec<Vertex>, indices: Option<Vec<u32>>) -> HostGeometry {
+    HostGeometry {
+        vertices,
+        indices,
+        ..Default::default()
+    }
+    .with_counts()
+}
+
 fn make_quad_geometry() -> HostGeometry {
     let vertices = vec![
         make_vertex([-0.5, -0.5, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0]),
@@ -116,11 +125,7 @@ fn make_quad_geometry() -> HostGeometry {
 
     let indices = vec![0, 1, 2, 2, 3, 0];
 
-    HostGeometry {
-        vertices,
-        indices: Some(indices),
-        ..Default::default()
-    }
+    make_geometry(vertices, Some(indices))
 }
 
 fn make_plane_geometry() -> HostGeometry {
@@ -133,11 +138,7 @@ fn make_plane_geometry() -> HostGeometry {
 
     let indices = vec![0, 1, 2, 2, 3, 0];
 
-    HostGeometry {
-        vertices,
-        indices: Some(indices),
-        ..Default::default()
-    }
+    make_geometry(vertices, Some(indices))
 }
 
 fn make_cube_geometry(half_extent: f32) -> HostGeometry {
@@ -239,11 +240,7 @@ fn make_cube_geometry(half_extent: f32) -> HostGeometry {
         20, 21, 22, 22, 23, 20, // Left
     ];
 
-    HostGeometry {
-        vertices,
-        indices: Some(indices),
-        ..Default::default()
-    }
+    make_geometry(vertices, Some(indices))
 }
 
 fn make_sphere_geometry(radius: f32, slices: u32, stacks: u32) -> HostGeometry {
@@ -284,11 +281,10 @@ fn make_sphere_geometry(radius: f32, slices: u32, stacks: u32) -> HostGeometry {
         }
     }
 
-    HostGeometry {
+    make_geometry(
         vertices,
-        indices: Some(indices.into_iter().map(|i| i as u32).collect()),
-        ..Default::default()
-    }
+        Some(indices.into_iter().map(|i| i as u32).collect()),
+    )
 }
 
 fn make_cylinder_geometry(radius: f32, height: f32, segments: u32) -> HostGeometry {
@@ -351,11 +347,7 @@ fn make_cylinder_geometry(radius: f32, height: f32, segments: u32) -> HostGeomet
         indices.extend_from_slice(&[bottom_center_index, bottom as u32, bottom_next as u32]);
     }
 
-    HostGeometry {
-        vertices,
-        indices: Some(indices),
-        ..Default::default()
-    }
+    make_geometry(vertices, Some(indices))
 }
 
 fn make_cone_geometry(radius: f32, height: f32, segments: u32) -> HostGeometry {
@@ -400,9 +392,5 @@ fn make_cone_geometry(radius: f32, height: f32, segments: u32) -> HostGeometry {
         indices.extend_from_slice(&[base_center_index, (next + 1) as u32, (i + 1) as u32]);
     }
 
-    HostGeometry {
-        vertices,
-        indices: Some(indices),
-        ..Default::default()
-    }
+    make_geometry(vertices, Some(indices))
 }

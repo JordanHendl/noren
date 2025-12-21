@@ -15,11 +15,19 @@ const UNLOAD_DELAY: Duration = Duration::from_secs(0);
 #[cfg(not(test))]
 const UNLOAD_DELAY: Duration = Duration::from_secs(5);
 
+fn count_from_len(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or(u32::MAX)
+}
+
 #[repr(C)]
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct GeometryLayer {
     pub vertices: Vec<Vertex>,
     pub indices: Option<Vec<u32>>,
+    #[serde(default)]
+    pub vertex_count: u32,
+    #[serde(default)]
+    pub index_count: Option<u32>,
 }
 
 #[repr(C)]
@@ -27,6 +35,10 @@ pub struct GeometryLayer {
 pub struct HostGeometry {
     pub vertices: Vec<Vertex>,
     pub indices: Option<Vec<u32>>,
+    #[serde(default)]
+    pub vertex_count: u32,
+    #[serde(default)]
+    pub index_count: Option<u32>,
     #[serde(default)]
     pub lods: Vec<GeometryLayer>,
 }
@@ -36,18 +48,63 @@ pub struct HostGeometry {
 pub struct DeviceGeometryLayer {
     pub vertices: GeometryBufferRef,
     pub indices: GeometryBufferRef,
+    pub vertex_count: u32,
+    pub index_count: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct DeviceGeometry {
     pub base: DeviceGeometryLayer,
+    pub vertex_count: u32,
+    pub index_count: Option<u32>,
     pub lods: Vec<DeviceGeometryLayer>,
 }
+
 
 pub struct GeometryDBBuilder {
     ctx: Option<*mut Context>,
     module_path: String,
     pooled_uploads: bool,
+}
+
+impl GeometryLayer {
+    pub fn populate_counts(&mut self) {
+        self.vertex_count = count_from_len(self.vertices.len());
+        self.index_count = self
+            .indices
+            .as_ref()
+            .map(|indices| count_from_len(indices.len()));
+    }
+
+    pub fn with_counts(mut self) -> Self {
+        self.populate_counts();
+        self
+    }
+}
+
+impl HostGeometry {
+    pub fn populate_counts(&mut self) {
+        self.vertex_count = count_from_len(self.vertices.len());
+        self.index_count = self
+            .indices
+            .as_ref()
+            .map(|indices| count_from_len(indices.len()));
+        for lod in &mut self.lods {
+            lod.populate_counts();
+        }
+    }
+
+    pub fn with_counts(mut self) -> Self {
+        self.populate_counts();
+        self
+    }
+}
+
+pub struct GeometryDB {
+    cache: DataCache<DeviceGeometry>,
+    ctx: Option<NonNull<Context>>,
+    data: Option<RDBView>,
+    defaults: HashMap<String, HostGeometry>,
 }
 
 impl GeometryDBBuilder {
@@ -313,31 +370,64 @@ impl GeometryDB {
     ) -> Result<DeviceGeometry, NorenError> {
         debug_assert!(self.cache.get(entry).is_none());
 
+        let geom = geom.with_counts();
+
         let device_geom = if cfg!(test) {
-            DeviceGeometry::default()
+            let lods = geom
+                .lods
+                .into_iter()
+                .map(|lod| DeviceGeometryLayer {
+                    vertices: Handle::default(),
+                    indices: Handle::default(),
+                    vertex_count: lod.vertex_count,
+                    index_count: lod.index_count,
+                })
+                .collect();
+
+            DeviceGeometry {
+                base: DeviceGeometryLayer {
+                    vertices: Handle::default(),
+                    indices: Handle::default(),
+                    vertex_count: geom.vertex_count,
+                    index_count: geom.index_count,
+                },
+                vertex_count: geom.vertex_count,
+                index_count: geom.index_count,
+                lods,
+            }
         } else {
             let HostGeometry {
                 vertices,
                 indices,
+                vertex_count,
+                index_count,
                 lods,
             } = geom;
-            let ctx_ptr = self.ctx_mut()? as *mut Context;
+            let ctx = self.ctx_mut()?;
 
-            let base = {
-                let ctx = unsafe { &mut *ctx_ptr };
-                self.upload_layer(ctx, entry, &GeometryLayer { vertices, indices })?
+            let base_layer = GeometryLayer {
+                vertices,
+                indices,
+                vertex_count,
+                index_count,
             };
 
-            let mut device_lods = Vec::new();
-            for (idx, layer) in lods.into_iter().enumerate() {
-                let debug_name = format!("{entry}::lod{idx}");
-                let ctx = unsafe { &mut *ctx_ptr };
-                device_lods.push(self.upload_layer(ctx, &debug_name, &layer)?);
-            }
+            let base = Self::upload_layer(ctx, entry, &base_layer)?;
+
+            let lods = lods
+                .into_iter()
+                .enumerate()
+                .map(|(idx, layer)| {
+                    let debug_name = format!("{entry}::lod{idx}");
+                    Self::upload_layer(ctx, &debug_name, &layer)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
             DeviceGeometry {
+                vertex_count: base_layer.vertex_count,
+                index_count: base_layer.index_count,
                 base,
-                lods: device_lods,
+                lods,
             }
         };
 
@@ -358,13 +448,14 @@ impl GeometryDB {
     ) -> Result<HostGeometry, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(geometry) = rdb.fetch::<HostGeometry>(entry) {
-                return Ok(geometry);
+                return Ok(geometry.with_counts());
             }
         }
 
         self.defaults
             .get(entry)
             .cloned()
+            .map(HostGeometry::with_counts)
             .ok_or(NorenError::DataFailure())
     }
 
@@ -457,6 +548,15 @@ impl GeometryDB {
         debug_name: &str,
         layer: &GeometryLayer,
     ) -> Result<DeviceGeometryLayer, NorenError> {
+        debug_assert_eq!(layer.vertex_count, count_from_len(layer.vertices.len()));
+        debug_assert_eq!(
+            layer.index_count,
+            layer
+                .indices
+                .as_ref()
+                .map(|indices| count_from_len(indices.len()))
+        );
+
         let vertex_bytes = bytemuck::cast_slice(&layer.vertices);
 
         let vertex_buffer = ctx
@@ -494,6 +594,8 @@ impl GeometryDB {
         Ok(DeviceGeometryLayer {
             vertices: GeometryBufferRef::Dedicated(vertex_buffer),
             indices: index_handle,
+            vertex_count: layer.vertex_count,
+            index_count: layer.index_count,
         })
     }
 
@@ -556,7 +658,9 @@ mod tests {
             vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
             indices: Some(vec![0, 1, 2]),
             lods: Vec::new(),
-        };
+            ..Default::default()
+        }
+        .with_counts();
         file.add(entry, &host_geom)?;
         file.save(path)?;
         Ok(())
