@@ -29,6 +29,8 @@ pub use utils::rdbfile::{RDBEntryMeta, RDBFile, RDBView, type_tag_for};
 pub struct DBInfo<'a> {
     pub base_dir: &'a str,
     pub layout_file: Option<&'a str>,
+    /// Enable pooled geometry uploads into shared vertex/index buffers during initialization.
+    pub pooled_geometry_uploads: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +170,9 @@ impl DB {
     pub fn new_with_ctx(info: &DBInfo, ctx: Option<*mut Context>) -> Result<Self, NorenError> {
         let layout = read_database_layout(info.layout_file)?;
 
-        let geometry = GeometryDB::new(ctx, &format!("{}/{}", info.base_dir, layout.geometry));
+        let geometry = GeometryDB::builder(ctx, &format!("{}/{}", info.base_dir, layout.geometry))
+            .pooled_uploads(info.pooled_geometry_uploads)
+            .build();
         let imagery = ImageDB::new(ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let audio = AudioDB::new(&format!("{}/{}", info.base_dir, layout.audio));
         let skeletons = SkeletonDB::new(&format!("{}/{}", info.base_dir, layout.skeletons));
@@ -1676,6 +1680,7 @@ mod tests {
         let db_info = DBInfo {
             base_dir: base_dir.to_str().expect("base dir to str"),
             layout_file: None,
+            pooled_geometry_uploads: false,
         };
 
         let mut db = DB::new(&db_info)?;
@@ -1963,6 +1968,7 @@ mod tests {
         let db_info = DBInfo {
             base_dir: base.to_str().unwrap(),
             layout_file: None,
+            pooled_geometry_uploads: false,
         };
 
         let mut db = DB::new_with_ctx(&db_info, Some(&mut ctx))?;
@@ -2047,6 +2053,7 @@ mod tests {
         let db_info = DBInfo {
             base_dir: base.to_str().unwrap(),
             layout_file: None,
+            pooled_geometry_uploads: false,
         };
 
         let mut db = DB::new_with_ctx(&db_info, Some(&mut ctx))?;

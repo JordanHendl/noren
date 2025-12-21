@@ -60,6 +60,7 @@ pub fn open_sample_db(ctx: &mut gpu::Context) -> Result<DB, Box<dyn Error>> {
     let info = DBInfo {
         base_dir: &base_dir_str,
         layout_file: Some(&layout_str),
+        pooled_geometry_uploads: false,
     };
 
     Ok(DB::new_with_ctx(&info, Some(ctx))?)

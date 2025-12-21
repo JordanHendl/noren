@@ -31,6 +31,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let info = noren::DBInfo {
         base_dir: base_dir_str,
         layout_file: Some(layout_str),
+        pooled_geometry_uploads: false,
     };
 
     let mut db = noren::DB::new(&info)?;

@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ptr::NonNull,
     time::{Duration, Instant},
 };
 
-use dashi::{Buffer, BufferInfo, BufferUsage, Context, Handle, MemoryVisibility};
+use dashi::{Buffer, BufferInfo, BufferUsage, BufferView, Context, Handle, MemoryVisibility};
 use serde::{Deserialize, Serialize};
 
 use super::{DatabaseEntry, primitives::Vertex};
@@ -34,8 +34,8 @@ pub struct HostGeometry {
 #[repr(C)]
 #[derive(Clone, Debug, Default)]
 pub struct DeviceGeometryLayer {
-    pub vertices: Handle<Buffer>,
-    pub indices: Handle<Buffer>,
+    pub vertices: GeometryBufferRef,
+    pub indices: GeometryBufferRef,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -44,31 +44,249 @@ pub struct DeviceGeometry {
     pub lods: Vec<DeviceGeometryLayer>,
 }
 
+pub struct GeometryDBBuilder {
+    ctx: Option<*mut Context>,
+    module_path: String,
+    pooled_uploads: bool,
+}
+
+impl GeometryDBBuilder {
+    pub fn new(ctx: Option<*mut Context>, module_path: &str) -> Self {
+        Self {
+            ctx,
+            module_path: module_path.to_string(),
+            pooled_uploads: false,
+        }
+    }
+
+    pub fn pooled_uploads(mut self, enable: bool) -> Self {
+        self.pooled_uploads = enable;
+        self
+    }
+
+    pub fn build(self) -> GeometryDB {
+        let data = match RDBView::load(&self.module_path) {
+            Ok(d) => Some(d),
+            Err(_) => None,
+        };
+
+        GeometryDB {
+            data,
+            ctx: self.ctx.and_then(NonNull::new),
+            cache: Default::default(),
+            defaults: default_primitives().into_iter().collect(),
+            pooled_uploads: self.pooled_uploads,
+            vertex_pool: GeometryUploadPool::new(BufferUsage::VERTEX, "geometry::vertices"),
+            index_pool: GeometryUploadPool::new(BufferUsage::INDEX, "geometry::indices"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GeometryBufferSlice {
+    pub buffer: Handle<Buffer>,
+    pub offset: u32,
+    pub size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub enum GeometryBufferRef {
+    Dedicated(Handle<Buffer>),
+    Slice(GeometryBufferSlice),
+    None,
+}
+
+impl Default for GeometryBufferRef {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl GeometryBufferRef {
+    pub fn handle(&self) -> Option<Handle<Buffer>> {
+        match self {
+            GeometryBufferRef::Dedicated(handle) => handle.valid().then_some(*handle),
+            GeometryBufferRef::Slice(slice) => slice.buffer.valid().then_some(slice.buffer),
+            GeometryBufferRef::None => None,
+        }
+    }
+
+    fn replace_handle(&mut self, old: Handle<Buffer>, new: Handle<Buffer>) {
+        match self {
+            GeometryBufferRef::Dedicated(handle) if *handle == old => *handle = new,
+            GeometryBufferRef::Slice(slice) if slice.buffer == old => slice.buffer = new,
+            _ => {}
+        }
+    }
+}
+
+impl DeviceGeometryLayer {
+    fn push_handles(&self, handles: &mut HashSet<Handle<Buffer>>) {
+        if let Some(handle) = self.vertices.handle() {
+            handles.insert(handle);
+        }
+        if let Some(handle) = self.indices.handle() {
+            handles.insert(handle);
+        }
+    }
+
+    fn replace_handles(&mut self, old: Handle<Buffer>, new: Handle<Buffer>) {
+        self.vertices.replace_handle(old, new);
+        self.indices.replace_handle(old, new);
+    }
+}
+
+impl DeviceGeometry {
+    pub fn buffer_handles(&self) -> Vec<Handle<Buffer>> {
+        let mut handles = HashSet::new();
+        self.base.push_handles(&mut handles);
+        for lod in &self.lods {
+            lod.push_handles(&mut handles);
+        }
+        handles.into_iter().collect()
+    }
+
+    fn replace_handles(&mut self, old: Handle<Buffer>, new: Handle<Buffer>) {
+        self.base.replace_handles(old, new);
+        for lod in &mut self.lods {
+            lod.replace_handles(old, new);
+        }
+    }
+}
+
 pub struct GeometryDB {
     cache: DataCache<DeviceGeometry>,
     ctx: Option<NonNull<Context>>,
     data: Option<RDBView>,
     defaults: HashMap<String, HostGeometry>,
+    pooled_uploads: bool,
+    vertex_pool: GeometryUploadPool,
+    index_pool: GeometryUploadPool,
+}
+
+#[derive(Default)]
+struct GeometryUploadPool {
+    buffer: Handle<Buffer>,
+    capacity: u32,
+    data: Vec<u8>,
+    usage: BufferUsage,
+    debug_name: String,
+}
+
+impl GeometryUploadPool {
+    fn new(usage: BufferUsage, debug_name: &str) -> Self {
+        Self {
+            buffer: Handle::default(),
+            capacity: 0,
+            data: Vec::new(),
+            usage,
+            debug_name: debug_name.to_string(),
+        }
+    }
+
+    fn buffer_handle(&self) -> Handle<Buffer> {
+        self.buffer
+    }
+
+    fn append(
+        &mut self,
+        ctx: &mut Context,
+        bytes: &[u8],
+    ) -> Result<(GeometryBufferSlice, Option<Handle<Buffer>>), NorenError> {
+        let offset = self.data.len() as u32;
+        self.data.extend_from_slice(bytes);
+
+        let replaced = self.ensure_capacity(ctx)?;
+        Self::write_range(self.buffer, ctx, offset, bytes)?;
+
+        Ok((
+            GeometryBufferSlice {
+                buffer: self.buffer,
+                offset,
+                size: bytes.len() as u32,
+            },
+            replaced,
+        ))
+    }
+
+    fn ensure_capacity(&mut self, ctx: &mut Context) -> Result<Option<Handle<Buffer>>, NorenError> {
+        let needed = self.data.len() as u32;
+        if self.buffer.valid() && needed <= self.capacity {
+            return Ok(None);
+        }
+
+        let new_capacity = needed.max(1).next_power_of_two();
+        let debug_name = self.debug_name.clone();
+        let info = BufferInfo {
+            debug_name: debug_name.as_str(),
+            byte_size: new_capacity,
+            visibility: MemoryVisibility::CpuAndGpu,
+            usage: self.usage,
+            initial_data: None,
+        };
+
+        let old = self.buffer;
+        self.buffer = ctx
+            .make_buffer(&info)
+            .map_err(|_| NorenError::UploadFailure())?;
+        self.capacity = new_capacity;
+
+        if !self.data.is_empty() {
+            Self::write_range(self.buffer, ctx, 0, &self.data)?;
+        }
+
+        if old.valid() {
+            ctx.destroy_buffer(old);
+        }
+
+        Ok(old.valid().then_some(old))
+    }
+
+    fn write_range(
+        buffer: Handle<Buffer>,
+        ctx: &mut Context,
+        offset: u32,
+        bytes: &[u8],
+    ) -> Result<(), NorenError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+
+        let mut view = BufferView::new(buffer);
+        view.offset = offset as u64;
+        view.size = bytes.len() as u64;
+
+        let mapped = ctx
+            .map_buffer_mut::<u8>(view)
+            .map_err(|_| NorenError::UploadFailure())?;
+
+        if mapped.len() < bytes.len() {
+            return Err(NorenError::UploadFailure());
+        }
+
+        mapped[..bytes.len()].copy_from_slice(bytes);
+
+        ctx.flush_buffer(BufferView::new(buffer))
+            .map_err(|_| NorenError::UploadFailure())
+    }
 }
 
 impl GeometryDB {
     /// Creates a geometry database loader for the provided GPU context and module path.
     pub fn new(ctx: Option<*mut Context>, module_path: &str) -> Self {
-        let data = match RDBView::load(module_path) {
-            Ok(d) => Some(d),
-            Err(_) => None,
-        };
+        GeometryDBBuilder::new(ctx, module_path).build()
+    }
 
-        Self {
-            data,
-            ctx: ctx.and_then(NonNull::new),
-            cache: Default::default(),
-            defaults: default_primitives().into_iter().collect(),
-        }
+    pub fn builder(ctx: Option<*mut Context>, module_path: &str) -> GeometryDBBuilder {
+        GeometryDBBuilder::new(ctx, module_path)
     }
 
     pub fn import_ctx(&mut self, ctx: NonNull<Context>) {
         self.ctx = Some(ctx);
+    }
+
+    pub fn pooled_uploads(&self) -> bool {
+        self.pooled_uploads
     }
 
     fn ctx_mut(&mut self) -> Result<&mut Context, NorenError> {
@@ -76,6 +294,15 @@ impl GeometryDB {
             .as_mut()
             .map(|ctx| unsafe { ctx.as_mut() })
             .ok_or(NorenError::DashiContext())
+    }
+
+    fn update_cached_buffer_handle(&mut self, old: Handle<Buffer>, new: Handle<Buffer>) {
+        if !old.valid() || old == new {
+            return;
+        }
+
+        self.cache
+            .for_each_payload_mut(|geometry| geometry.replace_handles(old, new));
     }
 
     /// Uploads host geometry into GPU buffers and caches the result.
@@ -94,20 +321,24 @@ impl GeometryDB {
                 indices,
                 lods,
             } = geom;
-            let ctx = self.ctx_mut()?;
+            let ctx_ptr = self.ctx_mut()? as *mut Context;
 
-            let base = Self::upload_layer(ctx, entry, &GeometryLayer { vertices, indices })?;
+            let base = {
+                let ctx = unsafe { &mut *ctx_ptr };
+                self.upload_layer(ctx, entry, &GeometryLayer { vertices, indices })?
+            };
 
-            let lods = lods
-                .into_iter()
-                .enumerate()
-                .map(|(idx, layer)| {
-                    let debug_name = format!("{entry}::lod{idx}");
-                    Self::upload_layer(ctx, &debug_name, &layer)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut device_lods = Vec::new();
+            for (idx, layer) in lods.into_iter().enumerate() {
+                let debug_name = format!("{entry}::lod{idx}");
+                let ctx = unsafe { &mut *ctx_ptr };
+                device_lods.push(self.upload_layer(ctx, &debug_name, &layer)?);
+            }
 
-            DeviceGeometry { base, lods }
+            DeviceGeometry {
+                base,
+                lods: device_lods,
+            }
         };
 
         let cache_entry = self.cache.insert_or_increment(entry, || device_geom);
@@ -188,20 +419,20 @@ impl GeometryDB {
         let Ok(ctx) = self.ctx_mut() else {
             return;
         };
+        let mut destroy = |buf: &GeometryBufferRef| {
+            if let GeometryBufferRef::Dedicated(handle) = buf {
+                if handle.valid() {
+                    ctx.destroy_buffer(*handle);
+                }
+            }
+        };
+
         for (_key, entry) in expired {
-            if entry.payload.base.vertices.valid() {
-                ctx.destroy_buffer(entry.payload.base.vertices);
-            }
-            if entry.payload.base.indices.valid() {
-                ctx.destroy_buffer(entry.payload.base.indices);
-            }
+            destroy(&entry.payload.base.vertices);
+            destroy(&entry.payload.base.indices);
             for lod in entry.payload.lods.iter() {
-                if lod.vertices.valid() {
-                    ctx.destroy_buffer(lod.vertices);
-                }
-                if lod.indices.valid() {
-                    ctx.destroy_buffer(lod.indices);
-                }
+                destroy(&lod.vertices);
+                destroy(&lod.indices);
             }
         }
     }
@@ -209,6 +440,19 @@ impl GeometryDB {
 
 impl GeometryDB {
     fn upload_layer(
+        &mut self,
+        ctx: &mut Context,
+        debug_name: &str,
+        layer: &GeometryLayer,
+    ) -> Result<DeviceGeometryLayer, NorenError> {
+        if self.pooled_uploads {
+            self.upload_layer_pooled(ctx, debug_name, layer)
+        } else {
+            Self::upload_layer_dedicated(ctx, debug_name, layer)
+        }
+    }
+
+    fn upload_layer_dedicated(
         ctx: &mut Context,
         debug_name: &str,
         layer: &GeometryLayer,
@@ -227,26 +471,63 @@ impl GeometryDB {
 
         let index_handle = if let Some(indices) = &layer.indices {
             if indices.is_empty() {
-                Handle::default()
+                GeometryBufferRef::None
             } else {
                 let index_bytes = bytemuck::cast_slice(indices);
                 let index_debug_name = format!("{debug_name}::indices");
-                ctx.make_buffer(&BufferInfo {
-                    debug_name: &index_debug_name,
-                    byte_size: index_bytes.len() as u32,
-                    visibility: MemoryVisibility::Gpu,
-                    usage: BufferUsage::INDEX,
-                    initial_data: Some(index_bytes),
-                })
-                .map_err(|_| NorenError::UploadFailure())?
+                let handle = ctx
+                    .make_buffer(&BufferInfo {
+                        debug_name: &index_debug_name,
+                        byte_size: index_bytes.len() as u32,
+                        visibility: MemoryVisibility::Gpu,
+                        usage: BufferUsage::INDEX,
+                        initial_data: Some(index_bytes),
+                    })
+                    .map_err(|_| NorenError::UploadFailure())?;
+
+                GeometryBufferRef::Dedicated(handle)
             }
         } else {
-            Handle::default()
+            GeometryBufferRef::None
         };
 
         Ok(DeviceGeometryLayer {
-            vertices: vertex_buffer,
+            vertices: GeometryBufferRef::Dedicated(vertex_buffer),
             indices: index_handle,
+        })
+    }
+
+    fn upload_layer_pooled(
+        &mut self,
+        ctx: &mut Context,
+        _debug_name: &str,
+        layer: &GeometryLayer,
+    ) -> Result<DeviceGeometryLayer, NorenError> {
+        let vertex_bytes = bytemuck::cast_slice(&layer.vertices);
+        let (vertex_slice, replaced_vertex) = self.vertex_pool.append(ctx, vertex_bytes)?;
+
+        if let Some(old) = replaced_vertex {
+            self.update_cached_buffer_handle(old, self.vertex_pool.buffer_handle());
+        }
+
+        let index_buffer = if let Some(indices) = &layer.indices {
+            if indices.is_empty() {
+                GeometryBufferRef::None
+            } else {
+                let index_bytes = bytemuck::cast_slice(indices);
+                let (slice, replaced) = self.index_pool.append(ctx, index_bytes)?;
+                if let Some(old) = replaced {
+                    self.update_cached_buffer_handle(old, self.index_pool.buffer_handle());
+                }
+                GeometryBufferRef::Slice(slice)
+            }
+        } else {
+            GeometryBufferRef::None
+        };
+
+        Ok(DeviceGeometryLayer {
+            vertices: GeometryBufferRef::Slice(vertex_slice),
+            indices: index_buffer,
         })
     }
 }
@@ -293,6 +574,9 @@ mod tests {
             ctx: None,
             data: Some(view),
             defaults: default_primitives().into_iter().collect(),
+            pooled_uploads: false,
+            vertex_pool: GeometryUploadPool::new(BufferUsage::VERTEX, "geometry::vertices"),
+            index_pool: GeometryUploadPool::new(BufferUsage::INDEX, "geometry::indices"),
         };
 
         // First fetch should load from disk and cache
@@ -325,6 +609,9 @@ mod tests {
             ctx: None,
             data: None,
             defaults: default_primitives().into_iter().collect(),
+            pooled_uploads: false,
+            vertex_pool: GeometryUploadPool::new(BufferUsage::VERTEX, "geometry::vertices"),
+            index_pool: GeometryUploadPool::new(BufferUsage::INDEX, "geometry::indices"),
         };
 
         let geometry = db.fetch_raw_geometry(DEFAULT_GEOMETRY_ENTRIES[0])?;

@@ -1,5 +1,6 @@
 use crate::meta::{DeviceMaterial, DeviceTexture, DeviceTextureList, HostMaterial, HostTexture};
 use crate::rdb::{DeviceGeometry, HostGeometry};
+use dashi::{Buffer, Handle};
 
 #[derive(Clone, Debug)]
 pub struct HostMesh {
@@ -35,5 +36,9 @@ impl DeviceMesh {
             textures: list,
             material,
         }
+    }
+
+    pub fn buffer_handles(&self) -> Vec<Handle<Buffer>> {
+        self.geometry.buffer_handles()
     }
 }
