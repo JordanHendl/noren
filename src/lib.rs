@@ -381,21 +381,7 @@ impl DB {
                     material,
                 }
             },
-            |name, meshes| {
-                let vertex_count = meshes.iter().map(|mesh| mesh.vertex_count).sum();
-                let index_count = if meshes.iter().all(|mesh| mesh.index_count.is_some()) {
-                    Some(meshes.iter().filter_map(|mesh| mesh.index_count).sum())
-                } else {
-                    None
-                };
-
-                HostModel {
-                    name,
-                    meshes,
-                    vertex_count,
-                    index_count,
-                }
-            },
+            |name, meshes| HostModel { name, meshes },
         )
     }
 
@@ -408,21 +394,7 @@ impl DB {
             |_, image| DeviceTexture::new(image),
             |_, textures, material| DeviceMaterial::new(textures, material),
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
-            |name, meshes| {
-                let vertex_count = meshes.iter().map(|mesh| mesh.vertex_count).sum();
-                let index_count = if meshes.iter().all(|mesh| mesh.index_count.is_some()) {
-                    Some(meshes.iter().filter_map(|mesh| mesh.index_count).sum())
-                } else {
-                    None
-                };
-
-                DeviceModel {
-                    name,
-                    meshes,
-                    vertex_count,
-                    index_count,
-                }
-            },
+            |name, meshes| DeviceModel { name, meshes },
         )
     }
 

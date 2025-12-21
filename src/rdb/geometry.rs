@@ -60,7 +60,6 @@ pub struct DeviceGeometry {
     pub lods: Vec<DeviceGeometryLayer>,
 }
 
-
 pub struct GeometryDBBuilder {
     ctx: Option<*mut Context>,
     module_path: String,
@@ -396,7 +395,7 @@ impl GeometryDB {
                 index_count,
                 lods,
             } = geom;
-            let ctx = unsafe{self.ctx.unwrap().as_mut()};
+            let ctx = unsafe { self.ctx.unwrap().as_mut() };
 
             let base_layer = GeometryLayer {
                 vertices,
