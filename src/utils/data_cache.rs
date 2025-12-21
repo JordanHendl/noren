@@ -105,4 +105,14 @@ impl<T> DataCache<T> {
             .filter_map(|key| self.data.remove(&key).map(|entry| (key, entry)))
             .collect()
     }
+
+    /// Applies a function to every cached payload.
+    pub fn for_each_payload_mut<F>(&mut self, mut func: F)
+    where
+        F: FnMut(&mut T),
+    {
+        for entry in self.data.values_mut() {
+            func(&mut entry.payload);
+        }
+    }
 }
