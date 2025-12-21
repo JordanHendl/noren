@@ -365,13 +365,33 @@ impl DB {
                 textures,
                 material,
             },
-            |name, geometry, textures, material| HostMesh {
-                name,
-                geometry,
-                textures,
-                material,
+            |name, geometry, textures, material| {
+                let vertex_count = geometry.vertex_count;
+                let index_count = geometry.index_count;
+                HostMesh {
+                    name,
+                    geometry,
+                    vertex_count,
+                    index_count,
+                    textures,
+                    material,
+                }
             },
-            |name, meshes| HostModel { name, meshes },
+            |name, meshes| {
+                let vertex_count = meshes.iter().map(|mesh| mesh.vertex_count).sum();
+                let index_count = if meshes.iter().all(|mesh| mesh.index_count.is_some()) {
+                    Some(meshes.iter().filter_map(|mesh| mesh.index_count).sum())
+                } else {
+                    None
+                };
+
+                HostModel {
+                    name,
+                    meshes,
+                    vertex_count,
+                    index_count,
+                }
+            },
         )
     }
 
@@ -384,7 +404,21 @@ impl DB {
             |_, image| DeviceTexture::new(image),
             |_, textures, material| DeviceMaterial::new(textures, material),
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
-            |name, meshes| DeviceModel { name, meshes },
+            |name, meshes| {
+                let vertex_count = meshes.iter().map(|mesh| mesh.vertex_count).sum();
+                let index_count = if meshes.iter().all(|mesh| mesh.index_count.is_some()) {
+                    Some(meshes.iter().filter_map(|mesh| mesh.index_count).sum())
+                } else {
+                    None
+                };
+
+                DeviceModel {
+                    name,
+                    meshes,
+                    vertex_count,
+                    index_count,
+                }
+            },
         )
     }
 
@@ -405,11 +439,17 @@ impl DB {
                 textures,
                 material,
             },
-            &mut |name, geometry, textures, material| HostMesh {
-                name,
-                geometry,
-                textures,
-                material,
+            &mut |name, geometry, textures, material| {
+                let vertex_count = geometry.vertex_count;
+                let index_count = geometry.index_count;
+                HostMesh {
+                    name,
+                    geometry,
+                    vertex_count,
+                    index_count,
+                    textures,
+                    material,
+                }
             },
         )?
         .ok_or_else(NorenError::LookupFailure)
@@ -1639,8 +1679,9 @@ mod tests {
         let geom = HostGeometry {
             vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
             indices: Some(vec![0, 1, 2]),
-            lods: Vec::new(),
-        };
+            ..Default::default()
+        }
+        .with_counts();
         geom_rdb.add(GEOMETRY_ENTRY, &geom)?;
         geom_rdb.save(base_dir.join("geometry.rdb"))?;
 
@@ -1935,8 +1976,9 @@ mod tests {
         let geom = HostGeometry {
             vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
             indices: Some(vec![0, 1, 2]),
-            lods: Vec::new(),
-        };
+            ..Default::default()
+        }
+        .with_counts();
         geom_rdb.add(GEOMETRY_ENTRY, &geom)?;
         geom_rdb.save(base.join("geometry.rdb"))?;
 

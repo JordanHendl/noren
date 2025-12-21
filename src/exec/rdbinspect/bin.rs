@@ -286,9 +286,17 @@ impl KnownType {
 }
 
 fn describe_geometry(geometry: &HostGeometry) -> String {
+    let (vertex_count, index_count) = resolve_counts(
+        geometry.vertex_count,
+        geometry.index_count,
+        geometry.vertices.len(),
+        geometry.indices.as_ref().map(|indices| indices.len()),
+    );
+
     let mut description = describe_geometry_layer(
         "Base",
-        geometry.vertices.len(),
+        vertex_count,
+        index_count,
         geometry.indices.as_ref(),
         "  ",
     );
@@ -296,10 +304,17 @@ fn describe_geometry(geometry: &HostGeometry) -> String {
     if !geometry.lods.is_empty() {
         description.push_str(&format!("\n  LODs: {}", geometry.lods.len()));
         for (idx, lod) in geometry.lods.iter().enumerate() {
+            let (lod_vertex_count, lod_index_count) = resolve_counts(
+                lod.vertex_count,
+                lod.index_count,
+                lod.vertices.len(),
+                lod.indices.as_ref().map(|indices| indices.len()),
+            );
             description.push('\n');
             description.push_str(&describe_geometry_layer(
                 &format!("LOD {idx}"),
-                lod.vertices.len(),
+                lod_vertex_count,
+                lod_index_count,
                 lod.indices.as_ref(),
                 "    ",
             ));
@@ -312,17 +327,19 @@ fn describe_geometry(geometry: &HostGeometry) -> String {
 fn describe_geometry_layer(
     name: &str,
     vertex_count: usize,
+    index_count: Option<usize>,
     indices: Option<&Vec<u32>>,
     indent: &str,
 ) -> String {
-    let (index_summary, triangle_hint) = match indices {
-        Some(list) if !list.is_empty() => {
-            let triangle_count = list.len() / 3;
+    let resolved_index_count = index_count.or_else(|| indices.map(|list| list.len()));
+    let (index_summary, triangle_hint) = match resolved_index_count {
+        Some(count) if count > 0 => {
+            let triangle_count = count / 3;
             (
                 format!(
                     "{} indices ({} bytes)",
-                    list.len(),
-                    list.len() * std::mem::size_of::<u32>()
+                    count,
+                    count * std::mem::size_of::<u32>()
                 ),
                 format!("\n{indent}  ~ Estimated triangles: {triangle_count}"),
             )
@@ -334,6 +351,26 @@ fn describe_geometry_layer(
     format!(
         "{indent}{name}:\n{indent}  Vertices: {vertex_count}\n{indent}  Indices: {index_summary}{triangle_hint}",
     )
+}
+
+fn resolve_counts(
+    vertex_count: u32,
+    index_count: Option<u32>,
+    vertices_len: usize,
+    indices_len: Option<usize>,
+) -> (usize, Option<usize>) {
+    let resolved_vertex_count = if vertex_count > 0 {
+        vertex_count as usize
+    } else {
+        vertices_len
+    };
+
+    let resolved_index_count = match index_count {
+        Some(count) => Some(count as usize),
+        None => indices_len,
+    };
+
+    (resolved_vertex_count, resolved_index_count)
 }
 
 fn describe_image(image: &HostImage) -> String {

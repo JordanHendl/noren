@@ -5,6 +5,8 @@ use crate::rdb::{DeviceGeometry, HostGeometry};
 pub struct HostMesh {
     pub name: String,
     pub geometry: HostGeometry,
+    pub vertex_count: u32,
+    pub index_count: Option<u32>,
     pub textures: Vec<HostTexture>,
     pub material: Option<HostMaterial>,
 }
@@ -12,6 +14,8 @@ pub struct HostMesh {
 #[derive(Clone, Debug, Default)]
 pub struct DeviceMesh {
     pub geometry: DeviceGeometry,
+    pub vertex_count: u32,
+    pub index_count: Option<u32>,
     pub textures: DeviceTextureList,
     pub material: Option<DeviceMaterial>,
 }
@@ -30,8 +34,12 @@ impl DeviceMesh {
         {
             list.push(texture);
         }
+        let vertex_count = geometry.vertex_count;
+        let index_count = geometry.index_count;
         Self {
             geometry,
+            vertex_count,
+            index_count,
             textures: list,
             material,
         }
