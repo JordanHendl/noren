@@ -1,25 +1,14 @@
 {
   "materials": {
-    "material/quad": {
-      "name": "Quad Material",
-      "render_mask": 1,
+    "material/default": {
+      "name": "Default Material",
+      "render_mask": 0,
       "texture_lookups": {
-        "base_color": "texture/imagery/tulips"
-      }
-    },
-    "material/multi_bind": {
-      "name": "Multi Bind Quad",
-      "render_mask": 3,
-      "texture_lookups": {
-        "base_color": "texture/imagery/tulips",
-        "emissive": "texture/imagery/peppers"
-      }
-    },
-    "material/bind_table": {
-      "name": "Bind Table Quad",
-      "render_mask": 2,
-      "texture_lookups": {
-        "base_color": "texture/imagery/peppers"
+        "base_color": "texture/default",
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
       }
     }
   }

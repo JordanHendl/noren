@@ -1,5 +1,37 @@
 {
   "meshes": {
+    "mesh/cube": {
+      "name": "cube",
+      "geometry": "geometry/cube",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/plane": {
+      "name": "plane",
+      "geometry": "geometry/plane",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/cylinder": {
+      "name": "cylinder",
+      "geometry": "geometry/cylinder",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/sphere": {
+      "name": "sphere",
+      "geometry": "geometry/sphere",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
     "mesh/quad": {
       "name": "quad",
       "geometry": "geometry/quad",
@@ -14,6 +46,14 @@
       "geometry": "geometry/simple_skin",
       "material": null,
       "textures": []
+    },
+    "mesh/cone": {
+      "name": "cone",
+      "geometry": "geometry/cone",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
     }
   }
 }
