@@ -1041,47 +1041,33 @@ impl DB {
         ) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
     {
-        let layout = self
-            .meta_layout
-            .as_ref()
-            .ok_or_else(|| NorenError::LookupFailure())?;
+        let (mesh_name, geometry, mesh_textures, material_key, material_components) = {
+            let layout = self
+                .meta_layout
+                .as_ref()
+                .ok_or_else(|| NorenError::LookupFailure())?;
 
-        let mesh_def = match layout.meshes.get(mesh_key) {
-            Some(mesh) => mesh,
-            None => return Ok(None),
-        };
+            let mesh_def = match layout.meshes.get(mesh_key) {
+                Some(mesh) => mesh,
+                None => return Ok(None),
+            };
 
-        if mesh_def.geometry.is_empty() {
-            return Ok(None);
-        }
+            if mesh_def.geometry.is_empty() {
+                return Ok(None);
+            }
 
-        let geometry = fetch_geometry(&mut self.geometry, mesh_def.geometry.as_str())?;
-        let mesh_name = mesh_def
-            .name
-            .clone()
-            .unwrap_or_else(|| mesh_key.to_string());
+            let geometry = fetch_geometry(&mut self.geometry, mesh_def.geometry.as_str())?;
+            let mesh_name = mesh_def
+                .name
+                .clone()
+                .unwrap_or_else(|| mesh_key.to_string());
 
-        let mut mesh_textures = Vec::new();
-        append_texture_bindings(
-            &mut mesh_textures,
-            &mesh_def.textures,
-            layout,
-            &mut self.imagery,
-            make_texture,
-            fetch_image,
-            if use_furikake {
-                self.furikake.as_mut()
-            } else {
-                None
-            },
-        )?;
-
-        let material_key = material_override.or_else(|| mesh_def.material.as_deref());
-        let material = if let Some(material_key) = material_key {
-            match build_material_components(
+            let mut mesh_textures = Vec::new();
+            append_texture_bindings(
+                &mut mesh_textures,
+                &mesh_def.textures,
                 layout,
                 &mut self.imagery,
-                material_key,
                 make_texture,
                 fetch_image,
                 if use_furikake {
@@ -1089,24 +1075,56 @@ impl DB {
                 } else {
                     None
                 },
-            )? {
-                Some((name, textures, material)) => {
-                    let furikake_handle = if use_furikake {
-                        self.ensure_furikake_material(material_key).transpose()?
+            )?;
+
+            let material_key = material_override
+                .or_else(|| mesh_def.material.as_deref())
+                .map(str::to_string);
+            let material_components = if let Some(material_key) = material_key.as_deref() {
+                match build_material_components(
+                    layout,
+                    &mut self.imagery,
+                    material_key,
+                    make_texture,
+                    fetch_image,
+                    if use_furikake {
+                        self.furikake.as_mut()
                     } else {
                         None
-                    };
-                    Some(make_material(
-                        name,
-                        textures,
-                        material,
-                        material_key,
-                        furikake_handle,
-                    ))
+                    },
+                )? {
+                    Some((name, textures, material)) => Some((name, textures, material)),
+                    None if material_override.is_some() => return Err(NorenError::LookupFailure()),
+                    None => None,
                 }
-                None if material_override.is_some() => return Err(NorenError::LookupFailure()),
-                None => None,
-            }
+            } else {
+                None
+            };
+
+            Ok::<_, NorenError>((
+                mesh_name,
+                geometry,
+                mesh_textures,
+                material_key,
+                material_components,
+            ))?
+        };
+
+        let material = if let (Some(material_key), Some((name, textures, material))) =
+            (material_key.as_deref(), material_components)
+        {
+            let furikake_handle = if use_furikake {
+                self.ensure_furikake_material(material_key).transpose()?
+            } else {
+                None
+            };
+            Some(make_material(
+                name,
+                textures,
+                material,
+                material_key,
+                furikake_handle,
+            ))
         } else {
             None
         };
