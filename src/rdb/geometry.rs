@@ -4,9 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dashi::{
-    Buffer, BufferInfo, BufferUsage, BufferView, Context, Handle, MemoryVisibility,
-};
+use dashi::{Buffer, BufferInfo, BufferUsage, BufferView, Context, Handle, MemoryVisibility};
 use serde::{Deserialize, Serialize};
 
 use super::{DatabaseEntry, primitives::Vertex};
@@ -260,10 +258,7 @@ impl GeometryUploadPool {
         ))
     }
 
-    fn ensure_capacity(
-        &mut self,
-        ctx: &mut Context,
-    ) -> Result<Option<Handle<Buffer>>, NorenError> {
+    fn ensure_capacity(&mut self, ctx: &mut Context) -> Result<Option<Handle<Buffer>>, NorenError> {
         let needed = self.data.len() as u32;
         if self.buffer.valid() && needed <= self.capacity {
             return Ok(None);
