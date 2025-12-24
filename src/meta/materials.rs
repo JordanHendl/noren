@@ -1,4 +1,5 @@
 use crate::meta::{DeviceTexture, DeviceTextureList, HostTexture};
+use dashi::Handle;
 use furikake::types::Material as FurikakeMaterial;
 use std::fmt;
 
@@ -14,6 +15,7 @@ pub struct HostMaterial {
 pub struct DeviceMaterial {
     pub textures: DeviceTextureList,
     pub material: FurikakeMaterial,
+    pub furikake_material_handle: Option<Handle<FurikakeMaterial>>,
 }
 
 impl fmt::Debug for HostMaterial {
@@ -31,6 +33,7 @@ impl fmt::Debug for DeviceMaterial {
         f.debug_struct("DeviceMaterial")
             .field("textures", &self.textures)
             .field("material", &format_material(&self.material))
+            .field("furikake_material_handle", &self.furikake_material_handle)
             .finish()
     }
 }
@@ -49,7 +52,11 @@ fn format_material(material: &FurikakeMaterial) -> String {
 
 impl DeviceMaterial {
     /// Builds a material from the provided textures and furikake material definition.
-    pub fn new(textures: Vec<DeviceTexture>, material: FurikakeMaterial) -> Self {
+    pub fn new(
+        textures: Vec<DeviceTexture>,
+        material: FurikakeMaterial,
+        furikake_material_handle: Option<Handle<FurikakeMaterial>>,
+    ) -> Self {
         let mut list = DeviceTextureList::new();
         for texture in textures
             .into_iter()
@@ -61,6 +68,7 @@ impl DeviceMaterial {
         Self {
             textures: list,
             material,
+            furikake_material_handle,
         }
     }
 }
