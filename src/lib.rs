@@ -361,10 +361,11 @@ impl DB {
     pub fn fetch_model(&mut self, entry: DatabaseEntry<'_>) -> Result<HostModel, NorenError> {
         self.assemble_model(
             entry,
+            false,
             |geometry_db, entry| geometry_db.fetch_raw_geometry(entry),
             |imagery_db, entry| imagery_db.fetch_raw_image(entry),
-            |name, image| HostTexture { name, image },
-            |name, textures, material| HostMaterial {
+            |name, image, _furikake_id| HostTexture { name, image },
+            |name, textures, material, _material_key, _furikake_handle| HostMaterial {
                 name,
                 textures,
                 material,
@@ -389,10 +390,13 @@ impl DB {
     pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceModel, NorenError> {
         self.assemble_model(
             entry,
+            true,
             |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
             |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
-            |_, image| DeviceTexture::new(image),
-            |_, textures, material| DeviceMaterial::new(textures, material),
+            |_, image, furikake_id| DeviceTexture::new(image, furikake_id),
+            |_, textures, material, _material_key, furikake_handle| {
+                DeviceMaterial::new(textures, material, furikake_handle)
+            },
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
             |name, meshes| DeviceModel { name, meshes },
         )
@@ -407,10 +411,11 @@ impl DB {
         self.assemble_mesh(
             mesh_entry,
             Some(material_entry),
+            false,
             &mut |geometry_db, entry| geometry_db.fetch_raw_geometry(entry),
             &mut |imagery_db, entry| imagery_db.fetch_raw_image(entry),
-            &mut |name, image| HostTexture { name, image },
-            &mut |name, textures, material| HostMaterial {
+            &mut |name, image, _furikake_id| HostTexture { name, image },
+            &mut |name, textures, material, _material_key, _furikake_handle| HostMaterial {
                 name,
                 textures,
                 material,
@@ -440,10 +445,13 @@ impl DB {
         self.assemble_mesh(
             mesh_entry,
             Some(material_entry),
+            true,
             &mut |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
             &mut |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
-            &mut |_, image| DeviceTexture::new(image),
-            &mut |_, textures, material| DeviceMaterial::new(textures, material),
+            &mut |_, image, furikake_id| DeviceTexture::new(image, furikake_id),
+            &mut |_, textures, material, _material_key, furikake_handle| {
+                DeviceMaterial::new(textures, material, furikake_handle)
+            },
             &mut |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
         )?
         .ok_or_else(NorenError::LookupFailure)
@@ -466,8 +474,9 @@ impl DB {
             layout,
             &mut self.imagery,
             entry,
-            &mut |name, image| HostTexture { name, image },
+            &mut |name, image, _furikake_id| HostTexture { name, image },
             &mut |imagery, tex_entry| imagery.fetch_raw_image(tex_entry),
+            None,
         )?
         .ok_or_else(NorenError::LookupFailure)?;
 
@@ -485,12 +494,9 @@ impl DB {
 
     /// Builds a GPU-ready material with device textures and furikake definitions.
     ///
-    /// Returns the material alongside an optional furikake bindless handle when a
-    /// bindless state has been imported.
-    pub fn fetch_device_material(
-        &mut self,
-        entry: &str,
-    ) -> Result<(DeviceMaterial, Option<dashi::Handle<FurikakeMaterial>>), NorenError> {
+    /// When a bindless state has been imported, the returned material includes the
+    /// furikake handle for the inserted material.
+    pub fn fetch_device_material(&mut self, entry: &str) -> Result<DeviceMaterial, NorenError> {
         let layout = self
             .meta_layout
             .as_ref()
@@ -500,14 +506,15 @@ impl DB {
             layout,
             &mut self.imagery,
             entry,
-            &mut |_, image| DeviceTexture::new(image),
+            &mut |_, image, furikake_id| DeviceTexture::new(image, furikake_id),
             &mut |imagery, tex_entry| imagery.fetch_gpu_image(tex_entry),
+            self.furikake.as_mut(),
         )?
         .ok_or_else(NorenError::LookupFailure)?;
 
         let furikake_handle = self.ensure_furikake_material(entry).transpose()?;
 
-        Ok((DeviceMaterial::new(textures, material), furikake_handle))
+        Ok(DeviceMaterial::new(textures, material, furikake_handle))
     }
 
     /// Fetches a graphics shader definition.
@@ -539,64 +546,6 @@ impl DB {
         self.furikake
             .as_mut()
             .ok_or_else(|| NorenError::FurikakeError("furikake state not imported".to_string()))
-    }
-
-    fn ensure_furikake_texture(
-        &mut self,
-        entry: DatabaseEntry<'_>,
-    ) -> Option<Result<u16, NorenError>> {
-        let Some(_) = self.furikake else {
-            return None;
-        };
-
-        if let Some(id) = self
-            .furikake
-            .as_ref()
-            .and_then(|bindings| bindings.textures.get(entry))
-        {
-            return Some(Ok(*id));
-        }
-
-        let device_image = match self.imagery.fetch_gpu_image(entry) {
-            Ok(image) => image,
-            Err(err) => return Some(Err(err)),
-        };
-        let view = dashi::ImageView {
-            img: device_image.img,
-            ..Default::default()
-        };
-
-        let mut inserted_id = None;
-        {
-            let bindings = match self.furikake_bindings_mut() {
-                Ok(bindings) => bindings,
-                Err(err) => return Some(Err(err)),
-            };
-            let result = bindings
-                .state_mut()
-                .reserved_mut::<ReservedBindlessTextures, _>(
-                    "meshi_bindless_textures",
-                    |textures| {
-                        inserted_id = Some(textures.add_texture(view));
-                    },
-                );
-
-            if let Err(err) = result {
-                return Some(Err(err.into()));
-            }
-
-            let id = match inserted_id {
-                Some(id) => id,
-                None => {
-                    return Some(Err(NorenError::FurikakeError(
-                        "failed to allocate furikake texture slot".to_string(),
-                    )));
-                }
-            };
-
-            bindings.textures.insert(entry.to_string(), id);
-            Some(Ok(id))
-        }
     }
 
     fn ensure_furikake_material(
@@ -657,10 +606,14 @@ impl DB {
             let id = if let Some(id) = texture_ids.get(&tex_key) {
                 *id
             } else {
-                let id = match self.ensure_furikake_texture(image_entry.as_str()) {
-                    Some(Ok(id)) => id,
-                    Some(Err(err)) => return Some(Err(err)),
-                    None => return None,
+                let id = match ensure_furikake_texture(
+                    &mut self.imagery,
+                    self.furikake.as_mut(),
+                    image_entry.as_str(),
+                ) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return None,
+                    Err(err) => return Some(Err(err)),
                 };
                 texture_ids.insert(tex_key.clone(), id);
                 id
@@ -713,6 +666,44 @@ impl DB {
     }
 }
 
+fn ensure_furikake_texture(
+    imagery: &mut ImageDB,
+    mut furikake: Option<&mut FurikakeBindings>,
+    entry: &str,
+) -> Result<Option<u16>, NorenError> {
+    let Some(bindings) = furikake.as_deref_mut() else {
+        return Ok(None);
+    };
+
+    if let Some(id) = bindings.textures.get(entry) {
+        return Ok(Some(*id));
+    }
+
+    let device_image = imagery.fetch_gpu_image(entry)?;
+    let view = dashi::ImageView {
+        img: device_image.img,
+        ..Default::default()
+    };
+
+    let mut inserted_id = None;
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessTextures, _>("meshi_bindless_textures", |textures| {
+            inserted_id = Some(textures.add_texture(view));
+        });
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let id = inserted_id.ok_or_else(|| {
+        NorenError::FurikakeError("failed to allocate furikake texture slot".to_string())
+    })?;
+
+    bindings.textures.insert(entry.to_string(), id);
+    Ok(Some(id))
+}
+
 fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
     output: &mut Vec<Texture>,
     keys: &[String],
@@ -720,11 +711,13 @@ fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
     imagery: &mut ImageDB,
     make_texture: &mut MakeTexture,
     fetch_image: &mut FetchImage,
+    furikake: Option<&mut FurikakeBindings>,
 ) -> Result<(), NorenError>
 where
-    MakeTexture: FnMut(String, Image) -> Texture,
+    MakeTexture: FnMut(String, Image, Option<u16>) -> Texture,
     FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
 {
+    let mut furikake = furikake;
     for tex_key in keys {
         if let Some(tex_def) = layout.textures.get(tex_key) {
             if tex_def.image.is_empty() {
@@ -732,7 +725,9 @@ where
             }
             let image = fetch_image(imagery, tex_def.image.as_str())?;
             let name = tex_def.name.clone().unwrap_or_else(|| tex_key.clone());
-            output.push(make_texture(name, image));
+            let furikake_id =
+                ensure_furikake_texture(imagery, furikake.as_deref_mut(), tex_def.image.as_str())?;
+            output.push(make_texture(name, image, furikake_id));
         }
     }
     Ok(())
@@ -807,11 +802,13 @@ fn build_material_components<Texture, Image, MakeTexture, FetchImage>(
     material_key: &str,
     make_texture: &mut MakeTexture,
     fetch_image: &mut FetchImage,
+    furikake: Option<&mut FurikakeBindings>,
 ) -> Result<Option<(String, Vec<Texture>, FurikakeMaterial)>, NorenError>
 where
-    MakeTexture: FnMut(String, Image) -> Texture,
+    MakeTexture: FnMut(String, Image, Option<u16>) -> Texture,
     FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
 {
+    let mut furikake = furikake;
     let Some(material_def) = layout.materials.get(material_key) else {
         return Ok(None);
     };
@@ -846,8 +843,10 @@ where
         } else {
             let image = fetch_image(imagery, tex_def.image.as_str())?;
             let name = tex_def.name.clone().unwrap_or_else(|| tex_key.to_string());
+            let furikake_id =
+                ensure_furikake_texture(imagery, furikake.as_deref_mut(), tex_def.image.as_str())?;
             let id = textures.len() as u16;
-            textures.push(make_texture(name, image));
+            textures.push(make_texture(name, image, furikake_id));
             lookup_indices.insert(tex_key.to_string(), id);
             id
         };
@@ -1022,6 +1021,7 @@ impl DB {
         &mut self,
         mesh_key: &str,
         material_override: Option<&str>,
+        use_furikake: bool,
         fetch_geometry: &mut FetchGeometry,
         fetch_image: &mut FetchImage,
         make_texture: &mut MakeTexture,
@@ -1031,8 +1031,14 @@ impl DB {
     where
         FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry<'_>) -> Result<Geometry, NorenError>,
         FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
-        MakeTexture: FnMut(String, Image) -> Texture,
-        MakeMaterial: FnMut(String, Vec<Texture>, FurikakeMaterial) -> Material,
+        MakeTexture: FnMut(String, Image, Option<u16>) -> Texture,
+        MakeMaterial: FnMut(
+            String,
+            Vec<Texture>,
+            FurikakeMaterial,
+            &str,
+            Option<dashi::Handle<FurikakeMaterial>>,
+        ) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
     {
         let layout = self
@@ -1063,6 +1069,11 @@ impl DB {
             &mut self.imagery,
             make_texture,
             fetch_image,
+            if use_furikake {
+                self.furikake.as_mut()
+            } else {
+                None
+            },
         )?;
 
         let material_key = material_override.or_else(|| mesh_def.material.as_deref());
@@ -1073,8 +1084,26 @@ impl DB {
                 material_key,
                 make_texture,
                 fetch_image,
+                if use_furikake {
+                    self.furikake.as_mut()
+                } else {
+                    None
+                },
             )? {
-                Some((name, textures, material)) => Some(make_material(name, textures, material)),
+                Some((name, textures, material)) => {
+                    let furikake_handle = if use_furikake {
+                        self.ensure_furikake_material(material_key).transpose()?
+                    } else {
+                        None
+                    };
+                    Some(make_material(
+                        name,
+                        textures,
+                        material,
+                        material_key,
+                        furikake_handle,
+                    ))
+                }
                 None if material_override.is_some() => return Err(NorenError::LookupFailure()),
                 None => None,
             }
@@ -1106,6 +1135,7 @@ impl DB {
     >(
         &mut self,
         entry: DatabaseEntry<'_>,
+        use_furikake: bool,
         mut fetch_geometry: FetchGeometry,
         mut fetch_image: FetchImage,
         mut make_texture: MakeTexture,
@@ -1116,8 +1146,14 @@ impl DB {
     where
         FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry<'_>) -> Result<Geometry, NorenError>,
         FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
-        MakeTexture: FnMut(String, Image) -> Texture,
-        MakeMaterial: FnMut(String, Vec<Texture>, FurikakeMaterial) -> Material,
+        MakeTexture: FnMut(String, Image, Option<u16>) -> Texture,
+        MakeMaterial: FnMut(
+            String,
+            Vec<Texture>,
+            FurikakeMaterial,
+            &str,
+            Option<dashi::Handle<FurikakeMaterial>>,
+        ) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
         MakeModel: FnMut(String, Vec<Mesh>) -> Model,
     {
@@ -1143,6 +1179,7 @@ impl DB {
             if let Some(mesh) = self.assemble_mesh(
                 mesh_key,
                 None,
+                use_furikake,
                 &mut fetch_geometry,
                 &mut fetch_image,
                 &mut make_texture,

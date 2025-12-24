@@ -12,12 +12,16 @@ pub struct HostTexture {
 #[derive(Clone, Debug, Default)]
 pub struct DeviceTexture {
     pub image: DeviceImage,
+    pub furikake_texture_id: Option<u16>,
 }
 
 impl DeviceTexture {
     /// Wraps a loaded device image for GPU usage.
-    pub fn new(image: DeviceImage) -> Self {
-        Self { image }
+    pub fn new(image: DeviceImage, furikake_texture_id: Option<u16>) -> Self {
+        Self {
+            image,
+            furikake_texture_id,
+        }
     }
 }
 
