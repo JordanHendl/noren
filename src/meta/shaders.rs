@@ -3,14 +3,12 @@ use furikake::{BindlessState, DefaultState, GPUState, recipe::RecipeBook};
 
 #[derive(Clone, Debug)]
 pub struct BindLayouts {
-    pub bg_layouts: [Option<dashi::Handle<dashi::BindGroupLayout>>; 4],
     pub bt_layouts: [Option<dashi::Handle<dashi::BindTableLayout>>; 4],
 }
 
 impl Default for BindLayouts {
     fn default() -> Self {
         Self {
-            bg_layouts: [None, None, None, None],
             bt_layouts: [None, None, None, None],
         }
     }

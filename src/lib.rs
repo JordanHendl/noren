@@ -1393,7 +1393,6 @@ impl DB {
         let layout_info = dashi::GraphicsPipelineLayoutInfo {
             debug_name: inputs.debug_name.as_str(),
             vertex_info,
-            bg_layouts: inputs.layouts.bg_layouts,
             bt_layouts: inputs.layouts.bt_layouts,
             shaders: &shader_infos,
             details: Default::default(),
@@ -1446,7 +1445,6 @@ impl DB {
         }
 
         let layout_info = dashi::ComputePipelineLayoutInfo {
-            bg_layouts: inputs.layouts.bg_layouts,
             bt_layouts: inputs.layouts.bt_layouts,
             shader: &dashi::PipelineShaderInfo {
                 stage: inputs.stage.module.artifact().stage,
