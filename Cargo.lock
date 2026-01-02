@@ -114,7 +114,7 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 [[package]]
 name = "bento"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#d6743f498b57bfa05bc18ff25fa8e6688e8253d7"
+source = "git+https://github.com/JordanHendl/gohan#2ef74914eb0db7ca26ee49e2e87ebb8a7de083f0"
 dependencies = [
  "bincode",
  "clap",
@@ -184,7 +184,7 @@ checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
 ]
 
 [[package]]
@@ -262,7 +262,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
 ]
 
 [[package]]
@@ -487,7 +487,7 @@ dependencies = [
 [[package]]
 name = "dashi"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/dashi#7e777926a82aff0393a258bf97b26573ef047a20"
+source = "git+https://github.com/JordanHendl/dashi#e1bdafe98c76b2aa282992294813e23c7c6ce221"
 dependencies = [
  "anyhow",
  "ash",
@@ -636,7 +636,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 [[package]]
 name = "furikake"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#d6743f498b57bfa05bc18ff25fa8e6688e8253d7"
+source = "git+https://github.com/JordanHendl/gohan#2ef74914eb0db7ca26ee49e2e87ebb8a7de083f0"
 dependencies = [
  "bento",
  "dashi",
@@ -713,7 +713,7 @@ dependencies = [
  "inflections",
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
 ]
 
 [[package]]
@@ -1496,7 +1496,7 @@ checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
 ]
 
 [[package]]
@@ -1617,9 +1617,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.111"
+version = "2.0.112"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "390cc9a294ab71bdb1aa2e99d13be9c753cd2d7bd6560c77118597410c4d2e87"
+checksum = "21f182278bf2d2bcb3c88b1b08a37df029d71ce3d3ae26168e3c653b213b99d4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1629,7 +1629,7 @@ dependencies = [
 [[package]]
 name = "tare"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#d6743f498b57bfa05bc18ff25fa8e6688e8253d7"
+source = "git+https://github.com/JordanHendl/gohan#2ef74914eb0db7ca26ee49e2e87ebb8a7de083f0"
 dependencies = [
  "bento",
  "dashi",
@@ -1666,7 +1666,7 @@ checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
 ]
 
 [[package]]
@@ -1791,7 +1791,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
  "wasm-bindgen-shared",
 ]
 
@@ -2090,14 +2090,14 @@ checksum = "d8a8d209fdf45cf5138cbb5a506f6b52522a25afccc534d1475dad8e31105c6a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.112",
 ]
 
 [[package]]
 name = "zmij"
-version = "1.0.0"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6d6085d62852e35540689d1f97ad663e3971fc19cf5eceab364d62c646ea167"
+checksum = "de9211a9f64b825911bdf0240f58b7a8dac217fe260fc61f080a07f61372fbd5"
 
 [[package]]
 name = "zune-core"

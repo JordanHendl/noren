@@ -60,7 +60,7 @@ pub fn parse_bind_table_layout_templates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashi::{BindGroupVariableType, ShaderType};
+    use dashi::{BindTableVariableType, ShaderType};
 
     #[test]
     fn parse_single_template_from_yaml() {
@@ -93,12 +93,12 @@ shaders:
         assert_eq!(info.shaders[0].variables.len(), 1);
         assert_eq!(
             info.shaders[0].variables[0].var_type,
-            BindGroupVariableType::Uniform
+            BindTableVariableType::Uniform
         );
         assert_eq!(info.shaders[1].shader_type, ShaderType::Fragment);
         assert_eq!(
             info.shaders[1].variables[0].var_type,
-            BindGroupVariableType::SampledImage
+            BindTableVariableType::SampledImage
         );
         assert_eq!(info.shaders[1].variables[0].count, 16);
         assert_eq!(info.shaders[1].variables[0].binding, 5);
@@ -140,7 +140,7 @@ shaders:
         assert_eq!(info_b.shaders[0].shader_type, ShaderType::Fragment);
         assert_eq!(
             info_b.shaders[0].variables[0].var_type,
-            BindGroupVariableType::Storage
+            BindTableVariableType::Storage
         );
         assert_eq!(info_b.shaders[0].variables[0].binding, 3);
     }

@@ -121,7 +121,7 @@ mod tests {
     use super::*;
     use crate::{meta::ShaderStage, rdb::ShaderModule};
     use bento::{CompilationResult, InterfaceVariable, ShaderLang, ShaderMetadata, ShaderVariable};
-    use dashi::{BindGroupVariable, BindGroupVariableType, ShaderType};
+    use dashi::{BindTableVariable, BindTableVariableType, ShaderType};
 
     fn reserved_metadata_for(state: FurikakeState) -> &'static [furikake::ReservedMetadata] {
         match state {
@@ -158,7 +158,7 @@ mod tests {
             .map(|(idx, meta)| ShaderVariable {
                 name: meta.name.to_string(),
                 set: 0,
-                kind: BindGroupVariable {
+                kind: BindTableVariable {
                     var_type: meta.kind.clone(),
                     binding: idx as u32,
                     count: 1,
@@ -215,7 +215,7 @@ mod tests {
         for state in [FurikakeState::Default, FurikakeState::Bindless] {
             let mut variables = variables_for_reserved(state);
             if let Some(first) = variables.first_mut() {
-                first.kind.var_type = BindGroupVariableType::Storage;
+                first.kind.var_type = BindTableVariableType::Storage;
             }
 
             let shader = shader_with_variables(variables, ShaderMetadata::default());
