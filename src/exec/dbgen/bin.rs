@@ -915,6 +915,8 @@ fn load_geometry_layer(
             tangent: tangents.get(idx).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]),
             uv: tex_coords.get(idx).copied().unwrap_or([0.0, 0.0]),
             color: colors.get(idx).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
+            joint_indices: [0; 4],
+            joint_weights: [0.0; 4],
         })
         .collect();
 

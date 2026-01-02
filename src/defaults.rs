@@ -103,6 +103,8 @@ fn make_vertex(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
         tangent: [1.0, 0.0, 0.0, 1.0],
         uv,
         color: [1.0, 1.0, 1.0, 1.0],
+        joint_indices: [0; 4],
+        joint_weights: [0.0; 4],
     }
 }
 

@@ -645,6 +645,8 @@ mod tests {
             tangent: [1.0, 0.0, 0.0, 1.0],
             uv: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
+            joint_indices: [0; 4],
+            joint_weights: [0.0; 4],
         }
     }
 

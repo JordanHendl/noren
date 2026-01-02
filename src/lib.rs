@@ -1293,7 +1293,7 @@ impl DB {
     }
 
     fn vertex_description() -> dashi::VertexDescriptionInfo<'static> {
-        const ENTRIES: [dashi::VertexEntryInfo; 5] = [
+        const ENTRIES: [dashi::VertexEntryInfo; 7] = [
             dashi::VertexEntryInfo {
                 format: dashi::ShaderPrimitiveType::Vec3,
                 location: 0,
@@ -1318,6 +1318,16 @@ impl DB {
                 format: dashi::ShaderPrimitiveType::Vec4,
                 location: 4,
                 offset: 48,
+            },
+            dashi::VertexEntryInfo {
+                format: dashi::ShaderPrimitiveType::UVec4,
+                location: 5,
+                offset: 64,
+            },
+            dashi::VertexEntryInfo {
+                format: dashi::ShaderPrimitiveType::Vec4,
+                location: 6,
+                offset: 80,
             },
         ];
 
@@ -1592,6 +1602,8 @@ mod tests {
             tangent: [1.0, 0.0, 0.0, 1.0],
             uv: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
+            joint_indices: [0; 4],
+            joint_weights: [0.0; 4],
         }
     }
 
