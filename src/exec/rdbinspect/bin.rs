@@ -3,7 +3,7 @@ use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 use bincode::deserialize;
 use noren::{
     RDBEntryMeta, RDBView,
-    rdb::{AnimationClip, HostGeometry, HostImage, ShaderModule, Skeleton},
+    rdb::{AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton},
     type_tag_for,
 };
 use serde::de::DeserializeOwned;
@@ -190,6 +190,7 @@ fn known_types() -> &'static [KnownType] {
             KnownType::with::<AnimationClip>(describe_animation),
             KnownType::with::<HostGeometry>(describe_geometry),
             KnownType::with::<HostImage>(describe_image),
+            KnownType::with::<HostCubemap>(describe_cubemap),
             KnownType::with::<Skeleton>(describe_skeleton),
             KnownType::with::<ShaderModule>(describe_shader),
         ]
@@ -377,6 +378,17 @@ fn describe_image(image: &HostImage) -> String {
     let info = &image.info;
     let dimensions = format!("{} x {} x {}", info.dim[0], info.dim[1], info.dim[2]);
     let bytes = image.data.len();
+
+    format!(
+        "  Dimensions: {dimensions}\n  Layers: {}\n  Format: {:?}\n  Mip levels: {}\n  Data size: {bytes} bytes",
+        info.layers, info.format, info.mip_levels
+    )
+}
+
+fn describe_cubemap(cubemap: &HostCubemap) -> String {
+    let info = &cubemap.info;
+    let dimensions = format!("{} x {} x {}", info.dim[0], info.dim[1], info.dim[2]);
+    let bytes = cubemap.data.len();
 
     format!(
         "  Dimensions: {dimensions}\n  Layers: {}\n  Format: {:?}\n  Mip levels: {}\n  Data size: {bytes} bytes",

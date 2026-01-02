@@ -487,7 +487,7 @@ dependencies = [
 [[package]]
 name = "dashi"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/dashi#e1bdafe98c76b2aa282992294813e23c7c6ce221"
+source = "git+https://github.com/JordanHendl/dashi#90ee4764596c4c2500d79ce9786082061a338f37"
 dependencies = [
  "anyhow",
  "ash",
