@@ -1,15 +1,45 @@
 {
   "models": {
-    "model/simple_skin": {
-      "name": "simple_skin",
+    "model/plane": {
+      "name": "plane",
       "meshes": [
-        "mesh/simple_skin"
+        "mesh/plane"
+      ]
+    },
+    "model/cylinder": {
+      "name": "cylinder",
+      "meshes": [
+        "mesh/cylinder"
+      ]
+    },
+    "model/cone": {
+      "name": "cone",
+      "meshes": [
+        "mesh/cone"
       ]
     },
     "model/quad": {
       "name": "quad",
       "meshes": [
         "mesh/quad"
+      ]
+    },
+    "model/cube": {
+      "name": "cube",
+      "meshes": [
+        "mesh/cube"
+      ]
+    },
+    "model/simple_skin": {
+      "name": "simple_skin",
+      "meshes": [
+        "mesh/simple_skin"
+      ]
+    },
+    "model/sphere": {
+      "name": "sphere",
+      "meshes": [
+        "mesh/sphere"
       ]
     }
   }

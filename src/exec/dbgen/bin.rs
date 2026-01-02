@@ -20,8 +20,8 @@ use noren::{
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
-        AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostGeometry, HostImage,
-        ImageInfo, Joint, ShaderModule, Skeleton, primitives::Vertex,
+        AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostCubemap, HostGeometry,
+        HostImage, ImageInfo, Joint, ShaderModule, Skeleton, primitives::Vertex,
     },
     validate_database_layout,
 };
@@ -87,6 +87,7 @@ fn main() {
         Command::AppendSkeleton(args) => append_skeleton(&args, &logger, cli.write_binaries),
         Command::AppendAnimation(args) => append_animation(&args, &logger, cli.write_binaries),
         Command::AppendImagery(args) => append_imagery(&args, &logger, cli.write_binaries),
+        Command::AppendCubemap(args) => append_cubemap(&args, &logger, cli.write_binaries),
         Command::AppendAudio(args) => append_audio(&args, &logger, cli.write_binaries),
         Command::AppendShader(args) => append_shader(&args, &logger, cli.write_binaries),
     };
@@ -180,7 +181,9 @@ fn parse_validate_command(mut args: impl Iterator<Item = String>) -> Result<Comm
 
 fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(kind) = args.next() else {
-        return Err("append requires a resource type (geometry, imagery, audio, shader)".into());
+        return Err(
+            "append requires a resource type (geometry, imagery, cubemap, audio, shader)".into(),
+        );
     };
 
     match kind.as_str() {
@@ -188,6 +191,7 @@ fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Comman
         "skeleton" => parse_skeleton_append(args).map(Command::AppendSkeleton),
         "animation" => parse_animation_append(args).map(Command::AppendAnimation),
         "imagery" => parse_imagery_append(args).map(Command::AppendImagery),
+        "cubemap" => parse_cubemap_append(args).map(Command::AppendCubemap),
         "audio" => parse_audio_append(args).map(Command::AppendAudio),
         "shader" => parse_shader_append(args).map(Command::AppendShader),
         other => Err(format!("unknown append resource type: {other}")),
@@ -371,6 +375,80 @@ fn parse_imagery_append(mut args: impl Iterator<Item = String>) -> Result<ImageA
     })
 }
 
+fn parse_cubemap_append(
+    mut args: impl Iterator<Item = String>,
+) -> Result<CubemapAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut pos_x = None;
+    let mut neg_x = None;
+    let mut pos_y = None;
+    let mut neg_y = None;
+    let mut pos_z = None;
+    let mut neg_z = None;
+    let mut format = None;
+    let mut mip_levels = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--pos-x" => {
+                pos_x = Some(next_value("--pos-x", &mut args)?);
+            }
+            "--neg-x" => {
+                neg_x = Some(next_value("--neg-x", &mut args)?);
+            }
+            "--pos-y" => {
+                pos_y = Some(next_value("--pos-y", &mut args)?);
+            }
+            "--neg-y" => {
+                neg_y = Some(next_value("--neg-y", &mut args)?);
+            }
+            "--pos-z" => {
+                pos_z = Some(next_value("--pos-z", &mut args)?);
+            }
+            "--neg-z" => {
+                neg_z = Some(next_value("--neg-z", &mut args)?);
+            }
+            "--format" => {
+                let value = next_value("--format", &mut args)?;
+                let parsed = parse_image_format(&value)
+                    .ok_or_else(|| format!("unknown image format '{value}'"))?;
+                format = Some(parsed);
+            }
+            "--mip-levels" => {
+                let value = next_value("--mip-levels", &mut args)?;
+                let parsed = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("--mip-levels expects an integer, received '{value}'"))?;
+                mip_levels = Some(parsed);
+            }
+            other => return Err(format!("unexpected argument to append cubemap: {other}")),
+        }
+    }
+
+    Ok(CubemapAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: CubemapEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            pos_x: PathBuf::from(pos_x.ok_or_else(|| "--pos-x is required".to_string())?),
+            neg_x: PathBuf::from(neg_x.ok_or_else(|| "--neg-x is required".to_string())?),
+            pos_y: PathBuf::from(pos_y.ok_or_else(|| "--pos-y is required".to_string())?),
+            neg_y: PathBuf::from(neg_y.ok_or_else(|| "--neg-y is required".to_string())?),
+            pos_z: PathBuf::from(pos_z.ok_or_else(|| "--pos-z is required".to_string())?),
+            neg_z: PathBuf::from(neg_z.ok_or_else(|| "--neg-z is required".to_string())?),
+            format: format.unwrap_or_else(default_format),
+            mip_levels: mip_levels.unwrap_or_else(default_mip_levels),
+        },
+    })
+}
+
 fn parse_audio_append(mut args: impl Iterator<Item = String>) -> Result<AudioAppendArgs, String> {
     let mut rdb: Option<PathBuf> = None;
     let mut entry = None;
@@ -462,6 +540,7 @@ enum Command {
     AppendSkeleton(SkeletonAppendArgs),
     AppendAnimation(AnimationAppendArgs),
     AppendImagery(ImageAppendArgs),
+    AppendCubemap(CubemapAppendArgs),
     AppendAudio(AudioAppendArgs),
     AppendShader(ShaderAppendArgs),
 }
@@ -494,6 +573,12 @@ struct AnimationAppendArgs {
 struct ImageAppendArgs {
     rdb: PathBuf,
     entry: ImageEntry,
+}
+
+#[derive(Debug)]
+struct CubemapAppendArgs {
+    rdb: PathBuf,
+    entry: CubemapEntry,
 }
 
 #[derive(Debug)]
@@ -901,6 +986,35 @@ fn append_imagery(
     Ok(())
 }
 
+fn append_cubemap(
+    args: &CubemapAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    logger.log(format!("append cubemap: {}", args.entry.entry));
+    let cubemap = load_cubemap(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &cubemap).map_err(BuildError::from)?;
+    inject_default_imagery(&mut rdb, logger)?;
+    if write_binaries {
+        logger.log(format!("append cubemap: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append cubemap: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
 fn build_imagery(
     base_dir: &Path,
     output: &Path,
@@ -1185,6 +1299,51 @@ fn load_image(base_dir: &Path, entry: &ImageEntry) -> Result<HostImage, BuildErr
     };
 
     Ok(HostImage::new(info, data))
+}
+
+fn load_cubemap(base_dir: &Path, entry: &CubemapEntry) -> Result<HostCubemap, BuildError> {
+    let face_paths = [
+        &entry.pos_x,
+        &entry.neg_x,
+        &entry.pos_y,
+        &entry.neg_y,
+        &entry.pos_z,
+        &entry.neg_z,
+    ];
+
+    let mut faces = Vec::with_capacity(6);
+    let mut dimensions = None;
+
+    for face_path in face_paths {
+        let path = resolve_path(base_dir, face_path);
+        let image = image::open(&path)?;
+        let rgba = to_rgba(image);
+        let (width, height) = rgba.dimensions();
+        if let Some((expected_width, expected_height)) = dimensions {
+            if width != expected_width || height != expected_height {
+                return Err(BuildError::message(format!(
+                    "cubemap face dimensions mismatch: expected {expected_width}x{expected_height}, got {width}x{height}"
+                )));
+            }
+        } else {
+            dimensions = Some((width, height));
+        }
+        faces.push(rgba.into_raw());
+    }
+
+    let (width, height) = dimensions.unwrap_or((0, 0));
+    let info = ImageInfo {
+        name: entry.entry.clone(),
+        dim: [width, height, 1],
+        layers: 6,
+        format: entry.format,
+        mip_levels: entry.mip_levels,
+    };
+
+    let faces: [Vec<u8>; 6] = faces
+        .try_into()
+        .map_err(|_| BuildError::message("cubemap must have exactly 6 faces"))?;
+    HostCubemap::from_faces(info, faces).map_err(BuildError::from)
 }
 
 fn infer_audio_format(path: &Path, override_format: Option<AudioFormat>) -> AudioFormat {
@@ -1509,6 +1668,9 @@ fn print_usage(program: &str) {
         "  {program} append imagery --rdb <imagery.rdb> --entry <name> --image <file> [--layers <count>] [--mip-levels <count>] [--format <format>]"
     );
     eprintln!(
+        "  {program} append cubemap --rdb <imagery.rdb> --entry <name> --pos-x <file> --neg-x <file> --pos-y <file> --neg-y <file> --pos-z <file> --neg-z <file> [--mip-levels <count>] [--format <format>]"
+    );
+    eprintln!(
         "  {program} append audio --rdb <audio.rdb> --entry <name> --audio <file> [--format <format>]"
     );
     eprintln!(
@@ -1613,6 +1775,19 @@ struct ImageEntry {
     #[serde(default = "default_format")]
     format: dashi::Format,
     #[serde(default = "default_mip_levels")]
+    mip_levels: u32,
+}
+
+#[derive(Debug)]
+struct CubemapEntry {
+    entry: String,
+    pos_x: PathBuf,
+    neg_x: PathBuf,
+    pos_y: PathBuf,
+    neg_y: PathBuf,
+    pos_z: PathBuf,
+    neg_z: PathBuf,
+    format: dashi::Format,
     mip_levels: u32,
 }
 

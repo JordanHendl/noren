@@ -7,6 +7,10 @@
     "texture/imagery/peppers": {
       "image": "imagery/peppers",
       "name": null
+    },
+    "texture/default": {
+      "image": "imagery/default",
+      "name": "Default Texture"
     }
   }
 }
