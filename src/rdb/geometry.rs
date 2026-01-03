@@ -50,6 +50,8 @@ pub struct DeviceGeometryLayer {
     pub indices: GeometryBufferRef,
     pub vertex_count: u32,
     pub index_count: Option<u32>,
+    pub furikake_vertex_id: Option<u16>,
+    pub furikake_index_id: Option<u16>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -374,6 +376,8 @@ impl GeometryDB {
                     indices: Default::default(),
                     vertex_count: lod.vertex_count,
                     index_count: lod.index_count,
+                    furikake_vertex_id: None,
+                    furikake_index_id: None,
                 })
                 .collect();
 
@@ -383,6 +387,8 @@ impl GeometryDB {
                     indices: Default::default(),
                     vertex_count: geom.vertex_count,
                     index_count: geom.index_count,
+                    furikake_vertex_id: None,
+                    furikake_index_id: None,
                 },
                 vertex_count: geom.vertex_count,
                 index_count: geom.index_count,
@@ -589,6 +595,8 @@ impl GeometryDB {
             indices: index_handle,
             vertex_count: layer.vertex_count,
             index_count: layer.index_count,
+            furikake_vertex_id: None,
+            furikake_index_id: None,
         })
     }
 
@@ -625,6 +633,8 @@ impl GeometryDB {
             indices: index_buffer,
             vertex_count: layer.vertex_count,
             index_count: layer.index_count,
+            furikake_vertex_id: None,
+            furikake_index_id: None,
         })
     }
 }

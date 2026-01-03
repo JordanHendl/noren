@@ -6,19 +6,15 @@ pub mod rdb;
 mod utils;
 use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 
-use dashi::Context;
+use dashi::{Buffer, BufferView, Context};
 use defaults::inject_default_layouts;
 use furikake::{
-    BindlessState,
     reservations::{
-        bindless_animations::ReservedBindlessAnimations,
-        bindless_materials::ReservedBindlessMaterials,
-        bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
-    },
-    types::{
+        bindless_animation_keyframes::ReservedBindlessAnimationKeyframes, bindless_animation_tracks::ReservedBindlessAnimationTracks, bindless_animations::ReservedBindlessAnimations, bindless_indices::ReservedBindlessIndices, bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials, bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures, bindless_vertices::ReservedBindlessVertices
+    }, types::{
         AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,
         Material as FurikakeMaterial, SkeletonHeader,
-    },
+    }, BindlessState
 };
 pub use furikake_state::FurikakeState;
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -47,12 +43,21 @@ pub struct ShaderValidationError {
     pub models: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GeometryBufferKey {
+    buffer: dashi::Handle<Buffer>,
+    offset: u64,
+    size: u64,
+}
+
 struct FurikakeBindings {
     state: NonNull<BindlessState>,
     textures: HashMap<String, u16>,
     materials: HashMap<String, dashi::Handle<FurikakeMaterial>>,
     skeletons: HashMap<String, dashi::Handle<SkeletonHeader>>,
     animations: HashMap<String, dashi::Handle<FurikakeAnimationClip>>,
+    vertex_buffers: HashMap<GeometryBufferKey, u16>,
+    index_buffers: HashMap<GeometryBufferKey, u16>,
 }
 
 impl FurikakeBindings {
@@ -63,6 +68,8 @@ impl FurikakeBindings {
             materials: HashMap::new(),
             skeletons: HashMap::new(),
             animations: HashMap::new(),
+            vertex_buffers: HashMap::new(),
+            index_buffers: HashMap::new(),
         }
     }
 
@@ -412,7 +419,7 @@ impl DB {
 
     /// Loads a GPU-ready model with device buffers, textures, and shaders.
     pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceModel, NorenError> {
-        let (name, meshes) = self.assemble_model_components(
+        let (name, mut meshes) = self.assemble_model_components(
             entry,
             true,
             |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
@@ -423,8 +430,49 @@ impl DB {
             },
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
         )?;
+        if self.furikake.is_some() {
+            for mesh in &mut meshes {
+                self.register_furikake_geometry(&mut mesh.geometry)?;
+            }
+        }
         let rig = self.load_device_rigging(entry)?;
         Ok(DeviceModel { name, meshes, rig })
+    }
+
+    fn register_furikake_geometry(
+        &mut self,
+        geometry: &mut DeviceGeometry,
+    ) -> Result<(), NorenError> {
+        if self.furikake.is_none() {
+            return Ok(());
+        }
+
+        self.register_furikake_geometry_layer(&mut geometry.base)?;
+        for lod in &mut geometry.lods {
+            self.register_furikake_geometry_layer(lod)?;
+        }
+
+        Ok(())
+    }
+
+    fn register_furikake_geometry_layer(
+        &mut self,
+        layer: &mut DeviceGeometryLayer,
+    ) -> Result<(), NorenError> {
+        let vertex_size =
+            layer.vertex_count as u64 * std::mem::size_of::<rdb::primitives::Vertex>() as u64;
+        layer.furikake_vertex_id = match geometry_buffer_view(&layer.vertices, vertex_size) {
+            Some(view) => ensure_furikake_vertex_buffer(self.furikake.as_mut(), view)?,
+            None => None,
+        };
+
+        let index_size = layer.index_count.unwrap_or(0) as u64 * std::mem::size_of::<u32>() as u64;
+        layer.furikake_index_id = match geometry_buffer_view(&layer.indices, index_size) {
+            Some(view) => ensure_furikake_index_buffer(self.furikake.as_mut(), view)?,
+            None => None,
+        };
+
+        Ok(())
     }
 
     fn load_host_rigging(
@@ -546,26 +594,32 @@ impl DB {
         mesh_entry: DatabaseEntry<'_>,
         material_entry: &str,
     ) -> Result<DeviceMesh, NorenError> {
-        self.assemble_mesh(
-            mesh_entry,
-            Some(material_entry),
-            true,
-            &mut |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
-            &mut |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
-            &mut |_, image, furikake_id| DeviceTexture::new(image, furikake_id),
-            &mut |_, textures, material, _material_key, furikake_handle| {
-                DeviceMaterial::new(textures, material, furikake_handle)
-            },
-            &mut |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
-        )?
-        .ok_or_else(NorenError::LookupFailure)
+        let mut mesh = self
+            .assemble_mesh(
+                mesh_entry,
+                Some(material_entry),
+                true,
+                &mut |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
+                &mut |imagery_db, entry| imagery_db.fetch_gpu_image(entry),
+                &mut |_, image, furikake_id| DeviceTexture::new(image, furikake_id),
+                &mut |_, textures, material, _material_key, furikake_handle| {
+                    DeviceMaterial::new(textures, material, furikake_handle)
+                },
+                &mut |_, geometry, textures, material| {
+                    DeviceMesh::new(geometry, textures, material)
+                },
+            )?
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if self.furikake.is_some() {
+            self.register_furikake_geometry(&mut mesh.geometry)?;
+        }
+
+        Ok(mesh)
     }
 
     /// Fetches a texture atlas with host image data and layout metadata.
-    pub fn fetch_texture_atlas(
-        &mut self,
-        entry: &str,
-    ) -> Result<HostTextureAtlas, NorenError> {
+    pub fn fetch_texture_atlas(&mut self, entry: &str) -> Result<HostTextureAtlas, NorenError> {
         let layout = self
             .meta_layout
             .as_ref()
@@ -583,10 +637,7 @@ impl DB {
         }
 
         let image = self.imagery.fetch_raw_image(atlas_def.image.as_str())?;
-        let name = atlas_def
-            .name
-            .clone()
-            .unwrap_or_else(|| entry.to_string());
+        let name = atlas_def.name.clone().unwrap_or_else(|| entry.to_string());
 
         Ok(HostTextureAtlas {
             name,
@@ -622,10 +673,7 @@ impl DB {
             self.furikake.as_mut(),
             atlas_def.image.as_str(),
         )?;
-        let name = atlas_def
-            .name
-            .clone()
-            .unwrap_or_else(|| entry.to_string());
+        let name = atlas_def.name.clone().unwrap_or_else(|| entry.to_string());
 
         Ok(DeviceTextureAtlas {
             name,
@@ -936,20 +984,27 @@ fn ensure_furikake_skeleton(
     let mut skeleton_handle = None;
     let result = bindings
         .state_mut()
-        .reserved_mut::<ReservedBindlessSkeletons, _>("meshi_bindless_skeletons", |buffer| {
-            skeleton_handle = Some(buffer.add_skeleton());
+        .reserved_mut::<ReservedBindlessJoints, _>("meshi_bindless_joints", |buffer| {
             for _ in 0..joint_count {
                 joint_handles.push(buffer.add_joint());
             }
             joint_handles.sort_by_key(|handle| handle.slot);
+            for (joint, handle) in skeleton.joints.iter().zip(joint_handles.iter()) {
+                *buffer.joint_mut(*handle) = to_furikake_joint(joint);
+            }
+        });
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessSkeletons, _>("meshi_bindless_skeletons", |buffer| {
+            skeleton_handle = Some(buffer.add_skeleton());
             let joint_offset = joint_handles
                 .first()
                 .map(|handle| handle.slot as u32)
                 .unwrap_or(0);
-
-            for (joint, handle) in skeleton.joints.iter().zip(joint_handles.iter()) {
-                *buffer.joint_mut(*handle) = to_furikake_joint(joint);
-            }
 
             if let Some(handle) = skeleton_handle {
                 *buffer.skeleton_mut(handle) = SkeletonHeader {
@@ -995,45 +1050,95 @@ fn ensure_furikake_animation(
 
     let result = bindings
         .state_mut()
+        .reserved_mut::<ReservedBindlessAnimationTracks, _>(
+            "meshi_bindless_animation_tracks",
+            |buffer| {
+                for _ in 0..track_count {
+                    track_handles.push(buffer.add_track());
+                }
+            },
+        );
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessAnimationKeyframes, _>(
+            "meshi_bindless_animation_keyframes",
+            |buffer| {
+                for _ in 0..total_keyframes {
+                    keyframe_handles.push(buffer.add_keyframe());
+                }
+            },
+        );
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    track_handles.sort_by_key(|handle| handle.slot);
+    keyframe_handles.sort_by_key(|handle| handle.slot);
+
+    let track_offset = track_handles
+        .first()
+        .map(|handle| handle.slot as u32)
+        .unwrap_or(0);
+    let keyframe_offset = keyframe_handles
+        .first()
+        .map(|handle| handle.slot as u32)
+        .unwrap_or(0);
+
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessAnimationTracks, _>(
+            "meshi_bindless_animation_tracks",
+            |buffer| {
+                let mut keyframe_index = 0usize;
+                for (track, handle) in tracks.iter().zip(track_handles.iter()) {
+                    let keyframe_count = track.keyframes.len();
+                    let track_keyframe_offset = keyframe_offset + keyframe_index as u32;
+                    *buffer.track_mut(*handle) = AnimationTrack {
+                        joint_index: track.joint_index,
+                        keyframe_count: keyframe_count as u32,
+                        keyframe_offset: track_keyframe_offset,
+                        ..Default::default()
+                    };
+                    keyframe_index += keyframe_count;
+                }
+            },
+        );
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessAnimationKeyframes, _>(
+            "meshi_bindless_animation_keyframes",
+            |buffer| {
+                let mut keyframe_index = 0usize;
+                for track in &tracks {
+                    for keyframe in &track.keyframes {
+                        if let Some(keyframe_handle) = keyframe_handles.get(keyframe_index) {
+                            *buffer.keyframe_mut(*keyframe_handle) = *keyframe;
+                        }
+                        keyframe_index += 1;
+                    }
+                }
+            },
+        );
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let result = bindings
+        .state_mut()
         .reserved_mut::<ReservedBindlessAnimations, _>("meshi_bindless_animations", |buffer| {
             clip_handle = Some(buffer.add_clip());
-            for _ in 0..track_count {
-                track_handles.push(buffer.add_track());
-            }
-            for _ in 0..total_keyframes {
-                keyframe_handles.push(buffer.add_keyframe());
-            }
-            track_handles.sort_by_key(|handle| handle.slot);
-            keyframe_handles.sort_by_key(|handle| handle.slot);
-
-            let track_offset = track_handles
-                .first()
-                .map(|handle| handle.slot as u32)
-                .unwrap_or(0);
-            let keyframe_offset = keyframe_handles
-                .first()
-                .map(|handle| handle.slot as u32)
-                .unwrap_or(0);
-
-            let mut keyframe_index = 0usize;
-            for (track, handle) in tracks.iter().zip(track_handles.iter()) {
-                let keyframe_count = track.keyframes.len();
-                let track_keyframe_offset = keyframe_offset + keyframe_index as u32;
-                *buffer.track_mut(*handle) = AnimationTrack {
-                    joint_index: track.joint_index,
-                    keyframe_count: keyframe_count as u32,
-                    keyframe_offset: track_keyframe_offset,
-                    ..Default::default()
-                };
-
-                for keyframe in &track.keyframes {
-                    if let Some(keyframe_handle) = keyframe_handles.get(keyframe_index) {
-                        *buffer.keyframe_mut(*keyframe_handle) = *keyframe;
-                    }
-                    keyframe_index += 1;
-                }
-            }
-
             if let Some(handle) = clip_handle {
                 *buffer.clip_mut(handle) = FurikakeAnimationClip {
                     duration: clip.duration_seconds,
@@ -1043,7 +1148,7 @@ fn ensure_furikake_animation(
                 };
             }
         });
-
+    
     if let Err(err) = result {
         return Err(err.into());
     }
@@ -1090,6 +1195,118 @@ fn ensure_furikake_texture(
     })?;
 
     bindings.textures.insert(entry.to_string(), id);
+    Ok(Some(id))
+}
+
+fn geometry_buffer_view(buffer: &GeometryBufferRef, size: u64) -> Option<BufferView> {
+    match buffer {
+        GeometryBufferRef::Dedicated(handle) => {
+            if !handle.valid() || size == 0 {
+                None
+            } else {
+                Some(BufferView {
+                    handle: *handle,
+                    offset: 0,
+                    size,
+                })
+            }
+        }
+        GeometryBufferRef::Slice(slice) => {
+            if !slice.buffer.valid() || slice.size == 0 {
+                None
+            } else {
+                Some(BufferView {
+                    handle: slice.buffer,
+                    offset: slice.offset as u64,
+                    size: slice.size as u64,
+                })
+            }
+        }
+        GeometryBufferRef::None => None,
+    }
+}
+
+fn ensure_furikake_vertex_buffer(
+    mut furikake: Option<&mut FurikakeBindings>,
+    view: BufferView,
+) -> Result<Option<u16>, NorenError> {
+    let Some(bindings) = furikake.as_deref_mut() else {
+        return Ok(None);
+    };
+
+    if !view.handle.valid() || view.size == 0 {
+        return Ok(None);
+    }
+
+    let key = GeometryBufferKey {
+        buffer: view.handle,
+        offset: view.offset,
+        size: view.size,
+    };
+
+    if let Some(id) = bindings.vertex_buffers.get(&key) {
+        return Ok(Some(*id));
+    }
+
+    let mut inserted_id = None;
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessVertices, _>("meshi_bindless_vertices", |vertices| {
+//            inserted_id = Some(vertices.add_buffer(view));
+            //TODO          
+        });
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let id = inserted_id.ok_or_else(|| {
+        NorenError::FurikakeError("failed to allocate furikake vertex buffer slot".to_string())
+    })?;
+
+    bindings.vertex_buffers.insert(key, id);
+    Ok(Some(id))
+}
+
+fn ensure_furikake_index_buffer(
+    mut furikake: Option<&mut FurikakeBindings>,
+    view: BufferView,
+) -> Result<Option<u16>, NorenError> {
+    let Some(bindings) = furikake.as_deref_mut() else {
+        return Ok(None);
+    };
+
+    if !view.handle.valid() || view.size == 0 {
+        return Ok(None);
+    }
+
+    let key = GeometryBufferKey {
+        buffer: view.handle,
+        offset: view.offset,
+        size: view.size,
+    };
+
+    if let Some(id) = bindings.index_buffers.get(&key) {
+        return Ok(Some(*id));
+    }
+
+    let mut inserted_id = None;
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessIndices, _>("meshi_bindless_indices", |indices| {
+//            inserted_id = Some(indices.add_buffer(view));
+//            TODO
+        });
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let id = inserted_id.ok_or_else(|| {
+        NorenError::FurikakeError("failed to allocate furikake index buffer slot".to_string())
+    })?;
+
+    bindings.index_buffers.insert(key, id);
     Ok(Some(id))
 }
 
