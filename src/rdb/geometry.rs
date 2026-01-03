@@ -50,8 +50,8 @@ pub struct DeviceGeometryLayer {
     pub indices: GeometryBufferRef,
     pub vertex_count: u32,
     pub index_count: Option<u32>,
-    pub furikake_vertex_id: Option<u16>,
-    pub furikake_index_id: Option<u16>,
+    pub furikake_vertex_id: Option<u32>,
+    pub furikake_index_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]

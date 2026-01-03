@@ -6,21 +6,28 @@ pub mod rdb;
 mod utils;
 use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 
-use dashi::{Buffer, BufferView, Context};
+use dashi::Context;
 use defaults::inject_default_layouts;
 use furikake::{
+    BindlessState,
     reservations::{
-        bindless_animation_keyframes::ReservedBindlessAnimationKeyframes, bindless_animation_tracks::ReservedBindlessAnimationTracks, bindless_animations::ReservedBindlessAnimations, bindless_indices::ReservedBindlessIndices, bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials, bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures, bindless_vertices::ReservedBindlessVertices
-    }, types::{
+        bindless_animation_keyframes::ReservedBindlessAnimationKeyframes,
+        bindless_animation_tracks::ReservedBindlessAnimationTracks,
+        bindless_animations::ReservedBindlessAnimations, bindless_indices::ReservedBindlessIndices,
+        bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials,
+        bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
+        bindless_vertices::ReservedBindlessVertices,
+    },
+    types::{
         AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,
-        Material as FurikakeMaterial, SkeletonHeader,
-    }, BindlessState
+        Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot,
+    },
 };
 pub use furikake_state::FurikakeState;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use meta::*;
 use parsing::*;
-use rdb::*;
+use rdb::{primitives::Vertex, *};
 use serde::de::DeserializeOwned;
 use utils::*;
 
@@ -43,21 +50,12 @@ pub struct ShaderValidationError {
     pub models: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct GeometryBufferKey {
-    buffer: dashi::Handle<Buffer>,
-    offset: u64,
-    size: u64,
-}
-
 struct FurikakeBindings {
     state: NonNull<BindlessState>,
     textures: HashMap<String, u16>,
     materials: HashMap<String, dashi::Handle<FurikakeMaterial>>,
     skeletons: HashMap<String, dashi::Handle<SkeletonHeader>>,
     animations: HashMap<String, dashi::Handle<FurikakeAnimationClip>>,
-    vertex_buffers: HashMap<GeometryBufferKey, u16>,
-    index_buffers: HashMap<GeometryBufferKey, u16>,
 }
 
 impl FurikakeBindings {
@@ -68,8 +66,6 @@ impl FurikakeBindings {
             materials: HashMap::new(),
             skeletons: HashMap::new(),
             animations: HashMap::new(),
-            vertex_buffers: HashMap::new(),
-            index_buffers: HashMap::new(),
         }
     }
 
@@ -431,8 +427,19 @@ impl DB {
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
         )?;
         if self.furikake.is_some() {
-            for mesh in &mut meshes {
-                self.register_furikake_geometry(&mut mesh.geometry)?;
+            let mesh_keys = self
+                .meta_layout
+                .as_ref()
+                .and_then(|layout| layout.models.get(entry))
+                .map(|model| model.meshes.clone())
+                .ok_or_else(NorenError::LookupFailure)?;
+            if mesh_keys.len() != meshes.len() {
+                return Err(NorenError::FurikakeError(
+                    "furikake geometry registration encountered mismatched mesh counts".to_string(),
+                ));
+            }
+            for (mesh_key, mesh) in mesh_keys.iter().zip(meshes.iter_mut()) {
+                self.register_furikake_geometry_for_mesh(&mut mesh.geometry, mesh_key)?;
             }
         }
         let rig = self.load_device_rigging(entry)?;
@@ -442,35 +449,108 @@ impl DB {
     fn register_furikake_geometry(
         &mut self,
         geometry: &mut DeviceGeometry,
+        source: &HostGeometry,
     ) -> Result<(), NorenError> {
         if self.furikake.is_none() {
             return Ok(());
         }
 
-        self.register_furikake_geometry_layer(&mut geometry.base)?;
-        for lod in &mut geometry.lods {
-            self.register_furikake_geometry_layer(lod)?;
+        self.register_furikake_geometry_layer(
+            &mut geometry.base,
+            &source.vertices,
+            source.indices.as_deref(),
+        )?;
+        for (lod, source_lod) in geometry.lods.iter_mut().zip(&source.lods) {
+            self.register_furikake_geometry_layer(
+                lod,
+                &source_lod.vertices,
+                source_lod.indices.as_deref(),
+            )?;
+        }
+
+        if geometry.lods.len() != source.lods.len() {
+            return Err(NorenError::FurikakeError(
+                "furikake geometry registration encountered mismatched lod counts".to_string(),
+            ));
         }
 
         Ok(())
     }
 
+    fn register_furikake_geometry_for_mesh(
+        &mut self,
+        geometry: &mut DeviceGeometry,
+        mesh_key: &str,
+    ) -> Result<(), NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+        let mesh_def = layout
+            .meshes
+            .get(mesh_key)
+            .ok_or_else(NorenError::LookupFailure)?;
+        let host_geometry = self
+            .geometry
+            .fetch_raw_geometry(mesh_def.geometry.as_str())?;
+        self.register_furikake_geometry(geometry, &host_geometry)
+    }
+
     fn register_furikake_geometry_layer(
         &mut self,
         layer: &mut DeviceGeometryLayer,
+        vertices: &[Vertex],
+        indices: Option<&[u32]>,
     ) -> Result<(), NorenError> {
-        let vertex_size =
-            layer.vertex_count as u64 * std::mem::size_of::<rdb::primitives::Vertex>() as u64;
-        layer.furikake_vertex_id = match geometry_buffer_view(&layer.vertices, vertex_size) {
-            Some(view) => ensure_furikake_vertex_buffer(self.furikake.as_mut(), view)?,
-            None => None,
+        let Some(bindings) = self.furikake.as_mut() else {
+            return Ok(());
         };
 
-        let index_size = layer.index_count.unwrap_or(0) as u64 * std::mem::size_of::<u32>() as u64;
-        layer.furikake_index_id = match geometry_buffer_view(&layer.indices, index_size) {
-            Some(view) => ensure_furikake_index_buffer(self.furikake.as_mut(), view)?,
-            None => None,
-        };
+        let vertex_bytes = bytemuck::cast_slice(vertices);
+        if vertex_bytes.is_empty() {
+            layer.furikake_vertex_id = None;
+        } else {
+            let mut inserted_offset = None;
+            let slot = vertex_buffer_slot(vertices);
+            let result = bindings
+                .state_mut()
+                .reserved_mut::<ReservedBindlessVertices, _>("meshi_bindless_vertices", |buffer| {
+                    inserted_offset = buffer.push_vertex_bytes(slot, vertex_bytes);
+                });
+
+            if let Err(err) = result {
+                return Err(err.into());
+            }
+
+            let offset = inserted_offset.ok_or_else(|| {
+                NorenError::FurikakeError(
+                    "failed to allocate furikake vertex buffer slot".to_string(),
+                )
+            })?;
+            layer.furikake_vertex_id = Some(offset);
+        }
+
+        if let Some(indices) = indices.filter(|indices| !indices.is_empty()) {
+            let mut inserted_offset = None;
+            let result = bindings
+                .state_mut()
+                .reserved_mut::<ReservedBindlessIndices, _>("meshi_bindless_indices", |buffer| {
+                    inserted_offset = buffer.push_indices(indices);
+                });
+
+            if let Err(err) = result {
+                return Err(err.into());
+            }
+
+            let offset = inserted_offset.ok_or_else(|| {
+                NorenError::FurikakeError(
+                    "failed to allocate furikake index buffer slot".to_string(),
+                )
+            })?;
+            layer.furikake_index_id = Some(offset);
+        } else {
+            layer.furikake_index_id = None;
+        }
 
         Ok(())
     }
@@ -612,7 +692,7 @@ impl DB {
             .ok_or_else(NorenError::LookupFailure)?;
 
         if self.furikake.is_some() {
-            self.register_furikake_geometry(&mut mesh.geometry)?;
+            self.register_furikake_geometry_for_mesh(&mut mesh.geometry, mesh_entry)?;
         }
 
         Ok(mesh)
@@ -1148,7 +1228,7 @@ fn ensure_furikake_animation(
                 };
             }
         });
-    
+
     if let Err(err) = result {
         return Err(err.into());
     }
@@ -1198,116 +1278,17 @@ fn ensure_furikake_texture(
     Ok(Some(id))
 }
 
-fn geometry_buffer_view(buffer: &GeometryBufferRef, size: u64) -> Option<BufferView> {
-    match buffer {
-        GeometryBufferRef::Dedicated(handle) => {
-            if !handle.valid() || size == 0 {
-                None
-            } else {
-                Some(BufferView {
-                    handle: *handle,
-                    offset: 0,
-                    size,
-                })
-            }
-        }
-        GeometryBufferRef::Slice(slice) => {
-            if !slice.buffer.valid() || slice.size == 0 {
-                None
-            } else {
-                Some(BufferView {
-                    handle: slice.buffer,
-                    offset: slice.offset as u64,
-                    size: slice.size as u64,
-                })
-            }
-        }
-        GeometryBufferRef::None => None,
+fn vertex_buffer_slot(vertices: &[Vertex]) -> VertexBufferSlot {
+    let uses_skinning = vertices.iter().any(|vertex| {
+        vertex.joint_weights.iter().any(|weight| *weight != 0.0)
+            || vertex.joint_indices.iter().any(|index| *index != 0)
+    });
+
+    if uses_skinning {
+        VertexBufferSlot::Skeleton
+    } else {
+        VertexBufferSlot::Simple
     }
-}
-
-fn ensure_furikake_vertex_buffer(
-    mut furikake: Option<&mut FurikakeBindings>,
-    view: BufferView,
-) -> Result<Option<u16>, NorenError> {
-    let Some(bindings) = furikake.as_deref_mut() else {
-        return Ok(None);
-    };
-
-    if !view.handle.valid() || view.size == 0 {
-        return Ok(None);
-    }
-
-    let key = GeometryBufferKey {
-        buffer: view.handle,
-        offset: view.offset,
-        size: view.size,
-    };
-
-    if let Some(id) = bindings.vertex_buffers.get(&key) {
-        return Ok(Some(*id));
-    }
-
-    let mut inserted_id = None;
-    let result = bindings
-        .state_mut()
-        .reserved_mut::<ReservedBindlessVertices, _>("meshi_bindless_vertices", |vertices| {
-//            inserted_id = Some(vertices.add_buffer(view));
-            //TODO          
-        });
-
-    if let Err(err) = result {
-        return Err(err.into());
-    }
-
-    let id = inserted_id.ok_or_else(|| {
-        NorenError::FurikakeError("failed to allocate furikake vertex buffer slot".to_string())
-    })?;
-
-    bindings.vertex_buffers.insert(key, id);
-    Ok(Some(id))
-}
-
-fn ensure_furikake_index_buffer(
-    mut furikake: Option<&mut FurikakeBindings>,
-    view: BufferView,
-) -> Result<Option<u16>, NorenError> {
-    let Some(bindings) = furikake.as_deref_mut() else {
-        return Ok(None);
-    };
-
-    if !view.handle.valid() || view.size == 0 {
-        return Ok(None);
-    }
-
-    let key = GeometryBufferKey {
-        buffer: view.handle,
-        offset: view.offset,
-        size: view.size,
-    };
-
-    if let Some(id) = bindings.index_buffers.get(&key) {
-        return Ok(Some(*id));
-    }
-
-    let mut inserted_id = None;
-    let result = bindings
-        .state_mut()
-        .reserved_mut::<ReservedBindlessIndices, _>("meshi_bindless_indices", |indices| {
-//            inserted_id = Some(indices.add_buffer(view));
-//            TODO
-        });
-
-    if let Err(err) = result {
-        return Err(err.into());
-    }
-
-    let id = inserted_id.ok_or_else(|| {
-        NorenError::FurikakeError("failed to allocate furikake index buffer slot".to_string())
-    })?;
-
-    bindings.index_buffers.insert(key, id);
-    Ok(Some(id))
 }
 
 fn append_texture_bindings<Texture, Image, MakeTexture, FetchImage>(
