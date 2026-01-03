@@ -31,6 +31,7 @@ pub enum NorenError {
     DataFailure(),
     DashiContext(),
     InvalidMaterial(String),
+    InvalidAtlas(String),
     InvalidModel(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
     InvalidShaderState(String),
@@ -53,6 +54,9 @@ impl std::fmt::Display for NorenError {
             NorenError::DashiContext() => write!(f, "Dashi context was not provided."),
             NorenError::InvalidMaterial(reason) => {
                 write!(f, "Invalid material: {}", reason)
+            }
+            NorenError::InvalidAtlas(reason) => {
+                write!(f, "Invalid atlas: {}", reason)
             }
             NorenError::InvalidModel(reason) => {
                 write!(f, "Invalid model layout: {}", reason)

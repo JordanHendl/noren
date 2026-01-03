@@ -20,6 +20,10 @@ fn default_texture_path() -> String {
     "textures.json".to_string()
 }
 
+fn default_atlas_path() -> String {
+    "atlases.json".to_string()
+}
+
 fn default_skeleton_path() -> String {
     "skeletons.rdb".to_string()
 }
@@ -62,6 +66,8 @@ pub struct DatabaseLayoutFile {
     pub animations: String,
     #[serde(default = "default_texture_path")]
     pub textures: String,
+    #[serde(default = "default_atlas_path")]
+    pub atlases: String,
     #[serde(default = "default_material_path")]
     pub materials: String,
     #[serde(default = "default_mesh_path")]
@@ -78,6 +84,12 @@ pub struct DatabaseLayoutFile {
 pub struct TextureLayoutFile {
     #[serde(default)]
     pub textures: HashMap<String, TextureLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TextureAtlasLayoutFile {
+    #[serde(default)]
+    pub atlases: HashMap<String, TextureAtlasLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -113,6 +125,54 @@ pub struct TextureLayout {
     pub image: String,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TextureAtlasLayout {
+    /// Database entry for the atlas image.
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Default sprite size for sprites in the atlas.
+    #[serde(default)]
+    pub sprite_size: [u32; 2],
+    /// Named sprite regions within the atlas image.
+    #[serde(default)]
+    pub sprites: HashMap<String, AtlasSprite>,
+    /// Named animation clips keyed by animation name.
+    #[serde(default)]
+    pub animations: HashMap<String, AtlasAnimation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AtlasSprite {
+    /// Pixel-space origin of the sprite region within the atlas.
+    #[serde(default)]
+    pub origin: [u32; 2],
+    /// Pixel-space size override for the sprite region.
+    #[serde(default)]
+    pub size: Option<[u32; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AtlasAnimation {
+    /// Ordered frames for the animation.
+    #[serde(default)]
+    pub frames: Vec<AtlasFrame>,
+    /// Whether the animation should loop when played.
+    #[serde(default)]
+    pub looped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AtlasFrame {
+    /// Sprite name to display for this frame.
+    #[serde(default)]
+    pub sprite: String,
+    /// Frame duration in milliseconds.
+    #[serde(default)]
+    pub duration_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -194,6 +254,7 @@ pub struct ComputeShaderLayout {
 #[derive(Debug, Clone, Default)]
 pub struct MetaLayout {
     pub textures: HashMap<String, TextureLayout>,
+    pub atlases: HashMap<String, TextureAtlasLayout>,
     pub materials: HashMap<String, MaterialLayout>,
     pub meshes: HashMap<String, MeshLayout>,
     pub models: HashMap<String, ModelLayout>,
@@ -204,6 +265,7 @@ pub struct MetaLayout {
 impl MetaLayout {
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty()
+            && self.atlases.is_empty()
             && self.materials.is_empty()
             && self.meshes.is_empty()
             && self.models.is_empty()
@@ -221,6 +283,7 @@ impl Default for DatabaseLayoutFile {
             skeletons: default_skeleton_path(),
             animations: default_animation_path(),
             textures: default_texture_path(),
+            atlases: default_atlas_path(),
             materials: default_material_path(),
             meshes: default_mesh_path(),
             models: default_model_path(),

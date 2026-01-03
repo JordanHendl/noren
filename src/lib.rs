@@ -110,6 +110,8 @@ fn load_meta_layout(
 ) -> Result<Option<MetaLayout>, NorenError> {
     let textures =
         load_json_file::<TextureLayoutFile>(&format!("{}/{}", base_dir, layout.textures))?;
+    let atlases =
+        load_json_file::<TextureAtlasLayoutFile>(&format!("{}/{}", base_dir, layout.atlases))?;
     let materials =
         load_json_file::<MaterialLayoutFile>(&format!("{}/{}", base_dir, layout.materials))?;
     let meshes = load_json_file::<MeshLayoutFile>(&format!("{}/{}", base_dir, layout.meshes))?;
@@ -119,6 +121,9 @@ fn load_meta_layout(
     let mut meta_layout = MetaLayout::default();
     if let Some(file) = textures {
         meta_layout.textures = file.textures;
+    }
+    if let Some(file) = atlases {
+        meta_layout.atlases = file.atlases;
     }
     if let Some(file) = materials {
         meta_layout.materials = file.materials;
@@ -327,6 +332,14 @@ impl DB {
         self.meta_layout
             .as_ref()
             .map(|layout| layout.textures.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates texture atlas definitions declared in the model layout.
+    pub fn enumerate_atlases(&self) -> Vec<String> {
+        self.meta_layout
+            .as_ref()
+            .map(|layout| layout.atlases.keys().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -546,6 +559,80 @@ impl DB {
             &mut |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
         )?
         .ok_or_else(NorenError::LookupFailure)
+    }
+
+    /// Fetches a texture atlas with host image data and layout metadata.
+    pub fn fetch_texture_atlas(
+        &mut self,
+        entry: &str,
+    ) -> Result<HostTextureAtlas, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let atlas_def = layout
+            .atlases
+            .get(entry)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if atlas_def.image.is_empty() {
+            return Err(NorenError::InvalidAtlas(format!(
+                "Atlas '{entry}' does not define an image entry",
+            )));
+        }
+
+        let image = self.imagery.fetch_raw_image(atlas_def.image.as_str())?;
+        let name = atlas_def
+            .name
+            .clone()
+            .unwrap_or_else(|| entry.to_string());
+
+        Ok(HostTextureAtlas {
+            name,
+            image,
+            atlas: atlas_def.clone(),
+        })
+    }
+
+    /// Fetches a texture atlas with device image data and layout metadata.
+    pub fn fetch_gpu_texture_atlas(
+        &mut self,
+        entry: &str,
+    ) -> Result<DeviceTextureAtlas, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let atlas_def = layout
+            .atlases
+            .get(entry)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if atlas_def.image.is_empty() {
+            return Err(NorenError::InvalidAtlas(format!(
+                "Atlas '{entry}' does not define an image entry",
+            )));
+        }
+
+        let image = self.imagery.fetch_gpu_image(atlas_def.image.as_str())?;
+        let furikake_texture_id = ensure_furikake_texture(
+            &mut self.imagery,
+            self.furikake.as_mut(),
+            atlas_def.image.as_str(),
+        )?;
+        let name = atlas_def
+            .name
+            .clone()
+            .unwrap_or_else(|| entry.to_string());
+
+        Ok(DeviceTextureAtlas {
+            name,
+            image,
+            atlas: atlas_def.clone(),
+            furikake_texture_id,
+        })
     }
 
     /// Builds a CPU-side material with host images and furikake definitions.
@@ -1088,6 +1175,35 @@ fn validate_model_links(layout: &MetaLayout) -> Result<(), NorenError> {
     Ok(())
 }
 
+fn validate_atlas_links(layout: &MetaLayout) -> Result<(), NorenError> {
+    for (atlas_key, atlas) in &layout.atlases {
+        if atlas.image.is_empty() {
+            return Err(NorenError::InvalidAtlas(format!(
+                "Atlas '{atlas_key}' does not define an image entry",
+            )));
+        }
+
+        for (animation_key, animation) in &atlas.animations {
+            for (frame_index, frame) in animation.frames.iter().enumerate() {
+                if frame.sprite.is_empty() {
+                    return Err(NorenError::InvalidAtlas(format!(
+                        "Atlas '{atlas_key}' animation '{animation_key}' frame {frame_index} does not define a sprite name",
+                    )));
+                }
+
+                if !atlas.sprites.contains_key(&frame.sprite) {
+                    return Err(NorenError::InvalidAtlas(format!(
+                        "Atlas '{atlas_key}' animation '{animation_key}' references missing sprite '{}'",
+                        frame.sprite
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_meta_layout(
     layout: &MetaLayout,
     shader_modules: Option<&ShaderDB>,
@@ -1095,6 +1211,7 @@ fn validate_meta_layout(
     validate_material_links(layout)?;
     validate_mesh_links(layout)?;
     validate_model_links(layout)?;
+    validate_atlas_links(layout)?;
     validate_shader_layouts(layout, shader_modules)
 }
 

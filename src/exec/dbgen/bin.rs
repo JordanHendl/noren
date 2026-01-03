@@ -16,7 +16,7 @@ use noren::{
     defaults::{DEFAULT_IMAGE_ENTRY, default_image, default_primitives, ensure_default_assets},
     parsing::{
         MaterialLayoutFile, MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile,
-        TextureLayout, TextureLayoutFile,
+        TextureAtlasLayoutFile, TextureLayout, TextureLayoutFile,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -629,6 +629,7 @@ fn run_from_path(
     let skeletons_path = resolve_string_path(&output_dir, &output.layout.skeletons);
     let animations_path = resolve_string_path(&output_dir, &output.layout.animations);
     let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
+    let atlases_path = resolve_string_path(&output_dir, &output.layout.atlases);
     let materials_path = resolve_string_path(&output_dir, &output.layout.materials);
     let meshes_path = resolve_string_path(&output_dir, &output.layout.meshes);
     let models_path = resolve_string_path(&output_dir, &output.layout.models);
@@ -697,6 +698,12 @@ fn run_from_path(
     }
     let textures_file = File::create(&textures_path)?;
     serde_json::to_writer_pretty(textures_file, &model_layouts.textures)?;
+
+    if let Some(parent) = atlases_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let atlases_file = File::create(&atlases_path)?;
+    serde_json::to_writer_pretty(atlases_file, &TextureAtlasLayoutFile::default())?;
 
     if let Some(parent) = meshes_path.parent() {
         fs::create_dir_all(parent)?;
@@ -2095,6 +2102,7 @@ mod tests {
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
+                    atlases: "atlases.json".into(),
                     meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     shader_layouts: "shaders.json".into(),
@@ -2237,6 +2245,7 @@ mod tests {
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
         assert_eq!(layout.textures, "textures.json");
+        assert_eq!(layout.atlases, "atlases.json");
         assert_eq!(layout.meshes, "meshes.json");
         assert_eq!(layout.models, "models.json");
         assert_eq!(layout.shader_layouts, "shaders.json");
@@ -2287,6 +2296,7 @@ mod tests {
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
+                    atlases: "atlases.json".into(),
                     meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     shader_layouts: "shaders.json".into(),
@@ -2406,6 +2416,7 @@ mod tests {
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
+                    atlases: "atlases.json".into(),
                     materials: "materials.json".into(),
                     meshes: "meshes.json".into(),
                     models: "models.json".into(),
@@ -2519,6 +2530,7 @@ mod tests {
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
+                    atlases: "atlases.json".into(),
                     meshes: "meshes.json".into(),
                     models: "models.json".into(),
                     shader_layouts: "shaders.json".into(),
@@ -2563,6 +2575,7 @@ mod tests {
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
+                    atlases: "atlases.json".into(),
                     materials: "materials.json".into(),
                     meshes: "meshes.json".into(),
                     models: "models.json".into(),
@@ -2620,6 +2633,7 @@ mod tests {
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
+                    atlases: "atlases.json".into(),
                     materials: "materials.json".into(),
                     meshes: "meshes.json".into(),
                     models: "models.json".into(),
