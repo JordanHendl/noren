@@ -11,11 +11,17 @@ use defaults::inject_default_layouts;
 use furikake::{
     BindlessState,
     reservations::{
-        bindless_materials::ReservedBindlessMaterials, bindless_textures::ReservedBindlessTextures,
+        bindless_animations::ReservedBindlessAnimations,
+        bindless_materials::ReservedBindlessMaterials,
+        bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
     },
-    types::Material as FurikakeMaterial,
+    types::{
+        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,
+        Material as FurikakeMaterial, SkeletonHeader,
+    },
 };
 pub use furikake_state::FurikakeState;
+use glam::{Mat4, Quat, Vec3, Vec4};
 use meta::*;
 use parsing::*;
 use rdb::*;
@@ -45,6 +51,8 @@ struct FurikakeBindings {
     state: NonNull<BindlessState>,
     textures: HashMap<String, u16>,
     materials: HashMap<String, dashi::Handle<FurikakeMaterial>>,
+    skeletons: HashMap<String, dashi::Handle<SkeletonHeader>>,
+    animations: HashMap<String, dashi::Handle<FurikakeAnimationClip>>,
 }
 
 impl FurikakeBindings {
@@ -53,6 +61,8 @@ impl FurikakeBindings {
             state: NonNull::from(state),
             textures: HashMap::new(),
             materials: HashMap::new(),
+            skeletons: HashMap::new(),
+            animations: HashMap::new(),
         }
     }
 
@@ -359,7 +369,7 @@ impl DB {
 
     /// Builds a CPU-side model composed of host geometry, textures, and materials.
     pub fn fetch_model(&mut self, entry: DatabaseEntry<'_>) -> Result<HostModel, NorenError> {
-        self.assemble_model(
+        let (name, meshes) = self.assemble_model_components(
             entry,
             false,
             |geometry_db, entry| geometry_db.fetch_raw_geometry(entry),
@@ -382,13 +392,14 @@ impl DB {
                     material,
                 }
             },
-            |name, meshes| HostModel { name, meshes },
-        )
+        )?;
+        let rig = self.load_host_rigging(entry)?;
+        Ok(HostModel { name, meshes, rig })
     }
 
     /// Loads a GPU-ready model with device buffers, textures, and shaders.
     pub fn fetch_gpu_model(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceModel, NorenError> {
-        self.assemble_model(
+        let (name, meshes) = self.assemble_model_components(
             entry,
             true,
             |geometry_db, entry| geometry_db.fetch_gpu_geometry(entry),
@@ -398,8 +409,88 @@ impl DB {
                 DeviceMaterial::new(textures, material, furikake_handle)
             },
             |_, geometry, textures, material| DeviceMesh::new(geometry, textures, material),
-            |name, meshes| DeviceModel { name, meshes },
-        )
+        )?;
+        let rig = self.load_device_rigging(entry)?;
+        Ok(DeviceModel { name, meshes, rig })
+    }
+
+    fn load_host_rigging(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<Option<HostRig>, NorenError> {
+        let skeleton_entry = model_rig_entry(entry, "skeletons/");
+        if !self
+            .skeletons
+            .enumerate_entries()
+            .iter()
+            .any(|key| key == &skeleton_entry)
+        {
+            return Ok(None);
+        }
+
+        let skeleton = self.skeletons.fetch_skeleton(&skeleton_entry)?;
+        let animation_entry = model_rig_entry(entry, "animations/");
+        let animation = if self
+            .animations
+            .enumerate_entries()
+            .iter()
+            .any(|key| key == &animation_entry)
+        {
+            Some(self.animations.fetch_animation(&animation_entry)?)
+        } else {
+            None
+        };
+
+        Ok(Some(HostRig {
+            skeleton,
+            animation,
+        }))
+    }
+
+    fn load_device_rigging(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<Option<DeviceRig>, NorenError> {
+        if self.furikake.is_none() {
+            return Ok(None);
+        }
+
+        let skeleton_entry = model_rig_entry(entry, "skeletons/");
+        if !self
+            .skeletons
+            .enumerate_entries()
+            .iter()
+            .any(|key| key == &skeleton_entry)
+        {
+            return Ok(None);
+        }
+
+        let skeleton =
+            ensure_furikake_skeleton(&mut self.skeletons, self.furikake.as_mut(), &skeleton_entry)?;
+        let Some(skeleton) = skeleton else {
+            return Ok(None);
+        };
+
+        let animation_entry = model_rig_entry(entry, "animations/");
+        let animation = if self
+            .animations
+            .enumerate_entries()
+            .iter()
+            .any(|key| key == &animation_entry)
+        {
+            ensure_furikake_animation(
+                &mut self.animations,
+                self.furikake.as_mut(),
+                &animation_entry,
+            )?
+        } else {
+            None
+        };
+
+        Ok(Some(DeviceRig {
+            skeleton,
+            animation,
+        }))
     }
 
     /// Builds a CPU-side mesh using the provided material entry instead of the layout default.
@@ -664,6 +755,217 @@ impl DB {
             Some(Ok(handle))
         }
     }
+}
+
+struct FurikakeTrackData {
+    joint_index: u32,
+    keyframes: Vec<AnimationKeyframe>,
+}
+
+fn model_rig_entry(entry: &str, prefix: &str) -> String {
+    let suffix = entry.strip_prefix("model/").unwrap_or(entry);
+    format!("{prefix}{suffix}")
+}
+
+fn to_furikake_joint(joint: &Joint) -> JointTransform {
+    let translation = Vec3::from(joint.translation);
+    let scale = Vec3::from(joint.scale);
+    let rotation = Quat::from_xyzw(
+        joint.rotation[0],
+        joint.rotation[1],
+        joint.rotation[2],
+        joint.rotation[3],
+    );
+    let bind_pose = Mat4::from_scale_rotation_translation(scale, rotation, translation);
+    let inverse_bind = Mat4::from_cols_array_2d(&joint.inverse_bind_matrix);
+
+    JointTransform {
+        parent_index: joint.parent.map(|parent| parent as i32).unwrap_or(-1),
+        bind_pose,
+        inverse_bind,
+        ..Default::default()
+    }
+}
+
+fn build_furikake_tracks(clip: &AnimationClip) -> Vec<FurikakeTrackData> {
+    let mut tracks = Vec::new();
+    for channel in &clip.channels {
+        let Some(sampler) = clip.samplers.get(channel.sampler_index) else {
+            continue;
+        };
+        let values = match &sampler.output {
+            AnimationOutput::Translations(outputs) => outputs
+                .iter()
+                .map(|value| Vec4::new(value[0], value[1], value[2], 0.0))
+                .collect::<Vec<_>>(),
+            AnimationOutput::Rotations(outputs) => outputs
+                .iter()
+                .map(|value| Vec4::new(value[0], value[1], value[2], value[3]))
+                .collect::<Vec<_>>(),
+            AnimationOutput::Scales(outputs) => outputs
+                .iter()
+                .map(|value| Vec4::new(value[0], value[1], value[2], 0.0))
+                .collect::<Vec<_>>(),
+            AnimationOutput::Weights(outputs) => outputs
+                .iter()
+                .map(|value| Vec4::new(*value, 0.0, 0.0, 0.0))
+                .collect::<Vec<_>>(),
+        };
+
+        let frame_count = sampler.input.len().min(values.len());
+        let mut keyframes = Vec::with_capacity(frame_count);
+        for idx in 0..frame_count {
+            keyframes.push(AnimationKeyframe {
+                time: sampler.input[idx],
+                value: values[idx],
+                ..Default::default()
+            });
+        }
+
+        tracks.push(FurikakeTrackData {
+            joint_index: channel.target_node as u32,
+            keyframes,
+        });
+    }
+    tracks
+}
+
+fn ensure_furikake_skeleton(
+    skeletons: &mut SkeletonDB,
+    mut furikake: Option<&mut FurikakeBindings>,
+    entry: &str,
+) -> Result<Option<dashi::Handle<SkeletonHeader>>, NorenError> {
+    let Some(bindings) = furikake.as_deref_mut() else {
+        return Ok(None);
+    };
+
+    if let Some(handle) = bindings.skeletons.get(entry) {
+        return Ok(Some(*handle));
+    }
+
+    let skeleton = skeletons.fetch_skeleton(entry)?;
+    let joint_count = skeleton.joints.len();
+    let mut joint_handles = Vec::with_capacity(joint_count);
+    let mut skeleton_handle = None;
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessSkeletons, _>("meshi_bindless_skeletons", |buffer| {
+            skeleton_handle = Some(buffer.add_skeleton());
+            for _ in 0..joint_count {
+                joint_handles.push(buffer.add_joint());
+            }
+            joint_handles.sort_by_key(|handle| handle.slot);
+            let joint_offset = joint_handles
+                .first()
+                .map(|handle| handle.slot as u32)
+                .unwrap_or(0);
+
+            for (joint, handle) in skeleton.joints.iter().zip(joint_handles.iter()) {
+                *buffer.joint_mut(*handle) = to_furikake_joint(joint);
+            }
+
+            if let Some(handle) = skeleton_handle {
+                *buffer.skeleton_mut(handle) = SkeletonHeader {
+                    joint_count: joint_count as u32,
+                    joint_offset,
+                    bind_pose_offset: joint_offset,
+                    ..Default::default()
+                };
+            }
+        });
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let handle = skeleton_handle.ok_or_else(|| {
+        NorenError::FurikakeError("failed to allocate furikake skeleton slot".to_string())
+    })?;
+    bindings.skeletons.insert(entry.to_string(), handle);
+    Ok(Some(handle))
+}
+
+fn ensure_furikake_animation(
+    animations: &mut AnimationDB,
+    mut furikake: Option<&mut FurikakeBindings>,
+    entry: &str,
+) -> Result<Option<dashi::Handle<FurikakeAnimationClip>>, NorenError> {
+    let Some(bindings) = furikake.as_deref_mut() else {
+        return Ok(None);
+    };
+
+    if let Some(handle) = bindings.animations.get(entry) {
+        return Ok(Some(*handle));
+    }
+
+    let clip = animations.fetch_animation(entry)?;
+    let tracks = build_furikake_tracks(&clip);
+    let track_count = tracks.len();
+    let total_keyframes: usize = tracks.iter().map(|track| track.keyframes.len()).sum();
+    let mut track_handles = Vec::with_capacity(track_count);
+    let mut keyframe_handles = Vec::with_capacity(total_keyframes);
+    let mut clip_handle = None;
+
+    let result = bindings
+        .state_mut()
+        .reserved_mut::<ReservedBindlessAnimations, _>("meshi_bindless_animations", |buffer| {
+            clip_handle = Some(buffer.add_clip());
+            for _ in 0..track_count {
+                track_handles.push(buffer.add_track());
+            }
+            for _ in 0..total_keyframes {
+                keyframe_handles.push(buffer.add_keyframe());
+            }
+            track_handles.sort_by_key(|handle| handle.slot);
+            keyframe_handles.sort_by_key(|handle| handle.slot);
+
+            let track_offset = track_handles
+                .first()
+                .map(|handle| handle.slot as u32)
+                .unwrap_or(0);
+            let keyframe_offset = keyframe_handles
+                .first()
+                .map(|handle| handle.slot as u32)
+                .unwrap_or(0);
+
+            let mut keyframe_index = 0usize;
+            for (track, handle) in tracks.iter().zip(track_handles.iter()) {
+                let keyframe_count = track.keyframes.len();
+                let track_keyframe_offset = keyframe_offset + keyframe_index as u32;
+                *buffer.track_mut(*handle) = AnimationTrack {
+                    joint_index: track.joint_index,
+                    keyframe_count: keyframe_count as u32,
+                    keyframe_offset: track_keyframe_offset,
+                    ..Default::default()
+                };
+
+                for keyframe in &track.keyframes {
+                    if let Some(keyframe_handle) = keyframe_handles.get(keyframe_index) {
+                        *buffer.keyframe_mut(*keyframe_handle) = *keyframe;
+                    }
+                    keyframe_index += 1;
+                }
+            }
+
+            if let Some(handle) = clip_handle {
+                *buffer.clip_mut(handle) = FurikakeAnimationClip {
+                    duration: clip.duration_seconds,
+                    track_count: track_count as u32,
+                    track_offset,
+                    ..Default::default()
+                };
+            }
+        });
+
+    if let Err(err) = result {
+        return Err(err.into());
+    }
+
+    let handle = clip_handle.ok_or_else(|| {
+        NorenError::FurikakeError("failed to allocate furikake animation slot".to_string())
+    })?;
+    bindings.animations.insert(entry.to_string(), handle);
+    Ok(Some(handle))
 }
 
 fn ensure_furikake_texture(
@@ -1137,8 +1439,7 @@ impl DB {
         )))
     }
 
-    fn assemble_model<
-        Model,
+    fn assemble_model_components<
         Mesh,
         Material,
         Texture,
@@ -1149,7 +1450,6 @@ impl DB {
         MakeTexture,
         MakeMaterial,
         MakeMesh,
-        MakeModel,
     >(
         &mut self,
         entry: DatabaseEntry<'_>,
@@ -1159,8 +1459,7 @@ impl DB {
         mut make_texture: MakeTexture,
         mut make_material: MakeMaterial,
         mut make_mesh: MakeMesh,
-        mut make_model: MakeModel,
-    ) -> Result<Model, NorenError>
+    ) -> Result<(String, Vec<Mesh>), NorenError>
     where
         FetchGeometry: FnMut(&mut GeometryDB, DatabaseEntry<'_>) -> Result<Geometry, NorenError>,
         FetchImage: FnMut(&mut ImageDB, DatabaseEntry<'_>) -> Result<Image, NorenError>,
@@ -1173,7 +1472,6 @@ impl DB {
             Option<dashi::Handle<FurikakeMaterial>>,
         ) -> Material,
         MakeMesh: FnMut(String, Geometry, Vec<Texture>, Option<Material>) -> Mesh,
-        MakeModel: FnMut(String, Vec<Mesh>) -> Model,
     {
         let (model_name, mesh_keys) = {
             let layout = self
@@ -1208,7 +1506,7 @@ impl DB {
             }
         }
 
-        Ok(make_model(model_name, meshes))
+        Ok((model_name, meshes))
     }
 
     pub(crate) fn load_graphics_shader(

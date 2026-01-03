@@ -1,18 +1,34 @@
 use std::collections::HashSet;
 
 use crate::meta::{DeviceMesh, HostMesh};
+use crate::rdb::{AnimationClip, Skeleton};
 use dashi::{Buffer, Handle};
+use furikake::types::{AnimationClip as FurikakeAnimationClip, SkeletonHeader};
+
+#[derive(Clone, Debug)]
+pub struct HostRig {
+    pub skeleton: Skeleton,
+    pub animation: Option<AnimationClip>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeviceRig {
+    pub skeleton: Handle<SkeletonHeader>,
+    pub animation: Option<Handle<FurikakeAnimationClip>>,
+}
 
 #[derive(Clone, Debug)]
 pub struct HostModel {
     pub name: String,
     pub meshes: Vec<HostMesh>,
+    pub rig: Option<HostRig>,
 }
 
 #[derive(Clone, Debug)]
 pub struct DeviceModel {
     pub name: String,
     pub meshes: Vec<DeviceMesh>,
+    pub rig: Option<DeviceRig>,
 }
 
 impl DeviceModel {
