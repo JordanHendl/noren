@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use super::DatabaseEntry;
 use crate::{
     RDBView,
-    defaults::{DEFAULT_SOUND_ENTRY, default_sound},
+    defaults::default_sounds,
     utils::NorenError,
 };
 
@@ -93,7 +93,10 @@ impl AudioDB {
 
         Self {
             data,
-            defaults: std::iter::once((DEFAULT_SOUND_ENTRY.to_string(), default_sound())).collect(),
+            defaults: default_sounds()
+                .into_iter()
+                .map(|clip| (clip.name.clone(), clip))
+                .collect(),
         }
     }
 
@@ -166,9 +169,11 @@ mod tests {
     #[test]
     fn default_sound_available_without_file() {
         let mut db = AudioDB::new("missing_audio.rdb");
-        let clip = db
-            .fetch_sound_clip(crate::defaults::DEFAULT_SOUND_ENTRY)
-            .expect("load default sound");
-        assert_eq!(clip.name, crate::defaults::DEFAULT_SOUND_ENTRY);
+        for entry in crate::defaults::DEFAULT_SOUND_ENTRIES {
+            let clip = db
+                .fetch_sound_clip(entry)
+                .unwrap_or_else(|_| panic!("load default sound {entry}"));
+            assert_eq!(clip.name, entry);
+        }
     }
 }

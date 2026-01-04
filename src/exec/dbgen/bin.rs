@@ -13,7 +13,10 @@ use gltf::animation::util::ReadOutputs;
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
-    defaults::{DEFAULT_IMAGE_ENTRY, default_image, default_primitives, ensure_default_assets},
+    defaults::{
+        DEFAULT_IMAGE_ENTRY, default_image, default_primitives, default_sounds,
+        ensure_default_assets,
+    },
     parsing::{
         MaterialLayoutFile, MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile,
         TextureAtlasLayoutFile, TextureLayout, TextureLayoutFile,
@@ -1170,6 +1173,19 @@ fn build_audio(
     } else {
         RDBFile::new()
     };
+
+    let mut seen_entries: HashSet<String> = rdb.entries().into_iter().map(|meta| meta.name).collect();
+    for entry in entries {
+        seen_entries.insert(entry.entry.clone());
+    }
+
+    for clip in default_sounds() {
+        if seen_entries.contains(&clip.name) {
+            continue;
+        }
+        logger.log(format!("audio: adding default {}", clip.name));
+        rdb.add(&clip.name, &clip).map_err(BuildError::from)?;
+    }
 
     for entry in entries {
         logger.log(format!(

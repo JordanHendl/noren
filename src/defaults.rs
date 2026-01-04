@@ -10,7 +10,8 @@ use crate::{
 pub const DEFAULT_IMAGE_ENTRY: &str = "imagery/default";
 pub const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
 pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
-pub const DEFAULT_SOUND_ENTRY: &str = "audio/default";
+pub const DEFAULT_SOUND_ENTRY: &str = "audio/beep";
+pub const DEFAULT_SOUND_ENTRIES: [&str; 2] = ["audio/beep", "audio/tone"];
 pub const DEFAULT_GEOMETRY_ENTRIES: [&str; 6] = [
     "geometry/sphere",
     "geometry/cube",
@@ -35,6 +36,21 @@ pub fn default_image() -> HostImage {
 pub fn default_sound() -> AudioClip {
     let data = include_bytes!("../sample/sample_pre/audio/beep.wav").to_vec();
     AudioClip::new(DEFAULT_SOUND_ENTRY.to_string(), AudioFormat::Wav, data)
+}
+
+pub fn default_sounds() -> Vec<AudioClip> {
+    vec![
+        AudioClip::new(
+            DEFAULT_SOUND_ENTRIES[0].to_string(),
+            AudioFormat::Wav,
+            include_bytes!("../sample/sample_pre/audio/beep.wav").to_vec(),
+        ),
+        AudioClip::new(
+            DEFAULT_SOUND_ENTRIES[1].to_string(),
+            AudioFormat::Wav,
+            include_bytes!("../sample/sample_pre/audio/tone.wav").to_vec(),
+        ),
+    ]
 }
 
 pub fn default_primitives() -> Vec<(String, HostGeometry)> {

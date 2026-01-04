@@ -40,13 +40,25 @@ cargo run --bin dbgen -- sample/sample_pre/norenbuild.json
 ```
 
 The command produces a `sample/db/` folder with `geometry.rdb`, `imagery.rdb`,
-`skeletons.rdb`, `animations.rdb`, `shaders.rdb`, and metadata JSON files
+`skeletons.rdb`, `animations.rdb`, `audio.rdb`, `shaders.rdb`, and metadata JSON files
 (`materials.json`, `textures.json`, `meshes.json`, `models.json`,
 `shaders.json`). Use the `--append` flag to incrementally add new entries
 without rebuilding from scratch or the `--layouts-only` flag to refresh the JSON
 layouts without touching the binary `.rdb` payloads. You can also call `dbgen
 append` to inject a single resource (geometry, imagery, skeleton, animation, or
 shader) into an existing database file.
+
+### Default audio samples
+
+Noren ships with two default audio samples that are always built into the audio
+database and always available at runtime, even if the audio database is empty or
+missing:
+
+- `audio/beep` (`sample/sample_pre/audio/beep.wav`)
+- `audio/tone` (`sample/sample_pre/audio/tone.wav`)
+
+These samples are embedded into the runtime as fallbacks and are also injected
+into `audio.rdb` whenever `dbgen` builds or appends audio content.
 
 ### Loading animated assets
 
