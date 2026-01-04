@@ -315,6 +315,19 @@ impl DB {
         self.audio.enumerate_entries()
     }
 
+    /// Fetches a fully loaded sound clip by entry name.
+    pub fn fetch_sound_clip(&mut self, entry: DatabaseEntry<'_>) -> Result<AudioClip, NorenError> {
+        self.audio.fetch_sound_clip(entry)
+    }
+
+    /// Fetches a sound track by entry name for streaming use.
+    pub fn fetch_sound_track(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<SoundTrack, NorenError> {
+        self.audio.fetch_sound_track(entry)
+    }
+
     /// Enumerates skeleton assets available in the backing database.
     pub fn enumerate_skeletons(&self) -> Vec<String> {
         self.skeletons.enumerate_entries()

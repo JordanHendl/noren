@@ -1,16 +1,31 @@
 {
   "meshes": {
-    "mesh/cube": {
-      "name": "cube",
-      "geometry": "geometry/cube",
+    "mesh/simple_skin": {
+      "name": "simple_skin",
+      "geometry": "geometry/simple_skin",
+      "material": null,
+      "textures": []
+    },
+    "mesh/cylinder": {
+      "name": "cylinder",
+      "geometry": "geometry/cylinder",
       "material": "material/default",
       "textures": [
         "texture/default"
       ]
     },
-    "mesh/cylinder": {
-      "name": "cylinder",
-      "geometry": "geometry/cylinder",
+    "mesh/quad": {
+      "name": "quad",
+      "geometry": "geometry/quad",
+      "material": null,
+      "textures": [
+        "texture/imagery/tulips",
+        "texture/imagery/peppers"
+      ]
+    },
+    "mesh/cube": {
+      "name": "cube",
+      "geometry": "geometry/cube",
       "material": "material/default",
       "textures": [
         "texture/default"
@@ -22,21 +37,6 @@
       "material": "material/default",
       "textures": [
         "texture/default"
-      ]
-    },
-    "mesh/simple_skin": {
-      "name": "simple_skin",
-      "geometry": "geometry/simple_skin",
-      "material": null,
-      "textures": []
-    },
-    "mesh/quad": {
-      "name": "quad",
-      "geometry": "geometry/quad",
-      "material": null,
-      "textures": [
-        "texture/imagery/tulips",
-        "texture/imagery/peppers"
       ]
     },
     "mesh/plane": {

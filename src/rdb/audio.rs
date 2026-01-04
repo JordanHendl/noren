@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::DatabaseEntry;
-use crate::{RDBView, utils::NorenError};
+use crate::{
+    RDBView,
+    defaults::{DEFAULT_SOUND_ENTRY, default_sound},
+    utils::NorenError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,9 +39,48 @@ impl AudioClip {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SoundTrack {
+    pub name: String,
+    pub format: AudioFormat,
+    data: Vec<u8>,
+    cursor: usize,
+}
+
+impl SoundTrack {
+    pub fn new(clip: AudioClip) -> Self {
+        Self {
+            name: clip.name,
+            format: clip.format,
+            data: clip.data,
+            cursor: 0,
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.cursor >= self.data.len()
+    }
+
+    pub fn reset(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn read_chunk(&mut self, size: usize) -> Option<Vec<u8>> {
+        if self.is_finished() {
+            return None;
+        }
+
+        let end = (self.cursor + size).min(self.data.len());
+        let chunk = self.data[self.cursor..end].to_vec();
+        self.cursor = end;
+        Some(chunk)
+    }
+}
+
 #[derive(Default)]
 pub struct AudioDB {
     data: Option<RDBView>,
+    defaults: HashMap<String, AudioClip>,
 }
 
 impl AudioDB {
@@ -47,24 +91,53 @@ impl AudioDB {
             Err(_) => None,
         };
 
-        Self { data }
+        Self {
+            data,
+            defaults: std::iter::once((DEFAULT_SOUND_ENTRY.to_string(), default_sound())).collect(),
+        }
     }
 
     /// Fetches an audio clip by entry name.
     pub fn fetch_clip(&mut self, entry: DatabaseEntry<'_>) -> Result<AudioClip, NorenError> {
         if let Some(rdb) = &mut self.data {
-            return Ok(rdb.fetch::<AudioClip>(entry)?);
+            if let Ok(clip) = rdb.fetch::<AudioClip>(entry) {
+                return Ok(clip);
+            }
         }
 
-        Err(NorenError::DataFailure())
+        self.defaults
+            .get(entry)
+            .cloned()
+            .ok_or(NorenError::DataFailure())
+    }
+
+    /// Fetches a fully loaded sound clip by entry name.
+    pub fn fetch_sound_clip(&mut self, entry: DatabaseEntry<'_>) -> Result<AudioClip, NorenError> {
+        self.fetch_clip(entry)
+    }
+
+    /// Fetches a sound track by entry name for streaming use.
+    pub fn fetch_sound_track(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<SoundTrack, NorenError> {
+        let clip = self.fetch_clip(entry)?;
+        Ok(SoundTrack::new(clip))
     }
 
     /// Lists all audio clip entries available in the backing database.
     pub fn enumerate_entries(&self) -> Vec<String> {
-        self.data
+        let mut entries: Vec<String> = self
+            .data
             .as_ref()
             .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for entry in self.defaults.keys() {
+            if !entries.iter().any(|existing| existing == entry) {
+                entries.push(entry.clone());
+            }
+        }
+        entries
     }
 }
 
@@ -88,5 +161,14 @@ mod tests {
         let loaded = db.fetch_clip(ENTRY).expect("load audio clip");
 
         assert_eq!(loaded, clip);
+    }
+
+    #[test]
+    fn default_sound_available_without_file() {
+        let mut db = AudioDB::new("missing_audio.rdb");
+        let clip = db
+            .fetch_sound_clip(crate::defaults::DEFAULT_SOUND_ENTRY)
+            .expect("load default sound");
+        assert_eq!(clip.name, crate::defaults::DEFAULT_SOUND_ENTRY);
     }
 }

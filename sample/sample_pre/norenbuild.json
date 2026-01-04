@@ -11,6 +11,7 @@
       "models": "models.json",
       "skeletons": "skeletons.rdb",
       "animations": "animations.rdb",
+      "audio": "audio.rdb",
       "shader_layouts": "shaders.json",
       "shaders": "shaders.rdb"
     }
@@ -47,6 +48,16 @@
     {
       "entry": "imagery/peppers",
       "file": "imagery/peppers.png"
+    }
+  ],
+  "audio": [
+    {
+      "entry": "audio/beep",
+      "file": "audio/beep.wav"
+    },
+    {
+      "entry": "audio/tone",
+      "file": "audio/tone.wav"
     }
   ],
   "models": [

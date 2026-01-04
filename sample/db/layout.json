@@ -5,6 +5,7 @@
   "skeletons": "skeletons.rdb",
   "animations": "animations.rdb",
   "textures": "textures.json",
+  "atlases": "atlases.json",
   "materials": "materials.json",
   "meshes": "meshes.json",
   "models": "models.json",
