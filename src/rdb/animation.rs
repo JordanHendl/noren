@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::DatabaseEntry;
-use crate::{RDBView, utils::NorenError};
+use crate::{RDBView, defaults::default_animations, utils::NorenError};
 
 #[repr(C)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -104,6 +106,7 @@ pub struct AnimationChannel {
 #[derive(Default)]
 pub struct AnimationDB {
     data: Option<RDBView>,
+    defaults: HashMap<String, AnimationClip>,
 }
 
 impl AnimationDB {
@@ -114,7 +117,10 @@ impl AnimationDB {
             Err(_) => None,
         };
 
-        Self { data }
+        Self {
+            data,
+            defaults: default_animations().into_iter().collect(),
+        }
     }
 
     /// Fetches an animation clip by entry name.
@@ -123,18 +129,29 @@ impl AnimationDB {
         entry: DatabaseEntry<'_>,
     ) -> Result<AnimationClip, NorenError> {
         if let Some(rdb) = &mut self.data {
-            return Ok(rdb.fetch::<AnimationClip>(entry)?);
+            if let Ok(animation) = rdb.fetch::<AnimationClip>(entry) {
+                return Ok(animation);
+            }
         }
 
-        Err(NorenError::DataFailure())
+        self.defaults
+            .get(entry)
+            .cloned()
+            .ok_or_else(NorenError::DataFailure)
     }
 
     /// Lists animation entries available in the backing database.
     pub fn enumerate_entries(&self) -> Vec<String> {
-        self.data
-            .as_ref()
-            .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
-            .unwrap_or_default()
+        let mut entries: Vec<String> = self.defaults.keys().cloned().collect();
+        if let Some(rdb) = &self.data {
+            for meta in rdb.entries() {
+                if !entries.contains(&meta.name) {
+                    entries.push(meta.name);
+                }
+            }
+        }
+
+        entries
     }
 }
 

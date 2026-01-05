@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::DatabaseEntry;
-use crate::{RDBView, utils::NorenError};
+use crate::{RDBView, defaults::default_skeletons, utils::NorenError};
 
 #[repr(C)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -68,6 +70,7 @@ impl Default for Joint {
 #[derive(Default)]
 pub struct SkeletonDB {
     data: Option<RDBView>,
+    defaults: HashMap<String, Skeleton>,
 }
 
 impl SkeletonDB {
@@ -78,24 +81,38 @@ impl SkeletonDB {
             Err(_) => None,
         };
 
-        Self { data }
+        Self {
+            data,
+            defaults: default_skeletons().into_iter().collect(),
+        }
     }
 
     /// Fetches a skeleton asset by entry name.
     pub fn fetch_skeleton(&mut self, entry: DatabaseEntry<'_>) -> Result<Skeleton, NorenError> {
         if let Some(rdb) = &mut self.data {
-            return Ok(rdb.fetch::<Skeleton>(entry)?);
+            if let Ok(skeleton) = rdb.fetch::<Skeleton>(entry) {
+                return Ok(skeleton);
+            }
         }
 
-        Err(NorenError::DataFailure())
+        self.defaults
+            .get(entry)
+            .cloned()
+            .ok_or_else(NorenError::DataFailure)
     }
 
     /// Lists skeleton entries available in the backing database.
     pub fn enumerate_entries(&self) -> Vec<String> {
-        self.data
-            .as_ref()
-            .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
-            .unwrap_or_default()
+        let mut entries: Vec<String> = self.defaults.keys().cloned().collect();
+        if let Some(rdb) = &self.data {
+            for meta in rdb.entries() {
+                if !entries.contains(&meta.name) {
+                    entries.push(meta.name);
+                }
+            }
+        }
+
+        entries
     }
 }
 
