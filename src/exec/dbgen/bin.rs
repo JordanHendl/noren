@@ -24,7 +24,7 @@ use noren::{
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
         AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostCubemap, HostGeometry,
-        HostImage, ImageInfo, Joint, ShaderModule, Skeleton, primitives::Vertex,
+        HostImage, ImageInfo, Joint, ShaderModule, Skeleton, index_vertices, primitives::Vertex,
     },
     validate_database_layout,
 };
@@ -914,10 +914,6 @@ fn load_geometry_layer(
         .map(|iter| iter.into_rgba_f32().collect())
         .unwrap_or_else(|| vec![[1.0, 1.0, 1.0, 1.0]; vertex_count]);
 
-    let indices = reader
-        .read_indices()
-        .map(|iter| iter.into_u32().collect::<Vec<u32>>());
-
     let vertices: Vec<Vertex> = (0..vertex_count)
         .map(|idx| Vertex {
             position: positions[idx],
@@ -930,13 +926,20 @@ fn load_geometry_layer(
         })
         .collect();
 
+    let indices = reader
+        .read_indices()
+        .map(|iter| iter.into_u32().collect::<Vec<u32>>());
+
+    let (vertices, indices) = match indices {
+        Some(indices) => (vertices, indices),
+        None => index_vertices(vertices),
+    };
+
     Ok(GeometryLayer {
-        vertex_count: vertex_count.try_into().unwrap_or(u32::MAX),
-        index_count: indices
-            .as_ref()
-            .map(|list| list.len().try_into().unwrap_or(u32::MAX)),
+        vertex_count: vertices.len().try_into().unwrap_or(u32::MAX),
+        index_count: Some(indices.len().try_into().unwrap_or(u32::MAX)),
         vertices,
-        indices,
+        indices: Some(indices),
     })
 }
 

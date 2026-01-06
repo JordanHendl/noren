@@ -68,6 +68,53 @@ pub struct GeometryDBBuilder {
     pooled_uploads: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct VertexKey {
+    position: [u32; 3],
+    normal: [u32; 3],
+    tangent: [u32; 4],
+    uv: [u32; 2],
+    color: [u32; 4],
+    joint_indices: [u32; 4],
+    joint_weights: [u32; 4],
+}
+
+impl From<&Vertex> for VertexKey {
+    fn from(vertex: &Vertex) -> Self {
+        Self {
+            position: vertex.position.map(f32::to_bits),
+            normal: vertex.normal.map(f32::to_bits),
+            tangent: vertex.tangent.map(f32::to_bits),
+            uv: vertex.uv.map(f32::to_bits),
+            color: vertex.color.map(f32::to_bits),
+            joint_indices: vertex.joint_indices,
+            joint_weights: vertex.joint_weights.map(f32::to_bits),
+        }
+    }
+}
+
+pub fn index_vertices(vertices: Vec<Vertex>) -> (Vec<Vertex>, Vec<u32>) {
+    let mut unique = Vec::new();
+    let mut indices = Vec::with_capacity(vertices.len());
+    let mut lookup: HashMap<VertexKey, u32> = HashMap::new();
+
+    for vertex in vertices {
+        let key = VertexKey::from(&vertex);
+        let index = match lookup.get(&key) {
+            Some(&existing) => existing,
+            None => {
+                let new_index = u32::try_from(unique.len()).unwrap_or(u32::MAX);
+                unique.push(vertex);
+                lookup.insert(key, new_index);
+                new_index
+            }
+        };
+        indices.push(index);
+    }
+
+    (unique, indices)
+}
+
 impl GeometryLayer {
     pub fn populate_counts(&mut self) {
         self.vertex_count = count_from_len(self.vertices.len());

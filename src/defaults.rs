@@ -9,7 +9,7 @@ use crate::{
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
         AnimationTargetPath, AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, Joint,
-        Skeleton, primitives::Vertex,
+        Skeleton, index_vertices, primitives::Vertex,
     },
 };
 
@@ -197,10 +197,6 @@ fn load_default_fox_geometry() -> HostGeometry {
         .map(|iter| iter.into_rgba_f32().collect())
         .unwrap_or_else(|| vec![[1.0, 1.0, 1.0, 1.0]; vertex_count]);
 
-    let indices = reader
-        .read_indices()
-        .map(|iter| iter.into_u32().collect::<Vec<u32>>());
-
     let vertices: Vec<Vertex> = (0..vertex_count)
         .map(|idx| Vertex {
             position: positions[idx],
@@ -213,9 +209,18 @@ fn load_default_fox_geometry() -> HostGeometry {
         })
         .collect();
 
+    let indices = reader
+        .read_indices()
+        .map(|iter| iter.into_u32().collect::<Vec<u32>>());
+
+    let (vertices, indices) = match indices {
+        Some(indices) => (vertices, indices),
+        None => index_vertices(vertices),
+    };
+
     HostGeometry {
         vertices,
-        indices,
+        indices: Some(indices),
         ..Default::default()
     }
     .with_counts()
