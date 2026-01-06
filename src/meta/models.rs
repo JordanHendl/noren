@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::meta::{DeviceMesh, HostMesh};
 use crate::rdb::{AnimationClip, Skeleton};
@@ -8,13 +8,13 @@ use furikake::types::{AnimationClip as FurikakeAnimationClip, SkeletonHeader};
 #[derive(Clone, Debug)]
 pub struct HostRig {
     pub skeleton: Skeleton,
-    pub animation: Option<AnimationClip>,
+    pub animations: HashMap<String, AnimationClip>,
 }
 
 #[derive(Clone, Debug)]
 pub struct DeviceRig {
     pub skeleton: Handle<SkeletonHeader>,
-    pub animation: Option<Handle<FurikakeAnimationClip>>,
+    pub animations: HashMap<String, Handle<FurikakeAnimationClip>>,
 }
 
 #[derive(Clone, Debug)]

@@ -583,21 +583,22 @@ impl DB {
         }
 
         let skeleton = self.skeletons.fetch_skeleton(&skeleton_entry)?;
-        let animation_entry = model_rig_entry(entry, "animations/");
-        let animation = if self
+        let animation_prefix = model_rig_entry(entry, "animations/");
+        let animation_prefix_folder = format!("{animation_prefix}/");
+        let mut animations = HashMap::new();
+        for animation_entry in self
             .animations
             .enumerate_entries()
-            .iter()
-            .any(|key| key == &animation_entry)
+            .into_iter()
+            .filter(|key| key == &animation_prefix || key.starts_with(&animation_prefix_folder))
         {
-            Some(self.animations.fetch_animation(&animation_entry)?)
-        } else {
-            None
-        };
+            let animation = self.animations.fetch_animation(&animation_entry)?;
+            animations.insert(animation_entry, animation);
+        }
 
         Ok(Some(HostRig {
             skeleton,
-            animation,
+            animations,
         }))
     }
 
@@ -625,25 +626,28 @@ impl DB {
             return Ok(None);
         };
 
-        let animation_entry = model_rig_entry(entry, "animations/");
-        let animation = if self
+        let animation_prefix = model_rig_entry(entry, "animations/");
+        let animation_prefix_folder = format!("{animation_prefix}/");
+        let mut animations = HashMap::new();
+        for animation_entry in self
             .animations
             .enumerate_entries()
-            .iter()
-            .any(|key| key == &animation_entry)
+            .into_iter()
+            .filter(|key| key == &animation_prefix || key.starts_with(&animation_prefix_folder))
         {
-            ensure_furikake_animation(
+            let animation = ensure_furikake_animation(
                 &mut self.animations,
                 self.furikake.as_mut(),
                 &animation_entry,
-            )?
-        } else {
-            None
-        };
+            )?;
+            if let Some(animation) = animation {
+                animations.insert(animation_entry, animation);
+            }
+        }
 
         Ok(Some(DeviceRig {
             skeleton,
-            animation,
+            animations,
         }))
     }
 
