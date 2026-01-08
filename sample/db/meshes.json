@@ -1,21 +1,5 @@
 {
   "meshes": {
-    "mesh/cone": {
-      "name": "cone",
-      "geometry": "geometry/cone",
-      "material": "material/default",
-      "textures": [
-        "texture/default"
-      ]
-    },
-    "mesh/sphere": {
-      "name": "sphere",
-      "geometry": "geometry/sphere",
-      "material": "material/default",
-      "textures": [
-        "texture/default"
-      ]
-    },
     "mesh/cylinder": {
       "name": "cylinder",
       "geometry": "geometry/cylinder",
@@ -38,9 +22,33 @@
         "texture/default"
       ]
     },
+    "mesh/sphere": {
+      "name": "sphere",
+      "geometry": "geometry/sphere",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/cone": {
+      "name": "cone",
+      "geometry": "geometry/cone",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
     "mesh/fox": {
       "name": "fox",
       "geometry": "geometry/fox",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/cube": {
+      "name": "cube",
+      "geometry": "geometry/cube",
       "material": "material/default",
       "textures": [
         "texture/default"
@@ -53,14 +61,6 @@
       "textures": [
         "texture/imagery/tulips",
         "texture/imagery/peppers"
-      ]
-    },
-    "mesh/cube": {
-      "name": "cube",
-      "geometry": "geometry/cube",
-      "material": "material/default",
-      "textures": [
-        "texture/default"
       ]
     }
   }

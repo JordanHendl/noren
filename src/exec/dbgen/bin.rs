@@ -913,6 +913,18 @@ fn load_geometry_layer(
         .read_colors(0)
         .map(|iter| iter.into_rgba_f32().collect())
         .unwrap_or_else(|| vec![[1.0, 1.0, 1.0, 1.0]; vertex_count]);
+    let joints: Vec<[u32; 4]> = reader
+        .read_joints(0)
+        .map(|iter| {
+            iter.into_u16()
+                .map(|joint| joint.map(u32::from))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![[0; 4]; vertex_count]);
+    let weights: Vec<[f32; 4]> = reader
+        .read_weights(0)
+        .map(|iter| iter.into_f32().collect())
+        .unwrap_or_else(|| vec![[0.0; 4]; vertex_count]);
 
     let vertices: Vec<Vertex> = (0..vertex_count)
         .map(|idx| Vertex {
@@ -921,8 +933,8 @@ fn load_geometry_layer(
             tangent: tangents.get(idx).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]),
             uv: tex_coords.get(idx).copied().unwrap_or([0.0, 0.0]),
             color: colors.get(idx).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
-            joint_indices: [0; 4],
-            joint_weights: [0.0; 4],
+            joint_indices: joints.get(idx).copied().unwrap_or([0; 4]),
+            joint_weights: weights.get(idx).copied().unwrap_or([0.0; 4]),
         })
         .collect();
 
