@@ -29,6 +29,146 @@ pub const DEFAULT_GEOMETRY_ENTRIES: [&str; 7] = [
     "geometry/cone",
     "geometry/fox",
 ];
+const WITCH_GEOMETRY_PREFIX: &str = "geometry/witch";
+const WITCH_MATERIAL_PREFIX: &str = "material/witch";
+const WITCH_MESH_PREFIX: &str = "mesh/witch";
+const WITCH_MODEL_ENTRY: &str = "model/witch";
+const FOX_MATERIAL_ENTRY: &str = "material/fox";
+
+#[derive(Copy, Clone)]
+struct WitchPrimitiveDef {
+    mesh_index: usize,
+    primitive_index: usize,
+    mesh_name: &'static str,
+    material_index: usize,
+}
+
+const WITCH_MATERIAL_NAMES: [&str; 13] = [
+    "nails",
+    "Material",
+    "legs",
+    "Material.006",
+    "face txt",
+    "neck/ skin shading",
+    "Material.007",
+    "tights",
+    "sweater",
+    "Material.009",
+    "skin",
+    "hat",
+    "Material.004",
+];
+
+const WITCH_PRIMITIVES: [WitchPrimitiveDef; 18] = [
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 0,
+        mesh_name: "Cube",
+        material_index: 0,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 1,
+        mesh_name: "Cube",
+        material_index: 1,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 2,
+        mesh_name: "Cube",
+        material_index: 2,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 3,
+        mesh_name: "Cube",
+        material_index: 3,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 4,
+        mesh_name: "Cube",
+        material_index: 4,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 5,
+        mesh_name: "Cube",
+        material_index: 5,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 6,
+        mesh_name: "Cube",
+        material_index: 6,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 0,
+        primitive_index: 7,
+        mesh_name: "Cube",
+        material_index: 7,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 1,
+        primitive_index: 0,
+        mesh_name: "Cube.014",
+        material_index: 8,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 1,
+        primitive_index: 1,
+        mesh_name: "Cube.014",
+        material_index: 3,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 1,
+        primitive_index: 2,
+        mesh_name: "Cube.014",
+        material_index: 9,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 1,
+        primitive_index: 3,
+        mesh_name: "Cube.014",
+        material_index: 10,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 1,
+        primitive_index: 4,
+        mesh_name: "Cube.014",
+        material_index: 6,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 2,
+        primitive_index: 0,
+        mesh_name: "Cube.003",
+        material_index: 1,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 3,
+        primitive_index: 0,
+        mesh_name: "Circle.004",
+        material_index: 11,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 3,
+        primitive_index: 1,
+        mesh_name: "Circle.004",
+        material_index: 6,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 3,
+        primitive_index: 2,
+        mesh_name: "Circle.004",
+        material_index: 9,
+    },
+    WitchPrimitiveDef {
+        mesh_index: 3,
+        primitive_index: 3,
+        mesh_name: "Circle.004",
+        material_index: 12,
+    },
+];
 
 pub fn default_image() -> HostImage {
     let info = ImageInfo {
@@ -65,7 +205,7 @@ pub fn default_sounds() -> Vec<AudioClip> {
 pub fn default_primitives() -> Vec<(String, HostGeometry)> {
     let [sphere, cube, quad, plane, cylinder, cone, fox] = DEFAULT_GEOMETRY_ENTRIES;
 
-    vec![
+    let mut entries = vec![
         (sphere.into(), make_sphere_geometry(0.5, 32, 16)),
         (cube.into(), make_cube_geometry(0.5)),
         (quad.into(), make_quad_geometry()),
@@ -73,7 +213,11 @@ pub fn default_primitives() -> Vec<(String, HostGeometry)> {
         (cylinder.into(), make_cylinder_geometry(0.5, 1.0, 32)),
         (cone.into(), make_cone_geometry(0.5, 1.0, 32)),
         (fox.into(), load_default_fox_geometry()),
-    ]
+    ];
+
+    entries.extend(load_default_witch_geometries());
+
+    entries
 }
 
 pub fn default_skeletons() -> Vec<(String, Skeleton)> {
@@ -81,10 +225,7 @@ pub fn default_skeletons() -> Vec<(String, Skeleton)> {
 }
 
 pub fn default_animations() -> Vec<(String, AnimationClip)> {
-    vec![(
-        DEFAULT_ANIMATION_ENTRY.to_string(),
-        load_default_fox_animation(),
-    )]
+    load_default_fox_animations()
 }
 
 pub fn inject_default_layouts(meta: &mut MetaLayout) {
@@ -124,12 +265,23 @@ pub fn ensure_default_assets(
         let mesh_name = geometry.trim_start_matches("geometry/");
         let mesh_key = format!("mesh/{mesh_name}");
         let model_key = format!("model/{mesh_name}");
+        let (material, textures) = if geometry == "geometry/fox" {
+            (
+                Some(FOX_MATERIAL_ENTRY.to_string()),
+                Vec::new(),
+            )
+        } else {
+            (
+                Some(DEFAULT_MATERIAL_ENTRY.into()),
+                vec![DEFAULT_TEXTURE_ENTRY.into()],
+            )
+        };
 
         meshes.entry(mesh_key.clone()).or_insert(MeshLayout {
             name: Some(mesh_name.to_string()),
             geometry: geometry.to_string(),
-            material: Some(DEFAULT_MATERIAL_ENTRY.into()),
-            textures: vec![DEFAULT_TEXTURE_ENTRY.into()],
+            material,
+            textures,
         });
 
         models.entry(model_key).or_insert(ModelLayout {
@@ -137,6 +289,46 @@ pub fn ensure_default_assets(
             meshes: vec![mesh_key],
         });
     }
+
+    materials
+        .entry(FOX_MATERIAL_ENTRY.into())
+        .or_insert(MaterialLayout {
+            name: Some("fox_material".into()),
+            render_mask: 0,
+            texture_lookups: MaterialTextureLookups::default(),
+        });
+
+    let mut witch_meshes = Vec::new();
+    for primitive in WITCH_PRIMITIVES {
+        let mesh_slug = slugify(primitive.mesh_name);
+        let geometry_key =
+            format!("{WITCH_GEOMETRY_PREFIX}/{mesh_slug}/{}", primitive.primitive_index);
+        let mesh_key = format!("{WITCH_MESH_PREFIX}/{mesh_slug}/{}", primitive.primitive_index);
+        let material_name = WITCH_MATERIAL_NAMES[primitive.material_index];
+        let material_key = format!("{WITCH_MATERIAL_PREFIX}/{}", slugify(material_name));
+
+        materials
+            .entry(material_key.clone())
+            .or_insert(MaterialLayout {
+                name: Some(material_name.to_string()),
+                render_mask: 0,
+                texture_lookups: MaterialTextureLookups::default(),
+            });
+
+        meshes.entry(mesh_key.clone()).or_insert(MeshLayout {
+            name: Some(format!("Witch {mesh_slug} {}", primitive.primitive_index)),
+            geometry: geometry_key,
+            material: Some(material_key),
+            textures: Vec::new(),
+        });
+
+        witch_meshes.push(mesh_key);
+    }
+
+    models.entry(WITCH_MODEL_ENTRY.into()).or_insert(ModelLayout {
+        name: Some("witch".into()),
+        meshes: witch_meshes,
+    });
 }
 
 fn make_vertex(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
@@ -172,6 +364,40 @@ fn load_default_fox_geometry() -> HostGeometry {
         .primitives()
         .next()
         .expect("embedded fox glb missing primitives");
+    load_geometry_from_primitive(primitive, &buffers)
+}
+
+fn load_default_witch_geometries() -> Vec<(String, HostGeometry)> {
+    let (doc, buffers, _) =
+        gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Witch.glb"))
+            .expect("load embedded witch glb");
+    let meshes: Vec<_> = doc.meshes().collect();
+    let mut geometries = Vec::with_capacity(WITCH_PRIMITIVES.len());
+
+    for primitive in WITCH_PRIMITIVES {
+        let mesh = meshes
+            .get(primitive.mesh_index)
+            .expect("embedded witch glb missing mesh");
+        let gltf_primitive = mesh
+            .primitives()
+            .nth(primitive.primitive_index)
+            .expect("embedded witch glb missing primitive");
+        let geometry = load_geometry_from_primitive(gltf_primitive, &buffers);
+        let mesh_slug = slugify(primitive.mesh_name);
+        let entry = format!(
+            "{WITCH_GEOMETRY_PREFIX}/{mesh_slug}/{}",
+            primitive.primitive_index
+        );
+        geometries.push((entry, geometry));
+    }
+
+    geometries
+}
+
+fn load_geometry_from_primitive(
+    primitive: gltf::Primitive,
+    buffers: &[gltf::buffer::Data],
+) -> HostGeometry {
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()].0[..]));
 
     let positions: Vec<[f32; 3]> = reader
@@ -308,7 +534,7 @@ fn load_default_fox_skeleton() -> Skeleton {
     }
 }
 
-fn load_default_fox_animation() -> AnimationClip {
+fn load_default_fox_animations() -> Vec<(String, AnimationClip)> {
     let (doc, buffers, _) =
         gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
             .expect("load embedded fox glb");
@@ -322,11 +548,37 @@ fn load_default_fox_animation() -> AnimationClip {
                 .collect::<std::collections::HashMap<_, _>>()
         })
         .unwrap_or_default();
-    let animation = doc
-        .animations()
-        .next()
-        .expect("embedded fox glb missing animations");
+    let mut entries = Vec::new();
 
+    for (index, animation) in doc.animations().enumerate() {
+        let clip_name = animation
+            .name()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| format!("fox_animation_{index}"));
+        let entry_key = animation
+            .name()
+            .map(|name| format!("animations/fox/{}", slugify(name)))
+            .unwrap_or_else(|| format!("animations/fox/{index}"));
+        let clip = build_animation_clip(animation, &buffers, &node_to_joint, &clip_name);
+        entries.push((entry_key, clip));
+    }
+
+    if let Some((_, clip)) = entries.first() {
+        entries.insert(
+            0,
+            (DEFAULT_ANIMATION_ENTRY.to_string(), clip.clone()),
+        );
+    }
+
+    entries
+}
+
+fn build_animation_clip(
+    animation: gltf::Animation,
+    buffers: &[gltf::buffer::Data],
+    node_to_joint: &std::collections::HashMap<usize, usize>,
+    name: &str,
+) -> AnimationClip {
     let sampler_count = animation.samplers().count();
     let mut samplers: Vec<Option<AnimationSampler>> = vec![None; sampler_count];
     let mut channels = Vec::new();
@@ -405,17 +657,36 @@ fn load_default_fox_animation() -> AnimationClip {
         .iter()
         .flat_map(|sampler| sampler.input.iter().copied())
         .fold(0.0, f32::max);
-    let name = animation
-        .name()
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| DEFAULT_ANIMATION_ENTRY.to_string());
 
     AnimationClip {
-        name,
+        name: name.to_string(),
         duration_seconds,
         samplers,
         channels,
         data: Vec::new(),
+    }
+}
+
+fn slugify(value: &str) -> String {
+    let mut out = String::new();
+    let mut prev_sep = false;
+    for ch in value.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            prev_sep = false;
+        } else if !prev_sep {
+            out.push('_');
+            prev_sep = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "material".to_string()
+    } else {
+        out
     }
 }
 

@@ -1,10 +1,164 @@
 {
   "materials": {
+    "material/witch/material_007": {
+      "name": "Material.007",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
     "material/default": {
       "name": "Default Material",
       "render_mask": 0,
       "texture_lookups": {
         "base_color": "texture/default",
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/material": {
+      "name": "Material",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/tights": {
+      "name": "tights",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/nails": {
+      "name": "nails",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/material_006": {
+      "name": "Material.006",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/neck_skin_shading": {
+      "name": "neck/ skin shading",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/material_009": {
+      "name": "Material.009",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/face_txt": {
+      "name": "face txt",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/fox": {
+      "name": "fox_material",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/sweater": {
+      "name": "sweater",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/hat": {
+      "name": "hat",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/skin": {
+      "name": "skin",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/legs": {
+      "name": "legs",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/material_004": {
+      "name": "Material.004",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": null,
         "normal": null,
         "metallic_roughness": null,
         "occlusion": null,
