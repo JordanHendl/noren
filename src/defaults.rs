@@ -357,7 +357,7 @@ pub fn ensure_default_assets(
                 name: Some(material_name.to_string()),
                 render_mask: 0,
                 material_type: if emissive_texture_key.is_some() {
-                    MaterialType::Textured
+                    MaterialType::EmissiveOnly
                 } else {
                     MaterialType::VertexColor
                 },

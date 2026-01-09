@@ -180,6 +180,7 @@ pub struct AtlasFrame {
 pub enum MaterialType {
     #[default]
     Textured,
+    EmissiveOnly,
     VertexColor,
 }
 

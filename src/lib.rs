@@ -9,7 +9,6 @@ use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 use dashi::Context;
 use defaults::inject_default_layouts;
 use furikake::{
-    BindlessState,
     reservations::{
         bindless_animation_keyframes::ReservedBindlessAnimationKeyframes,
         bindless_animation_tracks::ReservedBindlessAnimationTracks,
@@ -17,11 +16,9 @@ use furikake::{
         bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials,
         bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
         bindless_vertices::ReservedBindlessVertices,
-    },
-    types::{
-        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,
-        Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot,
-    },
+    }, types::{
+        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform, Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot, MATERIAL_FLAG_EMISSIVE_ONLY, MATERIAL_FLAG_PBR_NORMAL, MATERIAL_FLAG_VERTEX_COLOR
+    }, BindlessState
 };
 pub use furikake_state::FurikakeState;
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -913,8 +910,9 @@ impl DB {
         let mut furikake_material = FurikakeMaterial {
             render_mask: material_def.render_mask as u32,
             material_flags: match material_def.material_type {
-                MaterialType::Textured => 1 << 2,
-                MaterialType::VertexColor => 1 << 0,
+                MaterialType::Textured => MATERIAL_FLAG_PBR_NORMAL.into(),
+                MaterialType::VertexColor => MATERIAL_FLAG_VERTEX_COLOR.into(),
+                MaterialType::EmissiveOnly => MATERIAL_FLAG_EMISSIVE_ONLY.into(),
             },
             ..Default::default()
         };
