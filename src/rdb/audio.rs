@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::info;
 
 use super::DatabaseEntry;
 use crate::{
@@ -104,14 +105,17 @@ impl AudioDB {
     pub fn fetch_clip(&mut self, entry: DatabaseEntry<'_>) -> Result<AudioClip, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(clip) = rdb.fetch::<AudioClip>(entry) {
+                info!(resource = "audio", entry = %entry, source = "rdb");
                 return Ok(clip);
             }
         }
 
-        self.defaults
-            .get(entry)
-            .cloned()
-            .ok_or(NorenError::DataFailure())
+        if let Some(clip) = self.defaults.get(entry) {
+            info!(resource = "audio", entry = %entry, source = "default");
+            return Ok(clip.clone());
+        }
+
+        Err(NorenError::DataFailure())
     }
 
     /// Fetches a fully loaded sound clip by entry name.

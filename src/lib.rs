@@ -898,6 +898,10 @@ impl DB {
 
         let mut furikake_material = FurikakeMaterial {
             render_mask: material_def.render_mask as u32,
+            material_flags: match material_def.material_type {
+                MaterialType::Textured =>1 << 2,
+                MaterialType::VertexColor => 1 << 0,
+            },
             ..Default::default()
         };
 

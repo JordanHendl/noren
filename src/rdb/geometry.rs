@@ -6,6 +6,7 @@ use std::{
 
 use dashi::{Buffer, BufferInfo, BufferUsage, BufferView, Context, Handle, MemoryVisibility};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::{DatabaseEntry, primitives::Vertex};
 use crate::{DataCache, RDBView, defaults::default_primitives, error::NorenError};
@@ -494,15 +495,17 @@ impl GeometryDB {
     ) -> Result<HostGeometry, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(geometry) = rdb.fetch::<HostGeometry>(entry) {
+                info!(resource = "geometry", entry = %entry, source = "rdb");
                 return Ok(geometry.with_counts());
             }
         }
 
-        self.defaults
-            .get(entry)
-            .cloned()
-            .map(HostGeometry::with_counts)
-            .ok_or(NorenError::DataFailure())
+        if let Some(geometry) = self.defaults.get(entry) {
+            info!(resource = "geometry", entry = %entry, source = "default");
+            return Ok(geometry.clone().with_counts());
+        }
+
+        Err(NorenError::DataFailure())
     }
 
     /// Ensures the geometry is loaded on the GPU and increments its reference count.

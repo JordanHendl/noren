@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::DatabaseEntry;
 use crate::{RDBView, utils::NorenError};
@@ -77,6 +78,7 @@ impl ShaderDB {
         if let Some(rdb) = &mut self.data {
             let module = rdb.fetch::<ShaderModule>(entry)?;
             if module.is_spirv() {
+                info!(resource = "shader", entry = %entry, source = "rdb");
                 return Ok(module);
             }
 

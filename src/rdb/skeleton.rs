@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::DatabaseEntry;
 use crate::{RDBView, defaults::default_skeletons, utils::NorenError};
@@ -91,14 +92,17 @@ impl SkeletonDB {
     pub fn fetch_skeleton(&mut self, entry: DatabaseEntry<'_>) -> Result<Skeleton, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(skeleton) = rdb.fetch::<Skeleton>(entry) {
+                info!(resource = "skeleton", entry = %entry, source = "rdb");
                 return Ok(skeleton);
             }
         }
 
-        self.defaults
-            .get(entry)
-            .cloned()
-            .ok_or_else(NorenError::DataFailure)
+        if let Some(skeleton) = self.defaults.get(entry) {
+            info!(resource = "skeleton", entry = %entry, source = "default");
+            return Ok(skeleton.clone());
+        }
+
+        Err(NorenError::DataFailure())
     }
 
     /// Lists skeleton entries available in the backing database.

@@ -6,6 +6,7 @@ use std::{
 
 use dashi::{Context, Handle, Image};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use crate::{
     DataCache, RDBView,
@@ -284,14 +285,17 @@ impl ImageDB {
     pub fn fetch_raw_image(&mut self, entry: DatabaseEntry<'_>) -> Result<HostImage, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(image) = rdb.fetch::<HostImage>(entry) {
+                info!(resource = "image", entry = %entry, source = "rdb");
                 return Ok(image);
             }
         }
 
-        self.defaults
-            .get(entry)
-            .cloned()
-            .ok_or(NorenError::DataFailure())
+        if let Some(image) = self.defaults.get(entry) {
+            info!(resource = "image", entry = %entry, source = "default");
+            return Ok(image.clone());
+        }
+
+        Err(NorenError::DataFailure())
     }
 
     /// Retrieves host cubemap data from the backing database file.
@@ -301,6 +305,7 @@ impl ImageDB {
     ) -> Result<HostCubemap, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(cubemap) = rdb.fetch::<HostCubemap>(entry) {
+                info!(resource = "cubemap", entry = %entry, source = "rdb");
                 return Ok(cubemap);
             }
         }

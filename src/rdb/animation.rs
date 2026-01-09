@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::DatabaseEntry;
 use crate::{RDBView, defaults::default_animations, utils::NorenError};
@@ -130,14 +131,17 @@ impl AnimationDB {
     ) -> Result<AnimationClip, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(animation) = rdb.fetch::<AnimationClip>(entry) {
+                info!(resource = "animation", entry = %entry, source = "rdb");
                 return Ok(animation);
             }
         }
 
-        self.defaults
-            .get(entry)
-            .cloned()
-            .ok_or_else(NorenError::DataFailure)
+        if let Some(animation) = self.defaults.get(entry) {
+            info!(resource = "animation", entry = %entry, source = "default");
+            return Ok(animation.clone());
+        }
+
+        Err(NorenError::DataFailure())
     }
 
     /// Lists animation entries available in the backing database.
