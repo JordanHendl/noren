@@ -780,6 +780,20 @@ impl DB {
         })
     }
 
+    /// Fetches a material layout without loading textures or images.
+    pub fn fetch_material_layout(&self, entry: &str) -> Result<MaterialLayout, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(|| NorenError::LookupFailure())?;
+
+        layout
+            .materials
+            .get(entry)
+            .cloned()
+            .ok_or_else(|| NorenError::LookupFailure())
+    }
+
     /// Builds a CPU-side material with host images and furikake definitions.
     ///
     /// Returns the material alongside an optional furikake bindless handle when a
@@ -899,7 +913,7 @@ impl DB {
         let mut furikake_material = FurikakeMaterial {
             render_mask: material_def.render_mask as u32,
             material_flags: match material_def.material_type {
-                MaterialType::Textured =>1 << 2,
+                MaterialType::Textured => 1 << 2,
                 MaterialType::VertexColor => 1 << 0,
             },
             ..Default::default()
