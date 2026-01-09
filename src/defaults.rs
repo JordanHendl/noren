@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 
-use gltf::animation::util::ReadOutputs;
+use gltf::{animation::util::ReadOutputs, image::Format};
 
 use crate::{
     parsing::{
@@ -31,9 +31,11 @@ pub const DEFAULT_GEOMETRY_ENTRIES: [&str; 7] = [
     "geometry/fox",
 ];
 const WITCH_GEOMETRY_PREFIX: &str = "geometry/witch";
+const WITCH_IMAGE_PREFIX: &str = "imagery/witch";
 const WITCH_MATERIAL_PREFIX: &str = "material/witch";
 const WITCH_MESH_PREFIX: &str = "mesh/witch";
 const WITCH_MODEL_ENTRY: &str = "model/witch";
+const WITCH_TEXTURE_PREFIX: &str = "texture/witch";
 const FOX_MATERIAL_ENTRY: &str = "material/fox";
 
 #[derive(Copy, Clone)]
@@ -58,6 +60,24 @@ const WITCH_MATERIAL_NAMES: [&str; 13] = [
     "skin",
     "hat",
     "Material.004",
+];
+
+const WITCH_IMAGE_NAMES: [&str; 3] = ["hands", "purple smile", "sweater"];
+
+const WITCH_EMISSIVE_TEXTURES: [Option<&str>; 13] = [
+    Some("hands"),
+    None,
+    None,
+    None,
+    Some("purple smile"),
+    None,
+    None,
+    None,
+    Some("sweater"),
+    None,
+    None,
+    None,
+    None,
 ];
 
 const WITCH_PRIMITIVES: [WitchPrimitiveDef; 18] = [
@@ -183,6 +203,12 @@ pub fn default_image() -> HostImage {
     HostImage::new(info, vec![255, 255, 255, 255])
 }
 
+pub fn default_images() -> Vec<(String, HostImage)> {
+    let mut images = vec![(DEFAULT_IMAGE_ENTRY.to_string(), default_image())];
+    images.extend(load_default_witch_images());
+    images
+}
+
 pub fn default_sound() -> AudioClip {
     let data = include_bytes!("../sample/sample_pre/audio/beep.wav").to_vec();
     AudioClip::new(DEFAULT_SOUND_ENTRY.to_string(), AudioFormat::Wav, data)
@@ -301,6 +327,16 @@ pub fn ensure_default_assets(
             texture_lookups: MaterialTextureLookups::default(),
         });
 
+    for image_name in WITCH_IMAGE_NAMES {
+        let slug = slugify(image_name);
+        let image_key = format!("{WITCH_IMAGE_PREFIX}/{slug}");
+        let texture_key = format!("{WITCH_TEXTURE_PREFIX}/{slug}");
+        textures.entry(texture_key).or_insert(TextureLayout {
+            image: image_key,
+            name: Some(image_name.to_string()),
+        });
+    }
+
     let mut witch_meshes = Vec::new();
     for primitive in WITCH_PRIMITIVES {
         let mesh_slug = slugify(primitive.mesh_name);
@@ -309,14 +345,26 @@ pub fn ensure_default_assets(
         let mesh_key = format!("{WITCH_MESH_PREFIX}/{mesh_slug}/{}", primitive.primitive_index);
         let material_name = WITCH_MATERIAL_NAMES[primitive.material_index];
         let material_key = format!("{WITCH_MATERIAL_PREFIX}/{}", slugify(material_name));
+        let emissive_texture = WITCH_EMISSIVE_TEXTURES[primitive.material_index];
+        let emissive_texture_key = emissive_texture.map(|texture_name| {
+            let texture_slug = slugify(texture_name);
+            format!("{WITCH_TEXTURE_PREFIX}/{texture_slug}")
+        });
 
         materials
             .entry(material_key.clone())
             .or_insert(MaterialLayout {
                 name: Some(material_name.to_string()),
                 render_mask: 0,
-                material_type: MaterialType::VertexColor,
-                texture_lookups: MaterialTextureLookups::default(),
+                material_type: if emissive_texture_key.is_some() {
+                    MaterialType::Textured
+                } else {
+                    MaterialType::VertexColor
+                },
+                texture_lookups: MaterialTextureLookups {
+                    emissive: emissive_texture_key,
+                    ..Default::default()
+                },
             });
 
         meshes.entry(mesh_key.clone()).or_insert(MeshLayout {
@@ -396,6 +444,55 @@ fn load_default_witch_geometries() -> Vec<(String, HostGeometry)> {
     }
 
     geometries
+}
+
+fn load_default_witch_images() -> Vec<(String, HostImage)> {
+    let (doc, _, images) = gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Witch.glb"))
+        .expect("load embedded witch glb");
+    let mut entries = Vec::with_capacity(images.len());
+
+    for (index, image) in images.iter().enumerate() {
+        let image_name = doc
+            .images()
+            .nth(index)
+            .and_then(|image| image.name())
+            .unwrap_or("witch_texture");
+        let slug = slugify(image_name);
+        let entry = format!("{WITCH_IMAGE_PREFIX}/{slug}");
+        let data = rgba_from_gltf_image(image);
+        let info = ImageInfo {
+            name: entry.clone(),
+            dim: [image.width, image.height, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        entries.push((entry, HostImage::new(info, data)));
+    }
+
+    entries
+}
+
+fn rgba_from_gltf_image(image: &gltf::image::Data) -> Vec<u8> {
+    match image.format {
+        Format::R8G8B8A8 => image.pixels.clone(),
+        Format::R8G8B8 => image
+            .pixels
+            .chunks_exact(3)
+            .flat_map(|chunk| [chunk[0], chunk[1], chunk[2], 255])
+            .collect(),
+        Format::R8G8 => image
+            .pixels
+            .chunks_exact(2)
+            .flat_map(|chunk| [chunk[0], chunk[1], 0, 255])
+            .collect(),
+        Format::R8 => image
+            .pixels
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect(),
+        _ => panic!("unsupported witch texture format {:?}", image.format),
+    }
 }
 
 fn load_geometry_from_primitive(

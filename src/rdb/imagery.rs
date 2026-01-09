@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::{
     DataCache, RDBView,
-    defaults::{DEFAULT_IMAGE_ENTRY, default_image},
+    defaults::default_images,
     utils::NorenError,
 };
 
@@ -195,7 +195,7 @@ impl ImageDB {
             ctx: ctx.and_then(NonNull::new),
             cache: Default::default(),
             cubemap_cache: Default::default(),
-            defaults: std::iter::once((DEFAULT_IMAGE_ENTRY.to_string(), default_image())).collect(),
+            defaults: default_images().into_iter().collect(),
         }
     }
 
