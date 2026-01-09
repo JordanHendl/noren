@@ -897,7 +897,7 @@ impl DB {
         };
 
         let mut furikake_material = FurikakeMaterial {
-            render_mask: material_def.render_mask,
+            render_mask: material_def.render_mask as u32,
             ..Default::default()
         };
 
@@ -940,7 +940,7 @@ impl DB {
                 };
                 texture_ids.insert(tex_key.clone(), id);
                 id
-            };
+            } as u32;
 
             match slot {
                 MaterialTextureSlot::BaseColor => furikake_material.base_color_texture_id = id,
@@ -1449,7 +1449,7 @@ where
 
     let mut textures = Vec::new();
     let mut furikake_material = FurikakeMaterial {
-        render_mask: material_def.render_mask,
+        render_mask: material_def.render_mask as u32,
         ..Default::default()
     };
 
@@ -1483,7 +1483,7 @@ where
             textures.push(make_texture(name, image, furikake_id));
             lookup_indices.insert(tex_key.to_string(), id);
             id
-        };
+        } as u32;
 
         match slot {
             MaterialTextureSlot::BaseColor => furikake_material.base_color_texture_id = id,
