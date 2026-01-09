@@ -1485,6 +1485,16 @@ fn load_skeleton(base_dir: &Path, entry: &SkeletonEntry) -> Result<Skeleton, Bui
 fn load_animation(base_dir: &Path, entry: &AnimationEntry) -> Result<AnimationClip, BuildError> {
     let path = resolve_path(base_dir, &entry.file);
     let (doc, buffers, _) = gltf::import(path)?;
+    let node_to_joint = doc
+        .skins()
+        .next()
+        .map(|skin| {
+            skin.joints()
+                .enumerate()
+                .map(|(idx, joint)| (joint.index(), idx))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
 
     let animation = if let Some(ref name) = entry.animation {
         doc.animations()
@@ -1551,9 +1561,14 @@ fn load_animation(base_dir: &Path, entry: &AnimationEntry) -> Result<AnimationCl
             gltf::animation::Property::MorphTargetWeights => AnimationTargetPath::Weights,
         };
 
+        let target_node = node_to_joint
+            .get(&target.node().index())
+            .copied()
+            .unwrap_or_else(|| target.node().index());
+
         channels.push(AnimationChannel {
             sampler_index,
-            target_node: target.node().index(),
+            target_node,
             target_path,
         });
     }

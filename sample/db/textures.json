@@ -1,15 +1,15 @@
 {
   "textures": {
-    "texture/imagery/peppers": {
-      "image": "imagery/peppers",
-      "name": null
-    },
     "texture/default": {
       "image": "imagery/default",
       "name": "Default Texture"
     },
     "texture/imagery/tulips": {
       "image": "imagery/tulips",
+      "name": null
+    },
+    "texture/imagery/peppers": {
+      "image": "imagery/peppers",
       "name": null
     }
   }

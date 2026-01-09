@@ -312,6 +312,16 @@ fn load_default_fox_animation() -> AnimationClip {
     let (doc, buffers, _) =
         gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
             .expect("load embedded fox glb");
+    let node_to_joint = doc
+        .skins()
+        .next()
+        .map(|skin| {
+            skin.joints()
+                .enumerate()
+                .map(|(idx, joint)| (joint.index(), idx))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     let animation = doc
         .animations()
         .next()
@@ -372,9 +382,14 @@ fn load_default_fox_animation() -> AnimationClip {
             gltf::animation::Property::MorphTargetWeights => AnimationTargetPath::Weights,
         };
 
+        let target_node = node_to_joint
+            .get(&target.node().index())
+            .copied()
+            .unwrap_or_else(|| target.node().index());
+
         channels.push(AnimationChannel {
             sampler_index,
-            target_node: target.node().index(),
+            target_node,
             target_path,
         });
     }
