@@ -769,6 +769,46 @@ fn make_cube_geometry(half_extent: f32) -> HostGeometry {
         ),
         (
             [half_extent, half_extent, half_extent],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0],
+        ),
+        (
+            [half_extent, half_extent, -half_extent],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0],
+        ),
+        (
+            [-half_extent, half_extent, -half_extent],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0],
+        ),
+        (
+            [-half_extent, half_extent, half_extent],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0],
+        ),
+        (
+            [half_extent, -half_extent, half_extent],
+            [0.0, -1.0, 0.0],
+            [1.0, 1.0],
+        ),
+        (
+            [half_extent, -half_extent, -half_extent],
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0],
+        ),
+        (
+            [-half_extent, -half_extent, -half_extent],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0],
+        ),
+        (
+            [-half_extent, -half_extent, half_extent],
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0],
+        ),
+        (
+            [half_extent, half_extent, half_extent],
             [1.0, 0.0, 0.0],
             [1.0, 0.0],
         ),
