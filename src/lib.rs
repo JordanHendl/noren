@@ -2199,8 +2199,8 @@ mod tests {
     use super::*;
     use crate::parsing::{
         ComputeShaderLayout, GraphicsShaderLayout, MaterialLayout, MaterialLayoutFile,
-        MaterialTextureLookups, MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile,
-        ShaderLayoutFile, TextureLayout, TextureLayoutFile,
+        MaterialTextureLookups, MaterialType, MeshLayout, MeshLayoutFile, ModelLayout,
+        ModelLayoutFile, ShaderLayoutFile, TextureLayout, TextureLayoutFile,
     };
     use crate::rdb::{
         ShaderModule,
@@ -2266,6 +2266,7 @@ mod tests {
             MaterialLayout {
                 name: None,
                 render_mask: 3,
+                material_type: MaterialType::Textured,
                 texture_lookups: MaterialTextureLookups {
                     base_color: Some(MESH_TEXTURE_ENTRY.to_string()),
                     normal: None,
@@ -2281,6 +2282,7 @@ mod tests {
             MaterialLayout {
                 name: Some("Override Material".to_string()),
                 render_mask: 1,
+                material_type: MaterialType::Textured,
                 texture_lookups: MaterialTextureLookups {
                     base_color: Some(MESH_TEXTURE_ENTRY.to_string()),
                     normal: Some(MESH_TEXTURE_ENTRY.to_string()),
@@ -2622,6 +2624,7 @@ mod tests {
             MaterialLayout {
                 name: Some("Base Material".to_string()),
                 render_mask: 0,
+                material_type: MaterialType::Textured,
                 texture_lookups: MaterialTextureLookups {
                     base_color: Some(MESH_TEXTURE_ENTRY.to_string()),
                     ..Default::default()
@@ -2720,6 +2723,7 @@ mod tests {
                     ..Default::default()
                 },
                 render_mask: 0,
+                material_type: MaterialType::Textured,
             },
         );
 

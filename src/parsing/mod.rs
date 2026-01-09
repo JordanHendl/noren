@@ -176,11 +176,21 @@ pub struct AtlasFrame {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialType {
+    #[default]
+    Textured,
+    VertexColor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MaterialLayout {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub render_mask: u16,
+    #[serde(default)]
+    pub material_type: MaterialType,
     #[serde(default)]
     pub texture_lookups: MaterialTextureLookups,
 }

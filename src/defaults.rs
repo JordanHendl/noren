@@ -4,7 +4,8 @@ use gltf::animation::util::ReadOutputs;
 
 use crate::{
     parsing::{
-        MaterialLayout, MaterialTextureLookups, MeshLayout, MetaLayout, ModelLayout, TextureLayout,
+        MaterialLayout, MaterialTextureLookups, MaterialType, MeshLayout, MetaLayout, ModelLayout,
+        TextureLayout,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -255,6 +256,7 @@ pub fn ensure_default_assets(
         .or_insert(MaterialLayout {
             name: Some("Default Material".into()),
             render_mask: 0,
+            material_type: MaterialType::VertexColor,
             texture_lookups: MaterialTextureLookups {
                 base_color: Some(DEFAULT_TEXTURE_ENTRY.into()),
                 ..Default::default()
@@ -295,6 +297,7 @@ pub fn ensure_default_assets(
         .or_insert(MaterialLayout {
             name: Some("fox_material".into()),
             render_mask: 0,
+            material_type: MaterialType::VertexColor,
             texture_lookups: MaterialTextureLookups::default(),
         });
 
@@ -312,6 +315,7 @@ pub fn ensure_default_assets(
             .or_insert(MaterialLayout {
                 name: Some(material_name.to_string()),
                 render_mask: 0,
+                material_type: MaterialType::VertexColor,
                 texture_lookups: MaterialTextureLookups::default(),
             });
 

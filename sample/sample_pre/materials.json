@@ -2,6 +2,7 @@
   "materials": {
     "material/quad": {
       "name": "Quad Material",
+      "material_type": "textured",
       "render_mask": 1,
       "texture_lookups": {
         "base_color": "texture/imagery/tulips"
@@ -9,6 +10,7 @@
     },
     "material/multi_bind": {
       "name": "Multi Bind Quad",
+      "material_type": "textured",
       "render_mask": 3,
       "texture_lookups": {
         "base_color": "texture/imagery/tulips",
@@ -17,6 +19,7 @@
     },
     "material/bind_table": {
       "name": "Bind Table Quad",
+      "material_type": "textured",
       "render_mask": 2,
       "texture_lookups": {
         "base_color": "texture/imagery/peppers"
