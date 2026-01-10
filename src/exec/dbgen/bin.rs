@@ -909,10 +909,17 @@ fn load_geometry_layer(
         .map(|iter| iter.into_f32().collect())
         .unwrap_or_else(|| vec![[0.0, 0.0]; vertex_count]);
 
+    let emissive_factor = primitive.material().emissive_factor();
+    let default_color = [
+        emissive_factor[0],
+        emissive_factor[1],
+        emissive_factor[2],
+        1.0,
+    ];
     let colors: Vec<[f32; 4]> = reader
         .read_colors(0)
         .map(|iter| iter.into_rgba_f32().collect())
-        .unwrap_or_else(|| vec![[1.0, 1.0, 1.0, 1.0]; vertex_count]);
+        .unwrap_or_else(|| vec![default_color; vertex_count]);
     let joints: Vec<[u32; 4]> = reader
         .read_joints(0)
         .map(|iter| {
@@ -932,7 +939,7 @@ fn load_geometry_layer(
             normal: normals.get(idx).copied().unwrap_or([0.0, 0.0, 1.0]),
             tangent: tangents.get(idx).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]),
             uv: tex_coords.get(idx).copied().unwrap_or([0.0, 0.0]),
-            color: colors.get(idx).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
+            color: colors.get(idx).copied().unwrap_or(default_color),
             joint_indices: joints.get(idx).copied().unwrap_or([0; 4]),
             joint_weights: weights.get(idx).copied().unwrap_or([0.0; 4]),
         })
