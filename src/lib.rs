@@ -1320,7 +1320,8 @@ fn vertex_buffer_slot(vertices: &[Vertex]) -> VertexBufferSlot {
     if uses_skinning {
         VertexBufferSlot::Skeleton
     } else {
-        VertexBufferSlot::Simple
+        // TODO fixhis
+        VertexBufferSlot::Skeleton 
     }
 }
 
