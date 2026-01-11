@@ -4,8 +4,8 @@ use gltf::{animation::util::ReadOutputs, image::Format};
 
 use crate::{
     parsing::{
-        MaterialLayout, MaterialTextureLookups, MaterialType, MeshLayout, MetaLayout, ModelLayout,
-        TextureLayout,
+        FontMetrics, MaterialLayout, MaterialTextureLookups, MaterialType, MeshLayout, MetaLayout,
+        ModelLayout, MsdfFontLayout, SdfFontLayout, TextureLayout,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -20,6 +20,8 @@ pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
 pub const DEFAULT_SOUND_ENTRY: &str = "audio/beep";
 pub const DEFAULT_SOUND_ENTRIES: [&str; 2] = ["audio/beep", "audio/tone"];
 pub const DEFAULT_FONT_ENTRY: &str = "fonts/default";
+pub const DEFAULT_MSDF_FONT_ENTRY: &str = "msdf_fonts/default";
+pub const DEFAULT_SDF_FONT_ENTRY: &str = "sdf_fonts/default";
 pub const DEFAULT_SKELETON_ENTRY: &str = "skeletons/fox";
 pub const DEFAULT_ANIMATION_ENTRY: &str = "animations/fox";
 pub const DEFAULT_GEOMETRY_ENTRIES: [&str; 7] = [
@@ -241,6 +243,41 @@ pub fn default_fonts() -> Vec<HostFont> {
     vec![default_font()]
 }
 
+pub fn default_msdf_font_layout() -> MsdfFontLayout {
+    let size = 16.0;
+    MsdfFontLayout {
+        image: DEFAULT_IMAGE_ENTRY.to_string(),
+        name: Some("Default MSDF Font".to_string()),
+        font: Some(DEFAULT_FONT_ENTRY.to_string()),
+        size,
+        distance_range: 4.0,
+        angle_threshold: 3.0,
+        metrics: FontMetrics {
+            em_size: size,
+            line_height: size,
+            ..Default::default()
+        },
+        glyphs: Vec::new(),
+    }
+}
+
+pub fn default_sdf_font_layout() -> SdfFontLayout {
+    let size = 16.0;
+    SdfFontLayout {
+        image: DEFAULT_IMAGE_ENTRY.to_string(),
+        name: Some("Default SDF Font".to_string()),
+        font: Some(DEFAULT_FONT_ENTRY.to_string()),
+        size,
+        distance_range: 4.0,
+        metrics: FontMetrics {
+            em_size: size,
+            line_height: size,
+            ..Default::default()
+        },
+        glyphs: Vec::new(),
+    }
+}
+
 pub fn default_primitives() -> Vec<(String, HostGeometry)> {
     let [sphere, cube, quad, plane, cylinder, cone, fox] = DEFAULT_GEOMETRY_ENTRIES;
 
@@ -277,6 +314,19 @@ pub fn inject_default_layouts(meta: &mut MetaLayout) {
         &mut meta.meshes,
         &mut meta.models,
     );
+    ensure_default_font_layouts(&mut meta.msdf_fonts, &mut meta.sdf_fonts);
+}
+
+pub fn ensure_default_font_layouts(
+    msdf_fonts: &mut std::collections::HashMap<String, MsdfFontLayout>,
+    sdf_fonts: &mut std::collections::HashMap<String, SdfFontLayout>,
+) {
+    msdf_fonts
+        .entry(DEFAULT_MSDF_FONT_ENTRY.to_string())
+        .or_insert(default_msdf_font_layout());
+    sdf_fonts
+        .entry(DEFAULT_SDF_FONT_ENTRY.to_string())
+        .or_insert(default_sdf_font_layout());
 }
 
 pub fn ensure_default_assets(
