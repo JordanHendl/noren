@@ -20,7 +20,8 @@ use noren::{
     },
     parsing::{
         MaterialLayoutFile, MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile,
-        TextureAtlasLayoutFile, TextureLayout, TextureLayoutFile,
+        MsdfFontLayoutFile, SdfFontLayoutFile, TextureAtlasLayoutFile, TextureLayout,
+        TextureLayoutFile,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -685,6 +686,8 @@ fn run_from_path(
     let imagery_path = resolve_string_path(&output_dir, &output.layout.imagery);
     let audio_path = resolve_string_path(&output_dir, &output.layout.audio);
     let fonts_path = resolve_string_path(&output_dir, &output.layout.fonts);
+    let msdf_fonts_path = resolve_string_path(&output_dir, &output.layout.msdf_fonts);
+    let sdf_fonts_path = resolve_string_path(&output_dir, &output.layout.sdf_fonts);
     let skeletons_path = resolve_string_path(&output_dir, &output.layout.skeletons);
     let animations_path = resolve_string_path(&output_dir, &output.layout.animations);
     let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
@@ -773,6 +776,18 @@ fn run_from_path(
     }
     let atlases_file = File::create(&atlases_path)?;
     serde_json::to_writer_pretty(atlases_file, &TextureAtlasLayoutFile::default())?;
+
+    if let Some(parent) = msdf_fonts_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let msdf_fonts_file = File::create(&msdf_fonts_path)?;
+    serde_json::to_writer_pretty(msdf_fonts_file, &MsdfFontLayoutFile::default())?;
+
+    if let Some(parent) = sdf_fonts_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let sdf_fonts_file = File::create(&sdf_fonts_path)?;
+    serde_json::to_writer_pretty(sdf_fonts_file, &SdfFontLayoutFile::default())?;
 
     if let Some(parent) = meshes_path.parent() {
         fs::create_dir_all(parent)?;
@@ -2475,6 +2490,8 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
                     fonts: "fonts.rdb".into(),
+                    msdf_fonts: "msdf_fonts.json".into(),
+                    sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
@@ -2621,6 +2638,8 @@ mod tests {
         assert_eq!(layout.geometry, "geometry.rdb");
         assert_eq!(layout.imagery, "imagery.rdb");
         assert_eq!(layout.fonts, "fonts.rdb");
+        assert_eq!(layout.msdf_fonts, "msdf_fonts.json");
+        assert_eq!(layout.sdf_fonts, "sdf_fonts.json");
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
         assert_eq!(layout.textures, "textures.json");
@@ -2672,6 +2691,8 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
                     fonts: "fonts.rdb".into(),
+                    msdf_fonts: "msdf_fonts.json".into(),
+                    sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
@@ -2724,6 +2745,8 @@ mod tests {
         assert!(!output_dir.join("shaders.rdb").exists());
         assert!(output_dir.join("materials.json").exists());
         assert!(output_dir.join("textures.json").exists());
+        assert!(output_dir.join("msdf_fonts.json").exists());
+        assert!(output_dir.join("sdf_fonts.json").exists());
         assert!(output_dir.join("meshes.json").exists());
         assert!(output_dir.join("models.json").exists());
         assert!(output_dir.join("layout.json").exists());
@@ -2773,6 +2796,8 @@ mod tests {
             .unwrap();
         let layout: DatabaseLayoutFile = serde_json::from_str(&layout_text).unwrap();
         assert_eq!(layout.fonts, "fonts.rdb");
+        assert_eq!(layout.msdf_fonts, "msdf_fonts.json");
+        assert_eq!(layout.sdf_fonts, "sdf_fonts.json");
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
     }
@@ -2796,6 +2821,8 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
                     fonts: "fonts.rdb".into(),
+                    msdf_fonts: "msdf_fonts.json".into(),
+                    sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
@@ -2911,6 +2938,8 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
                     fonts: "fonts.rdb".into(),
+                    msdf_fonts: "msdf_fonts.json".into(),
+                    sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
@@ -2959,6 +2988,8 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
                     fonts: "fonts.rdb".into(),
+                    msdf_fonts: "msdf_fonts.json".into(),
+                    sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
@@ -3019,6 +3050,8 @@ mod tests {
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
                     fonts: "fonts.rdb".into(),
+                    msdf_fonts: "msdf_fonts.json".into(),
+                    sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),

@@ -32,6 +32,7 @@ pub enum NorenError {
     DashiContext(),
     InvalidMaterial(String),
     InvalidAtlas(String),
+    InvalidFont(String),
     InvalidModel(String),
     InvalidShaderLayout(Vec<crate::ShaderValidationError>),
     InvalidShaderState(String),
@@ -57,6 +58,9 @@ impl std::fmt::Display for NorenError {
             }
             NorenError::InvalidAtlas(reason) => {
                 write!(f, "Invalid atlas: {}", reason)
+            }
+            NorenError::InvalidFont(reason) => {
+                write!(f, "Invalid font: {}", reason)
             }
             NorenError::InvalidModel(reason) => {
                 write!(f, "Invalid model layout: {}", reason)
@@ -167,6 +171,10 @@ mod tests {
         assert_eq!(
             format!("{}", NorenError::InvalidMaterial("reason".into())),
             "Invalid material: reason"
+        );
+        assert_eq!(
+            format!("{}", NorenError::InvalidFont("reason".into())),
+            "Invalid font: reason"
         );
         assert_eq!(
             format!("{}", NorenError::InvalidShaderState("bad state".into())),

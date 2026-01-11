@@ -20,6 +20,14 @@ fn default_font_path() -> String {
     "fonts.rdb".to_string()
 }
 
+fn default_msdf_font_path() -> String {
+    "msdf_fonts.json".to_string()
+}
+
+fn default_sdf_font_path() -> String {
+    "sdf_fonts.json".to_string()
+}
+
 fn default_texture_path() -> String {
     "textures.json".to_string()
 }
@@ -66,6 +74,10 @@ pub struct DatabaseLayoutFile {
     pub audio: String,
     #[serde(default = "default_font_path")]
     pub fonts: String,
+    #[serde(default = "default_msdf_font_path")]
+    pub msdf_fonts: String,
+    #[serde(default = "default_sdf_font_path")]
+    pub sdf_fonts: String,
     #[serde(default = "default_skeleton_path")]
     pub skeletons: String,
     #[serde(default = "default_animation_path")]
@@ -96,6 +108,18 @@ pub struct TextureLayoutFile {
 pub struct TextureAtlasLayoutFile {
     #[serde(default)]
     pub atlases: HashMap<String, TextureAtlasLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MsdfFontLayoutFile {
+    #[serde(default)]
+    pub fonts: HashMap<String, MsdfFontLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SdfFontLayoutFile {
+    #[serde(default)]
+    pub fonts: HashMap<String, SdfFontLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -179,6 +203,97 @@ pub struct AtlasFrame {
     /// Frame duration in milliseconds.
     #[serde(default)]
     pub duration_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FontMetrics {
+    #[serde(default)]
+    pub em_size: f32,
+    #[serde(default)]
+    pub line_height: f32,
+    #[serde(default)]
+    pub ascender: f32,
+    #[serde(default)]
+    pub descender: f32,
+    #[serde(default)]
+    pub underline_y: f32,
+    #[serde(default)]
+    pub underline_thickness: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FontBounds {
+    #[serde(default)]
+    pub left: f32,
+    #[serde(default)]
+    pub bottom: f32,
+    #[serde(default)]
+    pub right: f32,
+    #[serde(default)]
+    pub top: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FontGlyph {
+    #[serde(default)]
+    pub unicode: u32,
+    #[serde(default)]
+    pub advance: f32,
+    #[serde(default)]
+    pub plane_bounds: Option<FontBounds>,
+    #[serde(default)]
+    pub atlas_bounds: Option<FontBounds>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SdfFontLayout {
+    /// Atlas image entry for the SDF font.
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Optional font source entry for the font that generated this atlas.
+    #[serde(default)]
+    pub font: Option<String>,
+    /// Font size used during atlas generation.
+    #[serde(default)]
+    pub size: f32,
+    /// Signed distance range (in pixels) for the SDF atlas.
+    #[serde(default)]
+    pub distance_range: f32,
+    /// Font metrics for renderer layout calculations.
+    #[serde(default)]
+    pub metrics: FontMetrics,
+    /// Glyph metadata keyed by glyph entry.
+    #[serde(default)]
+    pub glyphs: Vec<FontGlyph>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MsdfFontLayout {
+    /// Atlas image entry for the MSDF font.
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Optional font source entry for the font that generated this atlas.
+    #[serde(default)]
+    pub font: Option<String>,
+    /// Font size used during atlas generation.
+    #[serde(default)]
+    pub size: f32,
+    /// Signed distance range (in pixels) for the MSDF atlas.
+    #[serde(default)]
+    pub distance_range: f32,
+    /// Edge angle threshold used when generating MSDF edges.
+    #[serde(default)]
+    pub angle_threshold: f32,
+    /// Font metrics for renderer layout calculations.
+    #[serde(default)]
+    pub metrics: FontMetrics,
+    /// Glyph metadata keyed by glyph entry.
+    #[serde(default)]
+    pub glyphs: Vec<FontGlyph>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -272,6 +387,8 @@ pub struct ComputeShaderLayout {
 pub struct MetaLayout {
     pub textures: HashMap<String, TextureLayout>,
     pub atlases: HashMap<String, TextureAtlasLayout>,
+    pub msdf_fonts: HashMap<String, MsdfFontLayout>,
+    pub sdf_fonts: HashMap<String, SdfFontLayout>,
     pub materials: HashMap<String, MaterialLayout>,
     pub meshes: HashMap<String, MeshLayout>,
     pub models: HashMap<String, ModelLayout>,
@@ -283,6 +400,8 @@ impl MetaLayout {
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty()
             && self.atlases.is_empty()
+            && self.msdf_fonts.is_empty()
+            && self.sdf_fonts.is_empty()
             && self.materials.is_empty()
             && self.meshes.is_empty()
             && self.models.is_empty()
@@ -298,6 +417,8 @@ impl Default for DatabaseLayoutFile {
             imagery: default_imagery_path(),
             audio: default_audio_path(),
             fonts: default_font_path(),
+            msdf_fonts: default_msdf_font_path(),
+            sdf_fonts: default_sdf_font_path(),
             skeletons: default_skeleton_path(),
             animations: default_animation_path(),
             textures: default_texture_path(),

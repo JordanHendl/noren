@@ -113,6 +113,10 @@ fn load_meta_layout(
         load_json_file::<TextureLayoutFile>(&format!("{}/{}", base_dir, layout.textures))?;
     let atlases =
         load_json_file::<TextureAtlasLayoutFile>(&format!("{}/{}", base_dir, layout.atlases))?;
+    let msdf_fonts =
+        load_json_file::<MsdfFontLayoutFile>(&format!("{}/{}", base_dir, layout.msdf_fonts))?;
+    let sdf_fonts =
+        load_json_file::<SdfFontLayoutFile>(&format!("{}/{}", base_dir, layout.sdf_fonts))?;
     let materials =
         load_json_file::<MaterialLayoutFile>(&format!("{}/{}", base_dir, layout.materials))?;
     let meshes = load_json_file::<MeshLayoutFile>(&format!("{}/{}", base_dir, layout.meshes))?;
@@ -125,6 +129,12 @@ fn load_meta_layout(
     }
     if let Some(file) = atlases {
         meta_layout.atlases = file.atlases;
+    }
+    if let Some(file) = msdf_fonts {
+        meta_layout.msdf_fonts = file.fonts;
+    }
+    if let Some(file) = sdf_fonts {
+        meta_layout.sdf_fonts = file.fonts;
     }
     if let Some(file) = materials {
         meta_layout.materials = file.materials;
@@ -366,6 +376,22 @@ impl DB {
         self.meta_layout
             .as_ref()
             .map(|layout| layout.atlases.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates MSDF font definitions declared in the layout.
+    pub fn enumerate_msdf_fonts(&self) -> Vec<String> {
+        self.meta_layout
+            .as_ref()
+            .map(|layout| layout.msdf_fonts.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates SDF font definitions declared in the layout.
+    pub fn enumerate_sdf_fonts(&self) -> Vec<String> {
+        self.meta_layout
+            .as_ref()
+            .map(|layout| layout.sdf_fonts.keys().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -786,6 +812,130 @@ impl DB {
             name,
             image,
             atlas: atlas_def.clone(),
+            furikake_texture_id,
+        })
+    }
+
+    /// Fetches an MSDF font with host image data and metadata.
+    pub fn fetch_msdf_font(&mut self, entry: &str) -> Result<MSDFFont, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let font_def = layout
+            .msdf_fonts
+            .get(entry)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if font_def.image.is_empty() {
+            return Err(NorenError::InvalidFont(format!(
+                "MSDF font '{entry}' does not define an atlas image entry",
+            )));
+        }
+
+        let image = self.imagery.fetch_raw_image(font_def.image.as_str())?;
+        let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
+
+        Ok(MSDFFont {
+            name,
+            image,
+            font: font_def.clone(),
+        })
+    }
+
+    /// Fetches an MSDF font with device image data and metadata.
+    pub fn fetch_gpu_msdf_font(&mut self, entry: &str) -> Result<DeviceMSDFFont, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let font_def = layout
+            .msdf_fonts
+            .get(entry)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if font_def.image.is_empty() {
+            return Err(NorenError::InvalidFont(format!(
+                "MSDF font '{entry}' does not define an atlas image entry",
+            )));
+        }
+
+        let image = self.imagery.fetch_gpu_image(font_def.image.as_str())?;
+        let furikake_texture_id = ensure_furikake_texture(
+            &mut self.imagery,
+            self.furikake.as_mut(),
+            font_def.image.as_str(),
+        )?;
+        let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
+
+        Ok(DeviceMSDFFont {
+            name,
+            image,
+            font: font_def.clone(),
+            furikake_texture_id,
+        })
+    }
+
+    /// Fetches an SDF font with host image data and metadata.
+    pub fn fetch_sdf_font(&mut self, entry: &str) -> Result<SDFFont, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let font_def = layout
+            .sdf_fonts
+            .get(entry)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if font_def.image.is_empty() {
+            return Err(NorenError::InvalidFont(format!(
+                "SDF font '{entry}' does not define an atlas image entry",
+            )));
+        }
+
+        let image = self.imagery.fetch_raw_image(font_def.image.as_str())?;
+        let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
+
+        Ok(SDFFont {
+            name,
+            image,
+            font: font_def.clone(),
+        })
+    }
+
+    /// Fetches an SDF font with device image data and metadata.
+    pub fn fetch_gpu_sdf_font(&mut self, entry: &str) -> Result<DeviceSDFFont, NorenError> {
+        let layout = self
+            .meta_layout
+            .as_ref()
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        let font_def = layout
+            .sdf_fonts
+            .get(entry)
+            .ok_or_else(NorenError::LookupFailure)?;
+
+        if font_def.image.is_empty() {
+            return Err(NorenError::InvalidFont(format!(
+                "SDF font '{entry}' does not define an atlas image entry",
+            )));
+        }
+
+        let image = self.imagery.fetch_gpu_image(font_def.image.as_str())?;
+        let furikake_texture_id = ensure_furikake_texture(
+            &mut self.imagery,
+            self.furikake.as_mut(),
+            font_def.image.as_str(),
+        )?;
+        let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
+
+        Ok(DeviceSDFFont {
+            name,
+            image,
+            font: font_def.clone(),
             furikake_texture_id,
         })
     }
@@ -1449,6 +1599,30 @@ fn validate_atlas_links(layout: &MetaLayout) -> Result<(), NorenError> {
     Ok(())
 }
 
+fn validate_msdf_font_links(layout: &MetaLayout) -> Result<(), NorenError> {
+    for (font_key, font) in &layout.msdf_fonts {
+        if font.image.is_empty() {
+            return Err(NorenError::InvalidFont(format!(
+                "MSDF font '{font_key}' does not define an atlas image entry",
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_sdf_font_links(layout: &MetaLayout) -> Result<(), NorenError> {
+    for (font_key, font) in &layout.sdf_fonts {
+        if font.image.is_empty() {
+            return Err(NorenError::InvalidFont(format!(
+                "SDF font '{font_key}' does not define an atlas image entry",
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_meta_layout(
     layout: &MetaLayout,
     shader_modules: Option<&ShaderDB>,
@@ -1457,6 +1631,8 @@ fn validate_meta_layout(
     validate_mesh_links(layout)?;
     validate_model_links(layout)?;
     validate_atlas_links(layout)?;
+    validate_msdf_font_links(layout)?;
+    validate_sdf_font_links(layout)?;
     validate_shader_layouts(layout, shader_modules)
 }
 
