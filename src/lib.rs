@@ -75,6 +75,7 @@ pub struct DB {
     geometry: GeometryDB,
     imagery: ImageDB,
     audio: AudioDB,
+    fonts: FontDB,
     skeletons: SkeletonDB,
     animations: AnimationDB,
     shaders: ShaderDB,
@@ -190,6 +191,7 @@ impl DB {
             .build();
         let imagery = ImageDB::new(ctx, &format!("{}/{}", info.base_dir, layout.imagery));
         let audio = AudioDB::new(&format!("{}/{}", info.base_dir, layout.audio));
+        let fonts = FontDB::new(&format!("{}/{}", info.base_dir, layout.fonts));
         let skeletons = SkeletonDB::new(&format!("{}/{}", info.base_dir, layout.skeletons));
         let animations = AnimationDB::new(&format!("{}/{}", info.base_dir, layout.animations));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
@@ -204,6 +206,7 @@ impl DB {
             geometry,
             imagery,
             audio,
+            fonts,
             skeletons,
             animations,
             shaders,
@@ -262,6 +265,16 @@ impl DB {
         &mut self.audio
     }
 
+    /// Returns an immutable reference to the font database.
+    pub fn font(&self) -> &FontDB {
+        &self.fonts
+    }
+
+    /// Returns a mutable reference to the font database.
+    pub fn font_mut(&mut self) -> &mut FontDB {
+        &mut self.fonts
+    }
+
     /// Returns an immutable reference to the skeleton database.
     pub fn skeletons(&self) -> &SkeletonDB {
         &self.skeletons
@@ -292,9 +305,9 @@ impl DB {
         &mut self.shaders
     }
 
-    /// Placeholder for accessing font assets.
-    pub fn font(&self) -> &FontDB {
-        todo!()
+    /// Enumerates all font entries available in the backing database.
+    pub fn enumerate_fonts(&self) -> Vec<String> {
+        self.fonts.enumerate_entries()
     }
 
     /// Enumerates all geometry entries available in the backing database.

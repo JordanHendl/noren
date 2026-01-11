@@ -1,21 +1,15 @@
 {
   "models": {
+    "model/sphere": {
+      "name": "sphere",
+      "meshes": [
+        "mesh/sphere"
+      ]
+    },
     "model/cone": {
       "name": "cone",
       "meshes": [
         "mesh/cone"
-      ]
-    },
-    "model/fox": {
-      "name": "fox",
-      "meshes": [
-        "mesh/fox"
-      ]
-    },
-    "model/cylinder": {
-      "name": "cylinder",
-      "meshes": [
-        "mesh/cylinder"
       ]
     },
     "model/quad": {
@@ -24,28 +18,16 @@
         "mesh/quad"
       ]
     },
-    "model/simple_skin": {
-      "name": "simple_skin",
-      "meshes": [
-        "mesh/simple_skin"
-      ]
-    },
     "model/cube": {
       "name": "cube",
       "meshes": [
         "mesh/cube"
       ]
     },
-    "model/sphere": {
-      "name": "sphere",
+    "model/fox": {
+      "name": "fox",
       "meshes": [
-        "mesh/sphere"
-      ]
-    },
-    "model/plane": {
-      "name": "plane",
-      "meshes": [
-        "mesh/plane"
+        "mesh/fox"
       ]
     },
     "model/witch": {
@@ -69,6 +51,24 @@
         "mesh/witch/circle_004/1",
         "mesh/witch/circle_004/2",
         "mesh/witch/circle_004/3"
+      ]
+    },
+    "model/cylinder": {
+      "name": "cylinder",
+      "meshes": [
+        "mesh/cylinder"
+      ]
+    },
+    "model/plane": {
+      "name": "plane",
+      "meshes": [
+        "mesh/plane"
+      ]
+    },
+    "model/simple_skin": {
+      "name": "simple_skin",
+      "meshes": [
+        "mesh/simple_skin"
       ]
     }
   }

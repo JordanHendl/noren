@@ -9,8 +9,8 @@ use crate::{
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
-        AnimationTargetPath, AudioClip, AudioFormat, HostGeometry, HostImage, ImageInfo, Joint,
-        Skeleton, index_vertices, primitives::Vertex,
+        AnimationTargetPath, AudioClip, AudioFormat, HostFont, HostGeometry, HostImage, ImageInfo,
+        Joint, Skeleton, index_vertices, primitives::Vertex,
     },
 };
 
@@ -19,6 +19,7 @@ pub const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
 pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
 pub const DEFAULT_SOUND_ENTRY: &str = "audio/beep";
 pub const DEFAULT_SOUND_ENTRIES: [&str; 2] = ["audio/beep", "audio/tone"];
+pub const DEFAULT_FONT_ENTRY: &str = "fonts/default";
 pub const DEFAULT_SKELETON_ENTRY: &str = "skeletons/fox";
 pub const DEFAULT_ANIMATION_ENTRY: &str = "animations/fox";
 pub const DEFAULT_GEOMETRY_ENTRIES: [&str; 7] = [
@@ -227,6 +228,15 @@ pub fn default_sounds() -> Vec<AudioClip> {
             include_bytes!("../sample/sample_pre/audio/tone.wav").to_vec(),
         ),
     ]
+}
+
+pub fn default_font() -> HostFont {
+    let data = include_bytes!("../sample/sample_pre/fonts/DejaVuSans.ttf").to_vec();
+    HostFont::new(DEFAULT_FONT_ENTRY.to_string(), data)
+}
+
+pub fn default_fonts() -> Vec<HostFont> {
+    vec![default_font()]
 }
 
 pub fn default_primitives() -> Vec<(String, HostGeometry)> {

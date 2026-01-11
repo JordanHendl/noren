@@ -9,12 +9,13 @@ use std::{
 use bento::{
     BentoError, Compiler as BentoCompiler, OptimizationLevel, Request as BentoRequest, ShaderLang,
 };
+use fontdue::{Font, FontSettings};
 use gltf::animation::util::ReadOutputs;
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
     defaults::{
-        DEFAULT_IMAGE_ENTRY, default_image, default_primitives, default_sounds,
+        DEFAULT_IMAGE_ENTRY, default_fonts, default_image, default_primitives, default_sounds,
         ensure_default_assets,
     },
     parsing::{
@@ -23,8 +24,9 @@ use noren::{
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
-        AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostCubemap, HostGeometry,
-        HostImage, ImageInfo, Joint, ShaderModule, Skeleton, index_vertices, primitives::Vertex,
+        AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostCubemap, HostFont,
+        HostGeometry, HostImage, ImageInfo, Joint, ShaderModule, Skeleton, index_vertices,
+        primitives::Vertex,
     },
     validate_database_layout,
 };
@@ -92,6 +94,7 @@ fn main() {
         Command::AppendImagery(args) => append_imagery(&args, &logger, cli.write_binaries),
         Command::AppendCubemap(args) => append_cubemap(&args, &logger, cli.write_binaries),
         Command::AppendAudio(args) => append_audio(&args, &logger, cli.write_binaries),
+        Command::AppendFont(args) => append_font(&args, &logger, cli.write_binaries),
         Command::AppendShader(args) => append_shader(&args, &logger, cli.write_binaries),
     };
 
@@ -185,7 +188,8 @@ fn parse_validate_command(mut args: impl Iterator<Item = String>) -> Result<Comm
 fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(kind) = args.next() else {
         return Err(
-            "append requires a resource type (geometry, imagery, cubemap, audio, shader)".into(),
+            "append requires a resource type (geometry, imagery, cubemap, audio, font, shader)"
+                .into(),
         );
     };
 
@@ -196,6 +200,7 @@ fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Comman
         "imagery" => parse_imagery_append(args).map(Command::AppendImagery),
         "cubemap" => parse_cubemap_append(args).map(Command::AppendCubemap),
         "audio" => parse_audio_append(args).map(Command::AppendAudio),
+        "font" => parse_font_append(args).map(Command::AppendFont),
         "shader" => parse_shader_append(args).map(Command::AppendShader),
         other => Err(format!("unknown append resource type: {other}")),
     }
@@ -491,6 +496,48 @@ fn parse_audio_append(mut args: impl Iterator<Item = String>) -> Result<AudioApp
     })
 }
 
+fn parse_font_append(mut args: impl Iterator<Item = String>) -> Result<FontAppendArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut collection_index = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                let value = next_value("--rdb", &mut args)?;
+                rdb = Some(PathBuf::from(value));
+            }
+            "--entry" => {
+                entry = Some(next_value("--entry", &mut args)?);
+            }
+            "--font" => {
+                file = Some(next_value("--font", &mut args)?);
+            }
+            "--collection-index" => {
+                let value = next_value("--collection-index", &mut args)?;
+                collection_index = Some(
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| format!(
+                            "--collection-index expects an integer, received '{value}'"
+                        ))?,
+                );
+            }
+            other => return Err(format!("unexpected argument to append font: {other}")),
+        }
+    }
+
+    Ok(FontAppendArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        entry: FontEntry {
+            entry: entry.ok_or_else(|| "--entry is required".to_string())?,
+            file: PathBuf::from(file.ok_or_else(|| "--font is required".to_string())?),
+            collection_index: collection_index.unwrap_or_default(),
+        },
+    })
+}
+
 fn parse_shader_append(mut args: impl Iterator<Item = String>) -> Result<ShaderAppendArgs, String> {
     let mut rdb: Option<PathBuf> = None;
     let mut entry = None;
@@ -545,6 +592,7 @@ enum Command {
     AppendImagery(ImageAppendArgs),
     AppendCubemap(CubemapAppendArgs),
     AppendAudio(AudioAppendArgs),
+    AppendFont(FontAppendArgs),
     AppendShader(ShaderAppendArgs),
 }
 
@@ -591,6 +639,12 @@ struct AudioAppendArgs {
 }
 
 #[derive(Debug)]
+struct FontAppendArgs {
+    rdb: PathBuf,
+    entry: FontEntry,
+}
+
+#[derive(Debug)]
 struct ShaderAppendArgs {
     rdb: PathBuf,
     entry: ShaderEntry,
@@ -616,6 +670,7 @@ fn run_from_path(
         output,
         imagery,
         audio,
+        fonts,
         skeletons,
         animations,
         geometry,
@@ -629,6 +684,7 @@ fn run_from_path(
     let geometry_path = resolve_string_path(&output_dir, &output.layout.geometry);
     let imagery_path = resolve_string_path(&output_dir, &output.layout.imagery);
     let audio_path = resolve_string_path(&output_dir, &output.layout.audio);
+    let fonts_path = resolve_string_path(&output_dir, &output.layout.fonts);
     let skeletons_path = resolve_string_path(&output_dir, &output.layout.skeletons);
     let animations_path = resolve_string_path(&output_dir, &output.layout.animations);
     let textures_path = resolve_string_path(&output_dir, &output.layout.textures);
@@ -659,6 +715,14 @@ fn run_from_path(
         &base_dir,
         &audio_path,
         &audio,
+        append,
+        write_binaries,
+        logger,
+    )?;
+    build_fonts(
+        &base_dir,
+        &fonts_path,
+        &fonts,
         append,
         write_binaries,
         logger,
@@ -1118,6 +1182,36 @@ fn append_audio(
     Ok(())
 }
 
+fn append_font(
+    args: &FontAppendArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    logger.log(format!("append font: {}", args.entry.entry));
+    let font = load_font(Path::new("."), &args.entry)?;
+    let entry_name = args.entry.entry.clone();
+    rdb.add(&entry_name, &font).map_err(BuildError::from)?;
+
+    if write_binaries {
+        logger.log(format!("append font: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("append font: skipping binary output (--layouts-only)");
+    }
+
+    Ok(())
+}
+
 fn append_skeleton(
     args: &SkeletonAppendArgs,
     logger: &Logger,
@@ -1224,6 +1318,56 @@ fn build_audio(
         rdb.save(output).map_err(BuildError::from)?;
     } else {
         logger.log("audio: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
+fn build_fonts(
+    base_dir: &Path,
+    output: &Path,
+    entries: &[FontEntry],
+    append: bool,
+    write_binaries: bool,
+    logger: &Logger,
+) -> Result<(), BuildError> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries || append {
+        load_rdb(output, append)?
+    } else {
+        RDBFile::new()
+    };
+
+    let mut seen_entries: HashSet<String> = rdb.entries().into_iter().map(|meta| meta.name).collect();
+    for entry in entries {
+        seen_entries.insert(entry.entry.clone());
+    }
+
+    for font in default_fonts() {
+        if seen_entries.contains(&font.info.name) {
+            continue;
+        }
+        logger.log(format!("font: adding default {}", font.info.name));
+        rdb.add(&font.info.name, &font).map_err(BuildError::from)?;
+    }
+
+    for entry in entries {
+        logger.log(format!(
+            "font: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
+        let font = load_font(base_dir, entry)?;
+        rdb.add(&entry.entry, &font).map_err(BuildError::from)?;
+    }
+
+    if write_binaries {
+        logger.log(format!("font: writing {}", output.display()));
+        rdb.save(output).map_err(BuildError::from)?;
+    } else {
+        logger.log("font: skipping binary output (--layouts-only)");
     }
     Ok(())
 }
@@ -1410,6 +1554,23 @@ fn load_audio(base_dir: &Path, entry: &AudioEntry) -> Result<AudioClip, BuildErr
     let format = infer_audio_format(&entry.file, entry.format.clone());
 
     Ok(AudioClip::new(entry.entry.clone(), format, data))
+}
+
+fn load_font(base_dir: &Path, entry: &FontEntry) -> Result<HostFont, BuildError> {
+    let path = resolve_path(base_dir, &entry.file);
+    let data = fs::read(&path)?;
+    let settings = FontSettings {
+        collection_index: entry.collection_index,
+        ..Default::default()
+    };
+    Font::from_bytes(data.clone(), settings)
+        .map_err(|err| BuildError::message(format!("font parse error for {}: {err}", path.display())))?;
+
+    Ok(HostFont::new_with_index(
+        entry.entry.clone(),
+        entry.collection_index,
+        data,
+    ))
 }
 
 fn load_skeleton(base_dir: &Path, entry: &SkeletonEntry) -> Result<Skeleton, BuildError> {
@@ -1736,6 +1897,9 @@ fn print_usage(program: &str) {
         "  {program} append audio --rdb <audio.rdb> --entry <name> --audio <file> [--format <format>]"
     );
     eprintln!(
+        "  {program} append font --rdb <fonts.rdb> --entry <name> --font <file> [--collection-index <index>]"
+    );
+    eprintln!(
         "  {program} append shader --rdb <shaders.rdb> --entry <name> --stage <stage> --shader <file>"
     );
     eprintln!("");
@@ -1760,6 +1924,8 @@ struct BuildSpec {
     imagery: Vec<ImageEntry>,
     #[serde(default)]
     audio: Vec<AudioEntry>,
+    #[serde(default)]
+    fonts: Vec<FontEntry>,
     #[serde(default)]
     skeletons: Vec<SkeletonEntry>,
     #[serde(default)]
@@ -1886,6 +2052,14 @@ struct AudioEntry {
     file: PathBuf,
     #[serde(default)]
     format: Option<AudioFormat>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FontEntry {
+    entry: String,
+    file: PathBuf,
+    #[serde(default)]
+    collection_index: u32,
 }
 
 fn parse_audio_format(value: &str) -> Option<AudioFormat> {
@@ -2151,6 +2325,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
+                    fonts: "fonts.rdb".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
@@ -2165,6 +2340,7 @@ mod tests {
             skeletons: Vec::new(),
             animations: Vec::new(),
             audio: Vec::new(),
+            fonts: Vec::new(),
             imagery: vec![
                 ImageEntry {
                     entry: "imagery/tulips".into(),
@@ -2295,6 +2471,7 @@ mod tests {
         let layout: DatabaseLayoutFile = serde_json::from_str(&layout_text).unwrap();
         assert_eq!(layout.geometry, "geometry.rdb");
         assert_eq!(layout.imagery, "imagery.rdb");
+        assert_eq!(layout.fonts, "fonts.rdb");
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
         assert_eq!(layout.textures, "textures.json");
@@ -2345,6 +2522,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
+                    fonts: "fonts.rdb".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
@@ -2359,6 +2537,7 @@ mod tests {
             skeletons: Vec::new(),
             animations: Vec::new(),
             audio: Vec::new(),
+            fonts: Vec::new(),
             imagery: vec![ImageEntry {
                 entry: "imagery/tulips".into(),
                 file: PathBuf::from("imagery/tulips.png"),
@@ -2444,6 +2623,7 @@ mod tests {
             .read_to_string(&mut layout_text)
             .unwrap();
         let layout: DatabaseLayoutFile = serde_json::from_str(&layout_text).unwrap();
+        assert_eq!(layout.fonts, "fonts.rdb");
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
     }
@@ -2466,6 +2646,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
+                    fonts: "fonts.rdb".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
@@ -2480,6 +2661,7 @@ mod tests {
             skeletons: Vec::new(),
             animations: Vec::new(),
             audio: Vec::new(),
+            fonts: Vec::new(),
             imagery: Vec::new(),
             geometry: vec![GeometryEntry {
                 entry: "geometry/quad".into(),
@@ -2579,6 +2761,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
+                    fonts: "fonts.rdb".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     materials: "materials.json".into(),
@@ -2593,6 +2776,7 @@ mod tests {
             skeletons: Vec::new(),
             animations: Vec::new(),
             audio: Vec::new(),
+            fonts: Vec::new(),
             imagery: vec![ImageEntry {
                 entry: "imagery/tulips".into(),
                 file: PathBuf::from("imagery/tulips.png"),
@@ -2625,6 +2809,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
+                    fonts: "fonts.rdb".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
@@ -2639,6 +2824,7 @@ mod tests {
             skeletons: Vec::new(),
             animations: Vec::new(),
             audio: Vec::new(),
+            fonts: Vec::new(),
             imagery: vec![],
             geometry: vec![GeometryEntry {
                 entry: "geometry/quad_copy".into(),
@@ -2683,6 +2869,7 @@ mod tests {
                     geometry: "geometry.rdb".into(),
                     imagery: "imagery.rdb".into(),
                     audio: "audio.rdb".into(),
+                    fonts: "fonts.rdb".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
                     textures: "textures.json".into(),
@@ -2697,6 +2884,7 @@ mod tests {
             skeletons: Vec::new(),
             animations: Vec::new(),
             audio: Vec::new(),
+            fonts: Vec::new(),
             imagery: Vec::new(),
             geometry: vec![GeometryEntry {
                 entry: "geometry/original".into(),

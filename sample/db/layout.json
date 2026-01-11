@@ -2,6 +2,7 @@
   "geometry": "geometry.rdb",
   "imagery": "imagery.rdb",
   "audio": "audio.rdb",
+  "fonts": "fonts.rdb",
   "skeletons": "skeletons.rdb",
   "animations": "animations.rdb",
   "textures": "textures.json",

@@ -12,6 +12,7 @@
       "skeletons": "skeletons.rdb",
       "animations": "animations.rdb",
       "audio": "audio.rdb",
+      "fonts": "fonts.rdb",
       "shader_layouts": "shaders.json",
       "shaders": "shaders.rdb"
     }
@@ -60,6 +61,7 @@
       "file": "audio/tone.wav"
     }
   ],
+  "fonts": [],
   "models": [
     {
       "name": "quad",

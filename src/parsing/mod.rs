@@ -16,6 +16,10 @@ fn default_audio_path() -> String {
     "audio.rdb".to_string()
 }
 
+fn default_font_path() -> String {
+    "fonts.rdb".to_string()
+}
+
 fn default_texture_path() -> String {
     "textures.json".to_string()
 }
@@ -60,6 +64,8 @@ pub struct DatabaseLayoutFile {
     pub imagery: String,
     #[serde(default = "default_audio_path")]
     pub audio: String,
+    #[serde(default = "default_font_path")]
+    pub fonts: String,
     #[serde(default = "default_skeleton_path")]
     pub skeletons: String,
     #[serde(default = "default_animation_path")]
@@ -291,6 +297,7 @@ impl Default for DatabaseLayoutFile {
             geometry: default_geometry_path(),
             imagery: default_imagery_path(),
             audio: default_audio_path(),
+            fonts: default_font_path(),
             skeletons: default_skeleton_path(),
             animations: default_animation_path(),
             textures: default_texture_path(),
