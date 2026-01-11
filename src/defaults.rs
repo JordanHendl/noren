@@ -37,6 +37,7 @@ const WITCH_MATERIAL_PREFIX: &str = "material/witch";
 const WITCH_MESH_PREFIX: &str = "mesh/witch";
 const WITCH_MODEL_ENTRY: &str = "model/witch";
 const WITCH_TEXTURE_PREFIX: &str = "texture/witch";
+const FOX_IMAGE_PREFIX: &str = "imagery/fox";
 const FOX_MATERIAL_ENTRY: &str = "material/fox";
 
 #[derive(Copy, Clone)]
@@ -206,6 +207,7 @@ pub fn default_image() -> HostImage {
 
 pub fn default_images() -> Vec<(String, HostImage)> {
     let mut images = vec![(DEFAULT_IMAGE_ENTRY.to_string(), default_image())];
+    images.extend(load_default_fox_images());
     images.extend(load_default_witch_images());
     images
 }
@@ -258,7 +260,10 @@ pub fn default_primitives() -> Vec<(String, HostGeometry)> {
 }
 
 pub fn default_skeletons() -> Vec<(String, Skeleton)> {
-    vec![(DEFAULT_SKELETON_ENTRY.to_string(), load_default_fox_skeleton())]
+    vec![(
+        DEFAULT_SKELETON_ENTRY.to_string(),
+        load_default_fox_skeleton(),
+    )]
 }
 
 pub fn default_animations() -> Vec<(String, AnimationClip)> {
@@ -304,10 +309,7 @@ pub fn ensure_default_assets(
         let mesh_key = format!("mesh/{mesh_name}");
         let model_key = format!("model/{mesh_name}");
         let (material, textures) = if geometry == "geometry/fox" {
-            (
-                Some(FOX_MATERIAL_ENTRY.to_string()),
-                Vec::new(),
-            )
+            (Some(FOX_MATERIAL_ENTRY.to_string()), Vec::new())
         } else {
             (
                 Some(DEFAULT_MATERIAL_ENTRY.into()),
@@ -350,9 +352,14 @@ pub fn ensure_default_assets(
     let mut witch_meshes = Vec::new();
     for primitive in WITCH_PRIMITIVES {
         let mesh_slug = slugify(primitive.mesh_name);
-        let geometry_key =
-            format!("{WITCH_GEOMETRY_PREFIX}/{mesh_slug}/{}", primitive.primitive_index);
-        let mesh_key = format!("{WITCH_MESH_PREFIX}/{mesh_slug}/{}", primitive.primitive_index);
+        let geometry_key = format!(
+            "{WITCH_GEOMETRY_PREFIX}/{mesh_slug}/{}",
+            primitive.primitive_index
+        );
+        let mesh_key = format!(
+            "{WITCH_MESH_PREFIX}/{mesh_slug}/{}",
+            primitive.primitive_index
+        );
         let material_name = WITCH_MATERIAL_NAMES[primitive.material_index];
         let material_key = format!("{WITCH_MATERIAL_PREFIX}/{}", slugify(material_name));
         let emissive_texture = WITCH_EMISSIVE_TEXTURES[primitive.material_index];
@@ -387,10 +394,12 @@ pub fn ensure_default_assets(
         witch_meshes.push(mesh_key);
     }
 
-    models.entry(WITCH_MODEL_ENTRY.into()).or_insert(ModelLayout {
-        name: Some("witch".into()),
-        meshes: witch_meshes,
-    });
+    models
+        .entry(WITCH_MODEL_ENTRY.into())
+        .or_insert(ModelLayout {
+            name: Some("witch".into()),
+            meshes: witch_meshes,
+        });
 }
 
 fn make_vertex(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
@@ -415,9 +424,8 @@ fn make_geometry(vertices: Vec<Vertex>, indices: Option<Vec<u32>>) -> HostGeomet
 }
 
 fn load_default_fox_geometry() -> HostGeometry {
-    let (doc, buffers, _) =
-        gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
-            .expect("load embedded fox glb");
+    let (doc, buffers, _) = gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
+        .expect("load embedded fox glb");
     let mesh = doc
         .meshes()
         .next()
@@ -457,8 +465,9 @@ fn load_default_witch_geometries() -> Vec<(String, HostGeometry)> {
 }
 
 fn load_default_witch_images() -> Vec<(String, HostImage)> {
-    let (doc, _, images) = gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Witch.glb"))
-        .expect("load embedded witch glb");
+    let (doc, _, images) =
+        gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Witch.glb"))
+            .expect("load embedded witch glb");
     let mut entries = Vec::with_capacity(images.len());
 
     for (index, image) in images.iter().enumerate() {
@@ -469,6 +478,33 @@ fn load_default_witch_images() -> Vec<(String, HostImage)> {
             .unwrap_or("witch_texture");
         let slug = slugify(image_name);
         let entry = format!("{WITCH_IMAGE_PREFIX}/{slug}");
+        let data = rgba_from_gltf_image(image);
+        let info = ImageInfo {
+            name: entry.clone(),
+            dim: [image.width, image.height, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        entries.push((entry, HostImage::new(info, data)));
+    }
+
+    entries
+}
+
+fn load_default_fox_images() -> Vec<(String, HostImage)> {
+    let (doc, _, images) = gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
+        .expect("load embedded fox glb");
+    let mut entries = Vec::with_capacity(images.len());
+
+    for (index, image) in images.iter().enumerate() {
+        let image_name = doc
+            .images()
+            .nth(index)
+            .and_then(|image| image.name())
+            .unwrap_or("fox_texture");
+        let slug = slugify(image_name);
+        let entry = format!("{FOX_IMAGE_PREFIX}/{slug}");
         let data = rgba_from_gltf_image(image);
         let info = ImageInfo {
             name: entry.clone(),
@@ -542,11 +578,7 @@ fn load_geometry_from_primitive(
         .unwrap_or_else(|| vec![default_color; vertex_count]);
     let joints: Vec<[u32; 4]> = reader
         .read_joints(0)
-        .map(|iter| {
-            iter.into_u16()
-                .map(|joint| joint.map(u32::from))
-                .collect()
-        })
+        .map(|iter| iter.into_u16().map(|joint| joint.map(u32::from)).collect())
         .unwrap_or_else(|| vec![[0; 4]; vertex_count]);
     let weights: Vec<[f32; 4]> = reader
         .read_weights(0)
@@ -583,13 +615,9 @@ fn load_geometry_from_primitive(
 }
 
 fn load_default_fox_skeleton() -> Skeleton {
-    let (doc, buffers, _) =
-        gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
-            .expect("load embedded fox glb");
-    let skin = doc
-        .skins()
-        .next()
-        .expect("embedded fox glb missing skins");
+    let (doc, buffers, _) = gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
+        .expect("load embedded fox glb");
+    let skin = doc.skins().next().expect("embedded fox glb missing skins");
 
     let joints: Vec<_> = skin.joints().collect();
     assert!(!joints.is_empty(), "embedded fox glb skin has no joints");
@@ -653,9 +681,8 @@ fn load_default_fox_skeleton() -> Skeleton {
 }
 
 fn load_default_fox_animations() -> Vec<(String, AnimationClip)> {
-    let (doc, buffers, _) =
-        gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
-            .expect("load embedded fox glb");
+    let (doc, buffers, _) = gltf::import_slice(include_bytes!("../sample/sample_pre/gltf/Fox.glb"))
+        .expect("load embedded fox glb");
     let node_to_joint = doc
         .skins()
         .next()
@@ -682,10 +709,7 @@ fn load_default_fox_animations() -> Vec<(String, AnimationClip)> {
     }
 
     if let Some((_, clip)) = entries.first() {
-        entries.insert(
-            0,
-            (DEFAULT_ANIMATION_ENTRY.to_string(), clip.clone()),
-        );
+        entries.insert(0, (DEFAULT_ANIMATION_ENTRY.to_string(), clip.clone()));
     }
 
     entries
@@ -766,9 +790,7 @@ fn build_animation_clip(
 
     let samplers: Vec<AnimationSampler> = samplers
         .into_iter()
-        .map(|sampler| {
-            sampler.expect("embedded fox glb animation sampler referenced by channel")
-        })
+        .map(|sampler| sampler.expect("embedded fox glb animation sampler referenced by channel"))
         .collect();
 
     let duration_seconds = samplers

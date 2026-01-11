@@ -1,5 +1,6 @@
 {
   "textures": {
+<<<<<<< ours
     "texture/witch/hands": {
       "image": "imagery/witch/hands",
       "name": "hands"
@@ -8,21 +9,43 @@
       "image": "imagery/witch/purple_smile",
       "name": "purple smile"
     },
+=======
+>>>>>>> theirs
     "texture/imagery/tulips": {
       "image": "imagery/tulips",
       "name": null
     },
+<<<<<<< ours
     "texture/witch/sweater": {
       "image": "imagery/witch/sweater",
       "name": "sweater"
+=======
+    "texture/imagery/peppers": {
+      "image": "imagery/peppers",
+      "name": null
+>>>>>>> theirs
     },
     "texture/default": {
       "image": "imagery/default",
       "name": "Default Texture"
     },
+<<<<<<< ours
     "texture/imagery/peppers": {
       "image": "imagery/peppers",
       "name": null
+=======
+    "texture/witch/hands": {
+      "image": "imagery/witch/hands",
+      "name": "hands"
+    },
+    "texture/witch/purple_smile": {
+      "image": "imagery/witch/purple_smile",
+      "name": "purple smile"
+    },
+    "texture/witch/sweater": {
+      "image": "imagery/witch/sweater",
+      "name": "sweater"
+>>>>>>> theirs
     }
   }
 }

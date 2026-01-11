@@ -10,7 +10,7 @@ use bento::{
     BentoError, Compiler as BentoCompiler, OptimizationLevel, Request as BentoRequest, ShaderLang,
 };
 use fontdue::{Font, FontSettings};
-use gltf::animation::util::ReadOutputs;
+use gltf::{animation::util::ReadOutputs, image::Format};
 use image::DynamicImage;
 use noren::{
     DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
@@ -703,10 +703,12 @@ fn run_from_path(
         write_binaries,
         logger,
     )?;
+    let gltf_sources = gather_gltf_sources(&base_dir, &geometry, &skeletons, &animations);
     build_imagery(
         &base_dir,
         &imagery_path,
         &imagery,
+        &gltf_sources,
         append,
         write_binaries,
         logger,
@@ -986,11 +988,7 @@ fn load_geometry_layer(
         .unwrap_or_else(|| vec![default_color; vertex_count]);
     let joints: Vec<[u32; 4]> = reader
         .read_joints(0)
-        .map(|iter| {
-            iter.into_u16()
-                .map(|joint| joint.map(u32::from))
-                .collect()
-        })
+        .map(|iter| iter.into_u16().map(|joint| joint.map(u32::from)).collect())
         .unwrap_or_else(|| vec![[0; 4]; vertex_count]);
     let weights: Vec<[f32; 4]> = reader
         .read_weights(0)
@@ -1117,6 +1115,7 @@ fn build_imagery(
     base_dir: &Path,
     output: &Path,
     entries: &[ImageEntry],
+    gltf_sources: &[PathBuf],
     append: bool,
     write_binaries: bool,
     logger: &Logger,
@@ -1131,6 +1130,8 @@ fn build_imagery(
         RDBFile::new()
     };
 
+    let mut seen_entries: HashSet<String> =
+        rdb.entries().into_iter().map(|meta| meta.name).collect();
     for entry in entries {
         logger.log(format!(
             "imagery: loading {} from {}",
@@ -1139,6 +1140,28 @@ fn build_imagery(
         ));
         let image = load_image(base_dir, entry)?;
         rdb.add(&entry.entry, &image).map_err(BuildError::from)?;
+        seen_entries.insert(entry.entry.clone());
+    }
+
+    for gltf_source in gltf_sources {
+        match load_gltf_images(base_dir, gltf_source, &mut seen_entries) {
+            Ok(gltf_images) => {
+                for (entry_name, image) in gltf_images {
+                    logger.log(format!(
+                        "imagery: loading {} from {}",
+                        entry_name,
+                        resolve_path(base_dir, gltf_source).display()
+                    ));
+                    rdb.add(&entry_name, &image).map_err(BuildError::from)?;
+                }
+            }
+            Err(err) => {
+                logger.log(format!(
+                    "imagery: skipping embedded glTF images from {} ({err})",
+                    resolve_path(base_dir, gltf_source).display()
+                ));
+            }
+        }
     }
 
     inject_default_imagery(&mut rdb, logger)?;
@@ -1290,7 +1313,8 @@ fn build_audio(
         RDBFile::new()
     };
 
-    let mut seen_entries: HashSet<String> = rdb.entries().into_iter().map(|meta| meta.name).collect();
+    let mut seen_entries: HashSet<String> =
+        rdb.entries().into_iter().map(|meta| meta.name).collect();
     for entry in entries {
         seen_entries.insert(entry.entry.clone());
     }
@@ -1537,6 +1561,108 @@ fn load_cubemap(base_dir: &Path, entry: &CubemapEntry) -> Result<HostCubemap, Bu
     HostCubemap::from_faces(info, faces).map_err(BuildError::from)
 }
 
+fn gather_gltf_sources(
+    base_dir: &Path,
+    geometry: &[GeometryEntry],
+    skeletons: &[SkeletonEntry],
+    animations: &[AnimationEntry],
+) -> Vec<PathBuf> {
+    let mut sources = HashSet::new();
+
+    for entry in geometry {
+        sources.insert(resolve_path(base_dir, &entry.file));
+        for lod in &entry.lods {
+            if let Some(file) = &lod.file {
+                sources.insert(resolve_path(base_dir, file));
+            }
+        }
+    }
+
+    for entry in skeletons {
+        sources.insert(resolve_path(base_dir, &entry.file));
+    }
+
+    for entry in animations {
+        sources.insert(resolve_path(base_dir, &entry.file));
+    }
+
+    sources.into_iter().collect()
+}
+
+fn load_gltf_images(
+    base_dir: &Path,
+    file: &Path,
+    seen_entries: &mut HashSet<String>,
+) -> Result<Vec<(String, HostImage)>, BuildError> {
+    let path = resolve_path(base_dir, file);
+    let (doc, _, images) = gltf::import(path)?;
+    let mut entries = Vec::with_capacity(images.len());
+    let file_slug = file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(slugify)
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or_else(|| "gltf".to_string());
+    let prefix = format!("imagery/{file_slug}");
+
+    for (index, image) in images.iter().enumerate() {
+        let image_name = doc.images().nth(index).and_then(|image| image.name());
+        let image_slug = image_name
+            .map(slugify)
+            .filter(|slug| !slug.is_empty())
+            .unwrap_or_else(|| format!("image_{index}"));
+        let base_entry = format!("{prefix}/{image_slug}");
+        let entry = unique_entry_name(base_entry, seen_entries);
+        let data = rgba_from_gltf_image(image)?;
+        let info = ImageInfo {
+            name: entry.clone(),
+            dim: [image.width, image.height, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        entries.push((entry, HostImage::new(info, data)));
+    }
+
+    Ok(entries)
+}
+
+fn unique_entry_name(base: String, seen_entries: &mut HashSet<String>) -> String {
+    let mut entry = base.clone();
+    let mut suffix = 1;
+    while seen_entries.contains(&entry) {
+        entry = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+    seen_entries.insert(entry.clone());
+    entry
+}
+
+fn rgba_from_gltf_image(image: &gltf::image::Data) -> Result<Vec<u8>, BuildError> {
+    match image.format {
+        Format::R8G8B8A8 => Ok(image.pixels.clone()),
+        Format::R8G8B8 => Ok(image
+            .pixels
+            .chunks_exact(3)
+            .flat_map(|chunk| [chunk[0], chunk[1], chunk[2], 255])
+            .collect()),
+        Format::R8G8 => Ok(image
+            .pixels
+            .chunks_exact(2)
+            .flat_map(|chunk| [chunk[0], chunk[1], 0, 255])
+            .collect()),
+        Format::R8 => Ok(image
+            .pixels
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect()),
+        _ => Err(BuildError::message(format!(
+            "unsupported glTF image format {:?}",
+            image.format
+        ))),
+    }
+}
+
 fn infer_audio_format(path: &Path, override_format: Option<AudioFormat>) -> AudioFormat {
     if let Some(format) = override_format {
         return format;
@@ -1778,6 +1904,29 @@ fn identity_matrix() -> [[f32; 4]; 4] {
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
+}
+
+fn slugify(value: &str) -> String {
+    let mut out = String::new();
+    let mut prev_sep = false;
+    for ch in value.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            prev_sep = false;
+        } else if !prev_sep {
+            out.push('_');
+            prev_sep = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "texture".to_string()
+    } else {
+        out
+    }
 }
 
 fn to_rgba(image: DynamicImage) -> image::RgbaImage {
