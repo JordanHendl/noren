@@ -315,10 +315,11 @@ impl ImageDB {
 
     /// Loads an image into GPU memory if needed and bumps its reference count.
     pub fn fetch_gpu_image(&mut self, entry: DatabaseEntry<'_>) -> Result<DeviceImage, NorenError> {
-        if let Some(entry) = self.cache.get_mut(entry) {
-            entry.refcount += 1;
-            entry.clear_unload();
-            return Ok(entry.payload.clone());
+        if let Some(item) = self.cache.get_mut(entry) {
+            item.refcount += 1;
+            item.clear_unload();
+            info!("resource = \"device image\", entry = {}", entry);
+            return Ok(item.payload.clone());
         }
 
         let host_image = self.fetch_raw_image(entry)?;
@@ -327,6 +328,7 @@ impl ImageDB {
         let cached_image = device_image.clone();
         self.cache.insert_or_increment(entry, || cached_image);
 
+        info!(resource = "device image", entry = %entry);
         Ok(device_image)
     }
 
