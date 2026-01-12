@@ -1,11 +1,12 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, sync::OnceLock};
 
+use fontdue::{Font, FontSettings};
 use gltf::{animation::util::ReadOutputs, image::Format};
 
 use crate::{
     parsing::{
-        FontMetrics, MaterialLayout, MaterialTextureLookups, MaterialType, MeshLayout, MetaLayout,
-        ModelLayout, MsdfFontLayout, SdfFontLayout, TextureLayout,
+        FontBounds, FontGlyph, FontMetrics, MaterialLayout, MaterialTextureLookups, MaterialType,
+        MeshLayout, MetaLayout, ModelLayout, MsdfFontLayout, SdfFontLayout, TextureLayout,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -15,6 +16,7 @@ use crate::{
 };
 
 pub const DEFAULT_IMAGE_ENTRY: &str = "imagery/default";
+pub const DEFAULT_FONT_ATLAS_ENTRY: &str = "imagery/fonts/default";
 pub const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
 pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
 pub const DEFAULT_SOUND_ENTRY: &str = "audio/beep";
@@ -207,8 +209,34 @@ pub fn default_image() -> HostImage {
     HostImage::new(info, vec![255, 255, 255, 255])
 }
 
+struct FontAtlasData {
+    image: HostImage,
+    metrics: FontMetrics,
+    glyphs: Vec<FontGlyph>,
+    size: f32,
+}
+
+fn default_font_atlas() -> &'static FontAtlasData {
+    static DEFAULT_ATLAS: OnceLock<FontAtlasData> = OnceLock::new();
+    DEFAULT_ATLAS.get_or_init(|| {
+        let data = include_bytes!("../sample/sample_pre/fonts/DejaVuSans.ttf");
+        generate_font_atlas(
+            DEFAULT_FONT_ATLAS_ENTRY,
+            data,
+            0,
+            16.0,
+        )
+    })
+}
+
 pub fn default_images() -> Vec<(String, HostImage)> {
-    let mut images = vec![(DEFAULT_IMAGE_ENTRY.to_string(), default_image())];
+    let mut images = vec![
+        (DEFAULT_IMAGE_ENTRY.to_string(), default_image()),
+        (
+            DEFAULT_FONT_ATLAS_ENTRY.to_string(),
+            default_font_atlas().image.clone(),
+        ),
+    ];
     images.extend(load_default_fox_images());
     images.extend(load_default_witch_images());
     images
@@ -243,38 +271,170 @@ pub fn default_fonts() -> Vec<HostFont> {
     vec![default_font()]
 }
 
+fn generate_font_atlas(
+    entry: &str,
+    data: &[u8],
+    collection_index: u32,
+    size: f32,
+) -> FontAtlasData {
+    let settings = FontSettings {
+        collection_index,
+        ..Default::default()
+    };
+    let font = Font::from_bytes(data, settings).ok();
+    let Some(font) = font else {
+        let info = ImageInfo {
+            name: entry.into(),
+            dim: [1, 1, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        };
+        return FontAtlasData {
+            image: HostImage::new(info, vec![0, 0, 0, 0]),
+            metrics: FontMetrics {
+                em_size: size,
+                line_height: size,
+                ..Default::default()
+            },
+            glyphs: Vec::new(),
+            size,
+        };
+    };
+
+    let line_metrics = font.horizontal_line_metrics(size);
+    let metrics = line_metrics
+        .map(|line| FontMetrics {
+            em_size: size,
+            line_height: line.new_line_size,
+            ascender: line.ascent,
+            descender: line.descent,
+            ..Default::default()
+        })
+        .unwrap_or_else(|| FontMetrics {
+            em_size: size,
+            line_height: size,
+            ..Default::default()
+        });
+
+    let mut glyphs = Vec::new();
+    let mut glyph_renders = Vec::new();
+    let mut max_width = 0usize;
+    let mut max_height = 0usize;
+
+    let mut entries: Vec<(u32, u16)> = font
+        .chars()
+        .iter()
+        .map(|(ch, index)| (*ch as u32, index.get()))
+        .collect();
+    entries.sort_by_key(|(codepoint, _)| *codepoint);
+
+    for (codepoint, index) in &entries {
+        let (metrics, bitmap) = font.rasterize_indexed(*index, size);
+        max_width = max_width.max(metrics.width);
+        max_height = max_height.max(metrics.height);
+        glyph_renders.push((*codepoint, metrics, bitmap));
+    }
+
+    let padding = 1usize;
+    let cell_width = (max_width + padding * 2).max(1);
+    let cell_height = (max_height + padding * 2).max(1);
+    let max_atlas_width = 2048usize;
+    let columns = (max_atlas_width / cell_width).max(1);
+    let rows = (glyph_renders.len() + columns - 1) / columns;
+    let atlas_width = (columns * cell_width).max(1);
+    let atlas_height = (rows * cell_height).max(1);
+
+    let mut data = vec![0u8; atlas_width * atlas_height * 4];
+
+    for (index, (codepoint, metrics, bitmap)) in glyph_renders.into_iter().enumerate() {
+        let col = index % columns;
+        let row = index / columns;
+        let origin_x = col * cell_width + padding;
+        let origin_y = row * cell_height + padding;
+
+        for y in 0..metrics.height {
+            for x in 0..metrics.width {
+                let src = bitmap[y * metrics.width + x];
+                let dest_index = ((origin_y + y) * atlas_width + (origin_x + x)) * 4;
+                data[dest_index] = 255;
+                data[dest_index + 1] = 255;
+                data[dest_index + 2] = 255;
+                data[dest_index + 3] = src;
+            }
+        }
+
+        let plane_bounds = if metrics.bounds.width > 0.0 && metrics.bounds.height > 0.0 {
+            Some(FontBounds {
+                left: metrics.bounds.xmin,
+                bottom: metrics.bounds.ymin,
+                right: metrics.bounds.xmin + metrics.bounds.width,
+                top: metrics.bounds.ymin + metrics.bounds.height,
+            })
+        } else {
+            None
+        };
+        let atlas_bounds = if metrics.width > 0 && metrics.height > 0 {
+            Some(FontBounds {
+                left: origin_x as f32,
+                bottom: origin_y as f32,
+                right: (origin_x + metrics.width) as f32,
+                top: (origin_y + metrics.height) as f32,
+            })
+        } else {
+            None
+        };
+
+        glyphs.push(FontGlyph {
+            unicode: codepoint,
+            advance: metrics.advance_width,
+            plane_bounds,
+            atlas_bounds,
+        });
+    }
+
+    let info = ImageInfo {
+        name: entry.into(),
+        dim: [atlas_width as u32, atlas_height as u32, 1],
+        layers: 1,
+        format: dashi::Format::RGBA8,
+        mip_levels: 1,
+    };
+
+    FontAtlasData {
+        image: HostImage::new(info, data),
+        metrics,
+        glyphs,
+        size,
+    }
+}
+
 pub fn default_msdf_font_layout() -> MsdfFontLayout {
-    let size = 16.0;
+    let atlas = default_font_atlas();
+    let size = atlas.size;
     MsdfFontLayout {
-        image: DEFAULT_IMAGE_ENTRY.to_string(),
+        image: DEFAULT_FONT_ATLAS_ENTRY.to_string(),
         name: Some("Default MSDF Font".to_string()),
         font: Some(DEFAULT_FONT_ENTRY.to_string()),
         size,
         distance_range: 4.0,
         angle_threshold: 3.0,
-        metrics: FontMetrics {
-            em_size: size,
-            line_height: size,
-            ..Default::default()
-        },
-        glyphs: Vec::new(),
+        metrics: atlas.metrics.clone(),
+        glyphs: atlas.glyphs.clone(),
     }
 }
 
 pub fn default_sdf_font_layout() -> SdfFontLayout {
-    let size = 16.0;
+    let atlas = default_font_atlas();
+    let size = atlas.size;
     SdfFontLayout {
-        image: DEFAULT_IMAGE_ENTRY.to_string(),
+        image: DEFAULT_FONT_ATLAS_ENTRY.to_string(),
         name: Some("Default SDF Font".to_string()),
         font: Some(DEFAULT_FONT_ENTRY.to_string()),
         size,
         distance_range: 4.0,
-        metrics: FontMetrics {
-            em_size: size,
-            line_height: size,
-            ..Default::default()
-        },
-        glyphs: Vec::new(),
+        metrics: atlas.metrics.clone(),
+        glyphs: atlas.glyphs.clone(),
     }
 }
 
