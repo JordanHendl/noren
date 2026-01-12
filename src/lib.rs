@@ -930,7 +930,7 @@ impl DB {
             self.furikake.as_mut(),
             font_def.image.as_str(),
         )?;
-        info!("SDF Font image atlas id: {}", furikake_texture_id);
+        tracing::info!("SDF Font image atlas id: {}", furikake_texture_id);
         let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
 
         Ok(DeviceSDFFont {
