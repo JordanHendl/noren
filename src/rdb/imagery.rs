@@ -318,7 +318,6 @@ impl ImageDB {
         if let Some(item) = self.cache.get_mut(entry) {
             item.refcount += 1;
             item.clear_unload();
-            info!("resource = \"device image\", entry = {}", entry);
             return Ok(item.payload.clone());
         }
 
@@ -328,7 +327,6 @@ impl ImageDB {
         let cached_image = device_image.clone();
         self.cache.insert_or_increment(entry, || cached_image);
 
-        info!(resource = "device image", entry = %entry);
         Ok(device_image)
     }
 
