@@ -1563,6 +1563,19 @@ fn generate_font_atlas(
             }
         })
         .collect();
+    if glyphs.is_empty() {
+        glyphs = (32u32..=126u32)
+            .filter_map(|codepoint| {
+                let ch = char::from_u32(codepoint)?;
+                let (metrics, bitmap) = font.rasterize(ch, size);
+                Some(RasterizedGlyph {
+                    unicode: codepoint,
+                    metrics,
+                    bitmap,
+                })
+            })
+            .collect();
+    }
     glyphs.sort_by_key(|glyph| glyph.unicode);
 
     let placements = pack_glyphs(&glyphs, padding)?;

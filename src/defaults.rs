@@ -329,11 +329,23 @@ fn generate_font_atlas(
         .collect();
     entries.sort_by_key(|(codepoint, _)| *codepoint);
 
-    for (codepoint, index) in &entries {
-        let (metrics, bitmap) = font.rasterize_indexed(*index, size);
-        max_width = max_width.max(metrics.width);
-        max_height = max_height.max(metrics.height);
-        glyph_renders.push((*codepoint, metrics, bitmap));
+    if entries.is_empty() {
+        for codepoint in 32u32..=126u32 {
+            let Some(ch) = char::from_u32(codepoint) else {
+                continue;
+            };
+            let (metrics, bitmap) = font.rasterize(ch, size);
+            max_width = max_width.max(metrics.width);
+            max_height = max_height.max(metrics.height);
+            glyph_renders.push((codepoint, metrics, bitmap));
+        }
+    } else {
+        for (codepoint, index) in &entries {
+            let (metrics, bitmap) = font.rasterize_indexed(*index, size);
+            max_width = max_width.max(metrics.width);
+            max_height = max_height.max(metrics.height);
+            glyph_renders.push((*codepoint, metrics, bitmap));
+        }
     }
 
     let padding = 1usize;
