@@ -114,6 +114,23 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 [[package]]
 name = "bento"
 version = "0.1.0"
+source = "git+https://github.com/JordanHendl/gohan?rev=e1d1e90#e1d1e90581c2064eff2109fb3b794a031dce97d5"
+dependencies = [
+ "bincode",
+ "clap",
+ "dashi",
+ "regex",
+ "rspirv",
+ "rspirv-reflect",
+ "serde",
+ "serde_json",
+ "shaderc",
+ "thiserror",
+]
+
+[[package]]
+name = "bento"
+version = "0.1.0"
 source = "git+https://github.com/JordanHendl/gohan#2438eabd8dd0d02b375527beed2588330825e747"
 dependencies = [
  "bincode",
@@ -636,9 +653,9 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 [[package]]
 name = "furikake"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#2438eabd8dd0d02b375527beed2588330825e747"
+source = "git+https://github.com/JordanHendl/gohan?rev=e1d1e90#e1d1e90581c2064eff2109fb3b794a031dce97d5"
 dependencies = [
- "bento",
+ "bento 0.1.0 (git+https://github.com/JordanHendl/gohan?rev=e1d1e90)",
  "dashi",
  "glam 0.29.3",
  "tare",
@@ -1081,7 +1098,7 @@ dependencies = [
 name = "noren"
 version = "0.1.0"
 dependencies = [
- "bento",
+ "bento 0.1.0 (git+https://github.com/JordanHendl/gohan)",
  "bincode",
  "bytemuck",
  "dashi",
@@ -1636,9 +1653,9 @@ dependencies = [
 [[package]]
 name = "tare"
 version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#2438eabd8dd0d02b375527beed2588330825e747"
+source = "git+https://github.com/JordanHendl/gohan?rev=e1d1e90#e1d1e90581c2064eff2109fb3b794a031dce97d5"
 dependencies = [
- "bento",
+ "bento 0.1.0 (git+https://github.com/JordanHendl/gohan?rev=e1d1e90)",
  "dashi",
  "glam 0.24.2",
 ]
