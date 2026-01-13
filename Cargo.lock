@@ -129,23 +129,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bento"
-version = "0.1.0"
-source = "git+https://github.com/JordanHendl/gohan#2438eabd8dd0d02b375527beed2588330825e747"
-dependencies = [
- "bincode",
- "clap",
- "dashi",
- "regex",
- "rspirv",
- "rspirv-reflect",
- "serde",
- "serde_json",
- "shaderc",
- "thiserror",
-]
-
-[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -655,7 +638,7 @@ name = "furikake"
 version = "0.1.0"
 source = "git+https://github.com/JordanHendl/gohan?rev=e1d1e90#e1d1e90581c2064eff2109fb3b794a031dce97d5"
 dependencies = [
- "bento 0.1.0 (git+https://github.com/JordanHendl/gohan?rev=e1d1e90)",
+ "bento",
  "dashi",
  "glam 0.29.3",
  "tare",
@@ -1098,7 +1081,7 @@ dependencies = [
 name = "noren"
 version = "0.1.0"
 dependencies = [
- "bento 0.1.0 (git+https://github.com/JordanHendl/gohan)",
+ "bento",
  "bincode",
  "bytemuck",
  "dashi",
@@ -1655,7 +1638,7 @@ name = "tare"
 version = "0.1.0"
 source = "git+https://github.com/JordanHendl/gohan?rev=e1d1e90#e1d1e90581c2064eff2109fb3b794a031dce97d5"
 dependencies = [
- "bento 0.1.0 (git+https://github.com/JordanHendl/gohan?rev=e1d1e90)",
+ "bento",
  "dashi",
  "glam 0.24.2",
 ]
