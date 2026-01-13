@@ -26,6 +26,7 @@ use meta::*;
 use parsing::*;
 use rdb::{primitives::Vertex, *};
 use serde::de::DeserializeOwned;
+use tracing::info;
 use utils::*;
 
 pub use parsing::DatabaseLayoutFile;
@@ -1122,6 +1123,7 @@ impl DB {
                 id
             } as u32;
 
+            info!("Loaded Material Texture ID {}", id);
             match slot {
                 MaterialTextureSlot::BaseColor => furikake_material.base_color_texture_id = id,
                 MaterialTextureSlot::Normal => furikake_material.normal_texture_id = id,
@@ -1162,7 +1164,7 @@ impl DB {
                     )));
                 }
             };
-
+            
             bindings.materials.insert(entry.to_string(), handle);
             Some(Ok(handle))
         }
