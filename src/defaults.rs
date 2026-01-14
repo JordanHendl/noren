@@ -698,7 +698,9 @@ fn load_default_witch_images() -> Vec<(String, HostImage)> {
             .nth(index)
             .and_then(|image| image.name())
             .unwrap_or("witch_texture");
+
         let slug = slugify(image_name);
+        tracing::info!("Adding default image {}", slug);
         let entry = format!("{WITCH_IMAGE_PREFIX}/{slug}");
         let data = rgba_from_gltf_image(image);
         let info = ImageInfo {

@@ -8,11 +8,7 @@ use dashi::{Context, Handle, Image};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{
-    DataCache, RDBView,
-    defaults::default_images,
-    utils::NorenError,
-};
+use crate::{DataCache, RDBView, defaults::default_images, utils::NorenError};
 
 use super::DatabaseEntry;
 
@@ -130,10 +126,7 @@ impl HostCubemap {
     ///
     /// The `faces` array is interpreted in the provided order and stored as 6 layers.
     /// A common convention is [+X, -X, +Y, -Y, +Z, -Z], but the caller defines it.
-    pub fn from_faces(
-        mut info: ImageInfo,
-        faces: [Vec<u8>; 6],
-    ) -> Result<Self, NorenError> {
+    pub fn from_faces(mut info: ImageInfo, faces: [Vec<u8>; 6]) -> Result<Self, NorenError> {
         info.layers = 6;
 
         let face_len = faces.first().map(Vec::len).unwrap_or(0);
@@ -397,10 +390,16 @@ impl ImageDB {
 
     /// Lists all imagery entries available in the backing database.
     pub fn enumerate_entries(&self) -> Vec<String> {
-        self.data
+        let mut str: Vec<String> = self
+            .data
             .as_ref()
             .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        let defaults: Vec<String> = self.defaults.iter().map(|c| c.0.clone()).collect();
+
+        str.extend_from_slice(&defaults);
+        return str;
     }
 }
 

@@ -1449,6 +1449,7 @@ fn ensure_furikake_texture(
     };
 
     if let Some(id) = bindings.textures.get(entry) {
+        dbg!("FETCHING OLD {} [{}]", entry, *id);
         return Ok(Some(*id));
     }
 
