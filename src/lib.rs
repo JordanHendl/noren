@@ -1451,12 +1451,12 @@ fn ensure_furikake_texture(
     mut furikake: Option<&mut FurikakeBindings>,
     entry: &str,
 ) -> Result<Option<u16>, NorenError> {
+    use tare::transient::BindlessTextureRegistry;
     let Some(bindings) = furikake.as_deref_mut() else {
         return Ok(None);
     };
 
     if let Some(id) = bindings.textures.get(entry) {
-        tracing::info!("FETCHING OLD {} [{}]", entry, *id);
         return Ok(Some(*id));
     }
 
@@ -1466,25 +1466,7 @@ fn ensure_furikake_texture(
         ..Default::default()
     };
 
-    let mut inserted_id = None;
-    let result = bindings
-        .state_mut()
-        .reserved_mut::<ReservedBindlessTextures, _>("meshi_bindless_textures", |textures| {
-            inserted_id = Some(textures.add_texture(view));
-        });
-
-    tracing::info!(
-        "MAKING FURIKAKE IMAGE {} with {}",
-        entry,
-        *inserted_id.as_ref().unwrap_or(&1)
-    );
-    if let Err(err) = result {
-        return Err(err.into());
-    }
-
-    let id = inserted_id.ok_or_else(|| {
-        NorenError::FurikakeError("failed to allocate furikake texture slot".to_string())
-    })?;
+    let id = bindings.state_mut().add_texture(view);
 
     bindings.textures.insert(entry.to_string(), id);
     Ok(Some(id))
