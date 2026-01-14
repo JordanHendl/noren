@@ -9,6 +9,7 @@ use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 use dashi::Context;
 use defaults::inject_default_layouts;
 use furikake::{
+    BindlessState,
     reservations::{
         bindless_animation_keyframes::ReservedBindlessAnimationKeyframes,
         bindless_animation_tracks::ReservedBindlessAnimationTracks,
@@ -16,9 +17,12 @@ use furikake::{
         bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials,
         bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
         bindless_vertices::ReservedBindlessVertices,
-    }, types::{
-        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform, Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot, MATERIAL_FLAG_EMISSIVE_ONLY, MATERIAL_FLAG_PBR_NORMAL, MATERIAL_FLAG_VERTEX_COLOR
-    }, BindlessState
+    },
+    types::{
+        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,
+        MATERIAL_FLAG_EMISSIVE_ONLY, MATERIAL_FLAG_PBR_NORMAL, MATERIAL_FLAG_VERTEX_COLOR,
+        Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot,
+    },
 };
 pub use furikake_state::FurikakeState;
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -931,7 +935,10 @@ impl DB {
             self.furikake.as_mut(),
             font_def.image.as_str(),
         )?;
-        tracing::info!("SDF Font image atlas id: {}", furikake_texture_id.as_ref().unwrap());
+        tracing::info!(
+            "SDF Font image atlas id: {}",
+            furikake_texture_id.as_ref().unwrap()
+        );
         let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
 
         Ok(DeviceSDFFont {
@@ -1164,7 +1171,7 @@ impl DB {
                     )));
                 }
             };
-            
+
             bindings.materials.insert(entry.to_string(), handle);
             Some(Ok(handle))
         }
@@ -1449,7 +1456,7 @@ fn ensure_furikake_texture(
     };
 
     if let Some(id) = bindings.textures.get(entry) {
-        dbg!("FETCHING OLD {} [{}]", entry, *id);
+        tracing::info!("FETCHING OLD {} [{}]", entry, *id);
         return Ok(Some(*id));
     }
 
@@ -1466,6 +1473,11 @@ fn ensure_furikake_texture(
             inserted_id = Some(textures.add_texture(view));
         });
 
+    tracing::info!(
+        "MAKING FURIKAKE IMAGE {} with {}",
+        entry,
+        *inserted_id.as_ref().unwrap()
+    );
     if let Err(err) = result {
         return Err(err.into());
     }
@@ -1488,7 +1500,7 @@ fn vertex_buffer_slot(vertices: &[Vertex]) -> VertexBufferSlot {
         VertexBufferSlot::Skeleton
     } else {
         // TODO fixhis
-        VertexBufferSlot::Skeleton 
+        VertexBufferSlot::Skeleton
     }
 }
 

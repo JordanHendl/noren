@@ -284,6 +284,7 @@ impl ImageDB {
         }
 
         if let Some(image) = self.defaults.get(entry) {
+            tracing::info!("Fetching default {}", entry);
             info!(resource = "image", entry = %entry, source = "default");
             return Ok(image.clone());
         }
