@@ -1476,7 +1476,7 @@ fn ensure_furikake_texture(
     tracing::info!(
         "MAKING FURIKAKE IMAGE {} with {}",
         entry,
-        *inserted_id.as_ref().unwrap()
+        *inserted_id.as_ref().unwrap_or(&1)
     );
     if let Err(err) = result {
         return Err(err.into());
