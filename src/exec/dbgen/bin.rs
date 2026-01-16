@@ -19,9 +19,9 @@ use noren::{
         ensure_default_assets,
     },
     parsing::{
-        MaterialLayoutFile, MeshLayout, MeshLayoutFile, ModelLayout, ModelLayoutFile,
-        MsdfFontLayoutFile, SdfFontLayoutFile, TextureAtlasLayoutFile, TextureLayout,
-        TextureLayoutFile,
+        FontBounds, FontGlyph, FontMetrics, MaterialLayoutFile, MeshLayout, MeshLayoutFile,
+        ModelLayout, ModelLayoutFile, MsdfFontLayout, MsdfFontLayoutFile, SdfFontLayout,
+        SdfFontLayoutFile, TextureAtlasLayoutFile, TextureLayout, TextureLayoutFile,
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
@@ -37,6 +37,19 @@ use serde::{Deserialize, Serialize};
 struct Logger {
     verbose: bool,
     sink: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+}
+
+struct FontAtlasOutput {
+    images: Vec<(String, HostImage)>,
+    msdf_layouts: HashMap<String, MsdfFontLayout>,
+    sdf_layouts: HashMap<String, SdfFontLayout>,
+}
+
+#[derive(Clone)]
+struct RasterizedGlyph {
+    unicode: u32,
+    metrics: fontdue::Metrics,
+    bitmap: Vec<u8>,
 }
 
 impl Logger {
@@ -698,6 +711,8 @@ fn run_from_path(
     let shaders_path = resolve_string_path(&output_dir, &output.layout.shaders);
     let layout_path = resolve_path(&output_dir, &output.layout_file);
 
+    let font_atlases = build_font_atlases(&base_dir, &fonts, logger)?;
+
     build_geometry(
         &base_dir,
         &geometry_path,
@@ -712,6 +727,7 @@ fn run_from_path(
         &imagery_path,
         &imagery,
         &gltf_sources,
+        &font_atlases.images,
         append,
         write_binaries,
         logger,
@@ -781,13 +797,23 @@ fn run_from_path(
         fs::create_dir_all(parent)?;
     }
     let msdf_fonts_file = File::create(&msdf_fonts_path)?;
-    serde_json::to_writer_pretty(msdf_fonts_file, &MsdfFontLayoutFile::default())?;
+    serde_json::to_writer_pretty(
+        msdf_fonts_file,
+        &MsdfFontLayoutFile {
+            fonts: font_atlases.msdf_layouts,
+        },
+    )?;
 
     if let Some(parent) = sdf_fonts_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let sdf_fonts_file = File::create(&sdf_fonts_path)?;
-    serde_json::to_writer_pretty(sdf_fonts_file, &SdfFontLayoutFile::default())?;
+    serde_json::to_writer_pretty(
+        sdf_fonts_file,
+        &SdfFontLayoutFile {
+            fonts: font_atlases.sdf_layouts,
+        },
+    )?;
 
     if let Some(parent) = meshes_path.parent() {
         fs::create_dir_all(parent)?;
@@ -1131,6 +1157,7 @@ fn build_imagery(
     output: &Path,
     entries: &[ImageEntry],
     gltf_sources: &[PathBuf],
+    extra_images: &[(String, HostImage)],
     append: bool,
     write_binaries: bool,
     logger: &Logger,
@@ -1180,6 +1207,14 @@ fn build_imagery(
     }
 
     inject_default_imagery(&mut rdb, logger)?;
+    for (entry, image) in extra_images {
+        if seen_entries.contains(entry) {
+            continue;
+        }
+        logger.log(format!("imagery: adding generated {entry}"));
+        rdb.add(entry, image).map_err(BuildError::from)?;
+        seen_entries.insert(entry.clone());
+    }
 
     if write_binaries {
         logger.log(format!("imagery: writing {}", output.display()));
@@ -1409,6 +1444,300 @@ fn build_fonts(
         logger.log("font: skipping binary output (--layouts-only)");
     }
     Ok(())
+}
+
+fn build_font_atlases(
+    base_dir: &Path,
+    entries: &[FontEntry],
+    logger: &Logger,
+) -> Result<FontAtlasOutput, BuildError> {
+    let mut seen_entries = HashSet::new();
+    for entry in entries {
+        seen_entries.insert(entry.entry.clone());
+    }
+
+    let mut fonts = Vec::new();
+    for font in default_fonts() {
+        if seen_entries.contains(&font.info.name) {
+            continue;
+        }
+        fonts.push(font);
+    }
+
+    for entry in entries {
+        logger.log(format!(
+            "font: loading {} from {}",
+            entry.entry,
+            resolve_path(base_dir, &entry.file).display()
+        ));
+        fonts.push(load_font(base_dir, entry)?);
+    }
+
+    let mut images = Vec::new();
+    let mut msdf_layouts = HashMap::new();
+    let mut sdf_layouts = HashMap::new();
+
+    for font in fonts {
+        let settings = FontSettings {
+            collection_index: font.info.collection_index,
+            ..FontSettings::default()
+        };
+        let parsed_font =
+            Font::from_bytes(font.data.clone(), settings).map_err(|err| {
+                BuildError::message(format!("font parse error for {}: {err}", font.info.name))
+            })?;
+        let image_entry = font_atlas_image_entry(&font.info.name);
+        let (image, glyphs, metrics) =
+            generate_font_atlas(&parsed_font, &image_entry, 16.0, 2)?;
+        let display_name = parsed_font
+            .name()
+            .map(str::to_string)
+            .unwrap_or_else(|| font.info.name.clone());
+        let leaf = font_leaf_name(&font.info.name);
+
+        images.push((image_entry.clone(), image));
+
+        msdf_layouts.insert(
+            format!("msdf_fonts/{leaf}"),
+            MsdfFontLayout {
+                image: image_entry.clone(),
+                name: Some(format!("{display_name} MSDF Font")),
+                font: Some(font.info.name.clone()),
+                size: 16.0,
+                distance_range: 4.0,
+                angle_threshold: 3.0,
+                metrics: metrics.clone(),
+                glyphs: glyphs.clone(),
+            },
+        );
+        sdf_layouts.insert(
+            format!("sdf_fonts/{leaf}"),
+            SdfFontLayout {
+                image: image_entry,
+                name: Some(format!("{display_name} SDF Font")),
+                font: Some(font.info.name.clone()),
+                size: 16.0,
+                distance_range: 4.0,
+                metrics,
+                glyphs,
+            },
+        );
+    }
+
+    Ok(FontAtlasOutput {
+        images,
+        msdf_layouts,
+        sdf_layouts,
+    })
+}
+
+fn font_leaf_name(entry: &str) -> String {
+    entry
+        .rsplit('/')
+        .next()
+        .unwrap_or(entry)
+        .trim()
+        .replace(' ', "_")
+}
+
+fn font_atlas_image_entry(entry: &str) -> String {
+    let leaf = font_leaf_name(entry);
+    format!("imagery/fonts/{leaf}")
+}
+
+fn generate_font_atlas(
+    font: &Font,
+    image_entry: &str,
+    size: f32,
+    padding: u32,
+) -> Result<(HostImage, Vec<FontGlyph>, FontMetrics), BuildError> {
+    let mut glyphs: Vec<RasterizedGlyph> = font
+        .chars()
+        .iter()
+        .map(|(character, glyph_index)| {
+            let (metrics, bitmap) = font.rasterize_indexed(glyph_index.get(), size);
+            RasterizedGlyph {
+                unicode: *character as u32,
+                metrics,
+                bitmap,
+            }
+        })
+        .collect();
+    if glyphs.is_empty() {
+        glyphs = (32u32..=126u32)
+            .filter_map(|codepoint| {
+                let ch = char::from_u32(codepoint)?;
+                let (metrics, bitmap) = font.rasterize(ch, size);
+                Some(RasterizedGlyph {
+                    unicode: codepoint,
+                    metrics,
+                    bitmap,
+                })
+            })
+            .collect();
+    }
+    glyphs.sort_by_key(|glyph| glyph.unicode);
+
+    let placements = pack_glyphs(&glyphs, padding)?;
+    let atlas_dim = placements
+        .values()
+        .fold(1u32, |acc, placement| acc.max(placement.atlas_dim));
+    let mut pixels = vec![0u8; (atlas_dim * atlas_dim * 4) as usize];
+
+    for (index, glyph) in glyphs.iter().enumerate() {
+        if let Some(placement) = placements.get(&index) {
+            let width = glyph.metrics.width as u32;
+            let height = glyph.metrics.height as u32;
+            for row in 0..height {
+                let src_start = (row * width) as usize;
+                let src_end = src_start + width as usize;
+                let src_row = &glyph.bitmap[src_start..src_end];
+                let dest_y = placement.y + row;
+                let dest_x = placement.x;
+                let dest_start = ((dest_y * atlas_dim + dest_x) * 4) as usize;
+                for (offset, alpha) in src_row.iter().enumerate() {
+                    let dest = dest_start + offset * 4;
+                    pixels[dest] = 255;
+                    pixels[dest + 1] = 255;
+                    pixels[dest + 2] = 255;
+                    pixels[dest + 3] = *alpha;
+                }
+            }
+        }
+    }
+
+    let info = ImageInfo {
+        name: image_entry.to_string(),
+        dim: [atlas_dim, atlas_dim, 1],
+        layers: 1,
+        format: dashi::Format::RGBA8,
+        mip_levels: 1,
+    };
+    let image = HostImage::new(info, pixels);
+
+    let line_metrics = font.horizontal_line_metrics(size);
+    let metrics = FontMetrics {
+        em_size: size,
+        line_height: line_metrics.map(|metrics| metrics.new_line_size).unwrap_or(size),
+        ascender: line_metrics.map(|metrics| metrics.ascent).unwrap_or_default(),
+        descender: line_metrics.map(|metrics| metrics.descent).unwrap_or_default(),
+        underline_y: 0.0,
+        underline_thickness: 0.0,
+    };
+
+    let layout_glyphs = glyphs
+        .iter()
+        .enumerate()
+        .map(|(index, glyph)| FontGlyph {
+            unicode: glyph.unicode,
+            advance: glyph.metrics.advance_width,
+            plane_bounds: glyph_plane_bounds(&glyph.metrics),
+            atlas_bounds: placements.get(&index).map(|placement| FontBounds {
+                left: placement.x as f32,
+                bottom: placement.y as f32,
+                right: (placement.x + placement.width) as f32,
+                top: (placement.y + placement.height) as f32,
+            }),
+        })
+        .collect();
+
+    Ok((image, layout_glyphs, metrics))
+}
+
+fn glyph_plane_bounds(metrics: &fontdue::Metrics) -> Option<FontBounds> {
+    if metrics.width == 0 || metrics.height == 0 {
+        return None;
+    }
+    let left = metrics.xmin as f32;
+    let bottom = metrics.ymin as f32;
+    Some(FontBounds {
+        left,
+        bottom,
+        right: left + metrics.width as f32,
+        top: bottom + metrics.height as f32,
+    })
+}
+
+struct GlyphPlacement {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    atlas_dim: u32,
+}
+
+fn pack_glyphs(
+    glyphs: &[RasterizedGlyph],
+    padding: u32,
+) -> Result<HashMap<usize, GlyphPlacement>, BuildError> {
+    let mut sortable: Vec<(usize, u32, u32)> = glyphs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, glyph)| {
+            let width = glyph.metrics.width as u32;
+            let height = glyph.metrics.height as u32;
+            if width == 0 || height == 0 {
+                None
+            } else {
+                Some((index, width, height))
+            }
+        })
+        .collect();
+    sortable.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.1.cmp(&a.1)));
+
+    let mut atlas_dim = 256u32;
+    loop {
+        if let Some(placements) = try_pack(atlas_dim, &sortable, padding) {
+            return Ok(placements);
+        }
+        atlas_dim = atlas_dim.saturating_mul(2);
+        if atlas_dim > 16384 {
+            return Err(BuildError::message(
+                "font atlas exceeded maximum size when packing glyphs",
+            ));
+        }
+    }
+}
+
+fn try_pack(
+    atlas_dim: u32,
+    glyphs: &[(usize, u32, u32)],
+    padding: u32,
+) -> Option<HashMap<usize, GlyphPlacement>> {
+    let mut placements = HashMap::new();
+    let mut cursor_x = padding;
+    let mut cursor_y = padding;
+    let mut row_height = 0u32;
+
+    for (index, width, height) in glyphs {
+        if *width + padding * 2 > atlas_dim || *height + padding * 2 > atlas_dim {
+            return None;
+        }
+        if cursor_x + width + padding > atlas_dim {
+            cursor_x = padding;
+            cursor_y = cursor_y.saturating_add(row_height + padding);
+            row_height = 0;
+        }
+
+        if cursor_y + height + padding > atlas_dim {
+            return None;
+        }
+
+        placements.insert(
+            *index,
+            GlyphPlacement {
+                x: cursor_x,
+                y: cursor_y,
+                width: *width,
+                height: *height,
+                atlas_dim,
+            },
+        );
+        cursor_x = cursor_x.saturating_add(width + padding);
+        row_height = row_height.max(*height);
+    }
+
+    Some(placements)
 }
 
 fn build_skeletons(

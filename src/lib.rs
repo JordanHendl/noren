@@ -9,6 +9,7 @@ use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 use dashi::Context;
 use defaults::inject_default_layouts;
 use furikake::{
+    BindlessState,
     reservations::{
         bindless_animation_keyframes::ReservedBindlessAnimationKeyframes,
         bindless_animation_tracks::ReservedBindlessAnimationTracks,
@@ -16,9 +17,12 @@ use furikake::{
         bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials,
         bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
         bindless_vertices::ReservedBindlessVertices,
-    }, types::{
-        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform, Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot, MATERIAL_FLAG_EMISSIVE_ONLY, MATERIAL_FLAG_PBR_NORMAL, MATERIAL_FLAG_VERTEX_COLOR
-    }, BindlessState
+    },
+    types::{
+        AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,
+        MATERIAL_FLAG_EMISSIVE_ONLY, MATERIAL_FLAG_PBR_NORMAL, MATERIAL_FLAG_VERTEX_COLOR,
+        Material as FurikakeMaterial, SkeletonHeader, VertexBufferSlot,
+    },
 };
 pub use furikake_state::FurikakeState;
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -26,6 +30,7 @@ use meta::*;
 use parsing::*;
 use rdb::{primitives::Vertex, *};
 use serde::de::DeserializeOwned;
+use tracing::info;
 use utils::*;
 
 pub use parsing::DatabaseLayoutFile;
@@ -930,6 +935,10 @@ impl DB {
             self.furikake.as_mut(),
             font_def.image.as_str(),
         )?;
+        tracing::info!(
+            "SDF Font image atlas id: {}",
+            furikake_texture_id.as_ref().unwrap()
+        );
         let name = font_def.name.clone().unwrap_or_else(|| entry.to_string());
 
         Ok(DeviceSDFFont {
@@ -1121,6 +1130,7 @@ impl DB {
                 id
             } as u32;
 
+            info!("Loaded Material Texture ID {}", id);
             match slot {
                 MaterialTextureSlot::BaseColor => furikake_material.base_color_texture_id = id,
                 MaterialTextureSlot::Normal => furikake_material.normal_texture_id = id,
@@ -1441,6 +1451,7 @@ fn ensure_furikake_texture(
     mut furikake: Option<&mut FurikakeBindings>,
     entry: &str,
 ) -> Result<Option<u16>, NorenError> {
+    use tare::transient::BindlessTextureRegistry;
     let Some(bindings) = furikake.as_deref_mut() else {
         return Ok(None);
     };
@@ -1455,20 +1466,7 @@ fn ensure_furikake_texture(
         ..Default::default()
     };
 
-    let mut inserted_id = None;
-    let result = bindings
-        .state_mut()
-        .reserved_mut::<ReservedBindlessTextures, _>("meshi_bindless_textures", |textures| {
-            inserted_id = Some(textures.add_texture(view));
-        });
-
-    if let Err(err) = result {
-        return Err(err.into());
-    }
-
-    let id = inserted_id.ok_or_else(|| {
-        NorenError::FurikakeError("failed to allocate furikake texture slot".to_string())
-    })?;
+    let id = bindings.state_mut().add_texture(view);
 
     bindings.textures.insert(entry.to_string(), id);
     Ok(Some(id))
@@ -1484,7 +1482,7 @@ fn vertex_buffer_slot(vertices: &[Vertex]) -> VertexBufferSlot {
         VertexBufferSlot::Skeleton
     } else {
         // TODO fixhis
-        VertexBufferSlot::Skeleton 
+        VertexBufferSlot::Skeleton
     }
 }
 
