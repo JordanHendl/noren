@@ -1098,6 +1098,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tare",
  "tempfile",
  "tracing",
  "unzip3",
