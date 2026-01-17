@@ -10,9 +10,10 @@ use crate::{
             TERRAIN_DIRTY_GENERATOR, TERRAIN_DIRTY_MUTATION, TERRAIN_DIRTY_SETTINGS,
             TerrainChunkArtifact, TerrainChunkDependencyHashes, TerrainChunkLodHash,
             TerrainChunkState, TerrainDirtyReason, TerrainGeneratorDefinition,
-            TerrainMutationLayer, TerrainProjectSettings, TerrainVertexLayout,
-            chunk_artifact_entry, chunk_coord_key, chunk_state_entry, generator_entry, lod_key,
-            mutation_layer_entry, project_settings_entry,
+            TerrainMutationLayer, TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams,
+            TerrainProjectSettings, TerrainVertexLayout, chunk_artifact_entry, chunk_coord_key,
+            chunk_state_entry, generator_entry, lod_key, mutation_layer_entry,
+            project_settings_entry,
         },
     },
 };
@@ -71,8 +72,9 @@ pub fn build_terrain_chunks(
         project_key,
         settings.active_generator_version,
     ))?;
+    let entries = rdb.entries();
     let mutation_layers = collect_active_mutation_layers(
-        rdb.entries(),
+        &entries,
         rdb,
         project_key,
         settings.active_mutation_version,
@@ -180,7 +182,7 @@ pub fn build_terrain_chunks(
 }
 
 fn collect_active_mutation_layers(
-    entries: Vec<RDBEntryMeta>,
+    entries: &[RDBEntryMeta],
     rdb: &mut RDBFile,
     project_key: &str,
     active_version: u32,
@@ -203,6 +205,12 @@ fn collect_active_mutation_layers(
     for (layer_id, version) in layer_versions {
         let entry = mutation_layer_entry(project_key, &layer_id, version);
         if let Ok(layer) = rdb.fetch::<TerrainMutationLayer>(&entry) {
+            let mut layer = layer;
+            let op_events =
+                collect_mutation_ops(entries, rdb, project_key, &layer_id, active_version)?;
+            if !op_events.is_empty() {
+                layer.ops = op_events;
+            }
             layers.push(layer);
         }
     }
@@ -212,6 +220,50 @@ fn collect_active_mutation_layers(
             .then_with(|| a.layer_id.cmp(&b.layer_id))
     });
     Ok(layers)
+}
+
+fn collect_mutation_ops(
+    entries: &[RDBEntryMeta],
+    rdb: &mut RDBFile,
+    project_key: &str,
+    layer_id: &str,
+    active_version: u32,
+) -> Result<Vec<TerrainMutationOp>, RdbErr> {
+    let prefix = format!("terrain/mutation_op/{project_key}/{layer_id}/");
+    let mut latest: BTreeMap<String, TerrainMutationOp> = BTreeMap::new();
+    for entry in entries {
+        if let Some((version, order, event_id)) = parse_mutation_op_entry(&entry.name, &prefix) {
+            if version > active_version {
+                continue;
+            }
+            let mut op = rdb.fetch::<TerrainMutationOp>(&entry.name)?;
+            op.order = order;
+            op.event_id = event_id;
+            latest
+                .entry(op.op_id.clone())
+                .and_modify(|current| {
+                    if op.event_id > current.event_id {
+                        *current = op.clone();
+                    }
+                })
+                .or_insert(op);
+        }
+    }
+    let mut ops: Vec<TerrainMutationOp> = latest.into_values().collect();
+    ops.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.op_id.cmp(&b.op_id)));
+    Ok(ops)
+}
+
+fn parse_mutation_op_entry(name: &str, prefix: &str) -> Option<(u32, u32, u32)> {
+    let remainder = name.strip_prefix(prefix)?;
+    let mut parts = remainder.split('/');
+    let version_part = parts.next()?;
+    let order_part = parts.next()?;
+    let event_part = parts.next()?;
+    let version = version_part.strip_prefix('v')?.parse().ok()?;
+    let order = order_part.strip_prefix('o')?.parse().ok()?;
+    let event_id = event_part.strip_prefix('e')?.parse().ok()?;
+    Some((version, order, event_id))
 }
 
 fn parse_mutation_layer_entry(name: &str, prefix: &str) -> Option<(String, u32)> {
@@ -400,15 +452,99 @@ fn sample_height(
     let mut height = base;
     for layer in mutation_layers {
         for op in &layer.ops {
-            if !op.enabled || op.weight == 0.0 {
+            if !op.enabled || op.strength == 0.0 {
                 continue;
             }
-            let op_hash = fnv1a64(op.op_id.as_bytes());
-            let offset = ((op_hash as f32 / u64::MAX as f32) - 0.5) * op.weight;
-            height += offset * generator.amplitude * 0.25;
+            let influence = match op.params {
+                TerrainMutationParams::Sphere { center }
+                | TerrainMutationParams::Smooth { center } => {
+                    radial_falloff(center, world_x, world_y, op.radius, op.falloff)
+                }
+                TerrainMutationParams::Capsule { start, end } => {
+                    capsule_falloff(start, end, [world_x, world_y], op.radius, op.falloff)
+                }
+                TerrainMutationParams::MaterialPaint { center, .. } => {
+                    radial_falloff(center, world_x, world_y, op.radius, op.falloff)
+                }
+            };
+            if influence <= 0.0 {
+                continue;
+            }
+            match op.kind {
+                TerrainMutationOpKind::SphereAdd | TerrainMutationOpKind::CapsuleAdd => {
+                    height += op.strength * influence;
+                }
+                TerrainMutationOpKind::SphereSub | TerrainMutationOpKind::CapsuleSub => {
+                    height -= op.strength * influence;
+                }
+                TerrainMutationOpKind::Smooth => {
+                    let blend = (op.strength * influence).clamp(0.0, 1.0);
+                    height = height + (base - height) * blend;
+                }
+                TerrainMutationOpKind::MaterialPaint => {
+                    // Height unaffected.
+                }
+            }
         }
     }
     height
+}
+
+fn radial_falloff(center: [f32; 3], world_x: f32, world_y: f32, radius: f32, falloff: f32) -> f32 {
+    let dx = world_x - center[0];
+    let dy = world_y - center[1];
+    falloff_weight((dx * dx + dy * dy).sqrt(), radius, falloff)
+}
+
+fn capsule_falloff(
+    start: [f32; 3],
+    end: [f32; 3],
+    point: [f32; 2],
+    radius: f32,
+    falloff: f32,
+) -> f32 {
+    let vx = end[0] - start[0];
+    let vy = end[1] - start[1];
+    let wx = point[0] - start[0];
+    let wy = point[1] - start[1];
+    let len_sq = vx * vx + vy * vy;
+    let t = if len_sq > 0.0 {
+        (wx * vx + wy * vy) / len_sq
+    } else {
+        0.0
+    };
+    let t = t.clamp(0.0, 1.0);
+    let closest = [start[0] + vx * t, start[1] + vy * t];
+    let dx = point[0] - closest[0];
+    let dy = point[1] - closest[1];
+    falloff_weight((dx * dx + dy * dy).sqrt(), radius, falloff)
+}
+
+fn falloff_weight(distance: f32, radius: f32, falloff: f32) -> f32 {
+    if radius <= 0.0 {
+        return 0.0;
+    }
+    if distance >= radius {
+        return 0.0;
+    }
+    let t = (distance / radius).clamp(0.0, 1.0);
+    let hardness = (1.0 - falloff).clamp(0.0, 1.0);
+    if t <= hardness {
+        1.0
+    } else {
+        let ft = (t - hardness) / (1.0 - hardness).max(0.0001);
+        1.0 - ft
+    }
+}
+
+pub fn sample_height_with_mutations(
+    settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    mutation_layers: &[TerrainMutationLayer],
+    world_x: f32,
+    world_y: f32,
+) -> f32 {
+    sample_height(settings, generator, mutation_layers, world_x, world_y)
 }
 
 fn hash_serialize<T: Serialize>(value: &T) -> u64 {
@@ -442,14 +578,32 @@ fn settings_hash_input(settings: &TerrainProjectSettings) -> TerrainProjectSetti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rdb::terrain::{TerrainMutationLayer, TerrainMutationOp, TerrainProjectSettings};
+    use crate::rdb::terrain::{
+        TerrainMutationLayer, TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams,
+        TerrainProjectSettings, mutation_op_entry,
+    };
 
     fn seed_rdb(project_key: &str) -> RDBFile {
         let mut rdb = RDBFile::new();
         let settings = TerrainProjectSettings::default();
         let generator = TerrainGeneratorDefinition::default();
-        let layer = TerrainMutationLayer::new("layer-a", "Layer A", 0)
-            .with_op(TerrainMutationOp::new("raise"));
+        let layer = TerrainMutationLayer::new("layer-a", "Layer A", 0);
+        let op = TerrainMutationOp {
+            op_id: "raise".to_string(),
+            layer_id: layer.layer_id.clone(),
+            enabled: true,
+            order: 0,
+            kind: TerrainMutationOpKind::SphereAdd,
+            params: TerrainMutationParams::Sphere {
+                center: [8.0, 8.0, 0.0],
+            },
+            radius: 4.0,
+            strength: 2.0,
+            falloff: 0.5,
+            event_id: 1,
+            timestamp: 1,
+            author: None,
+        };
         rdb.add(&project_settings_entry(project_key), &settings)
             .expect("settings");
         rdb.add(
@@ -466,6 +620,17 @@ mod tests {
             &layer,
         )
         .expect("mutation");
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                op.order,
+                op.event_id,
+            ),
+            &op,
+        )
+        .expect("mutation op");
         rdb
     }
 
@@ -491,8 +656,24 @@ mod tests {
         let mut settings = TerrainProjectSettings::default();
         let generator = TerrainGeneratorDefinition::default();
 
-        let mut layer = TerrainMutationLayer::new("layer-a", "Layer A", 0)
-            .with_op(TerrainMutationOp::new("raise"));
+        let layer = TerrainMutationLayer::new("layer-a", "Layer A", 0);
+        let op = TerrainMutationOp {
+            op_id: "raise".to_string(),
+            layer_id: layer.layer_id.clone(),
+            enabled: true,
+            order: 0,
+            kind: TerrainMutationOpKind::SphereAdd,
+            params: TerrainMutationParams::Sphere {
+                center: [8.0, 8.0, 0.0],
+            },
+            radius: 4.0,
+            strength: 2.0,
+            falloff: 0.5,
+            event_id: 1,
+            timestamp: 1,
+            author: None,
+        };
+        let mut layer = layer;
         layer.affected_chunks = Some(vec![[0, 0]]);
 
         rdb.add(&project_settings_entry(project_key), &settings)
@@ -511,6 +692,17 @@ mod tests {
             &layer,
         )
         .expect("mutation");
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                op.order,
+                op.event_id,
+            ),
+            &op,
+        )
+        .expect("mutation op");
 
         let requests = [
             TerrainChunkBuildRequest {
@@ -536,20 +728,23 @@ mod tests {
             .fetch::<TerrainChunkArtifact>(&artifact_key_10)
             .expect("artifact");
 
-        let mut updated_layer = layer.clone();
-        updated_layer.ops[0].weight = 2.0;
-        settings.active_mutation_version += 1;
-        rdb.upsert(&project_settings_entry(project_key), &settings)
-            .expect("settings");
+        let updated_op = TerrainMutationOp {
+            strength: 4.0,
+            event_id: 2,
+            timestamp: 2,
+            ..op.clone()
+        };
         rdb.add(
-            &mutation_layer_entry(
+            &mutation_op_entry(
                 project_key,
-                &updated_layer.layer_id,
+                &layer.layer_id,
                 settings.active_mutation_version,
+                updated_op.order,
+                updated_op.event_id,
             ),
-            &updated_layer,
+            &updated_op,
         )
-        .expect("mutation");
+        .expect("mutation op");
 
         let report = build_terrain_chunks(&mut rdb, project_key, &requests).expect("build");
         assert_eq!(report.built_chunks, 1);
@@ -569,5 +764,140 @@ mod tests {
             artifact_10_before.content_hash,
             artifact_10_after.content_hash
         );
+    }
+
+    #[test]
+    fn mutation_replay_is_deterministic_by_order() {
+        let project_key = "sample";
+        let settings = TerrainProjectSettings::default();
+        let generator = TerrainGeneratorDefinition::default();
+        let layer = TerrainMutationLayer::new("layer-a", "Layer A", 0);
+
+        let op_a = TerrainMutationOp {
+            op_id: "a".to_string(),
+            layer_id: layer.layer_id.clone(),
+            enabled: true,
+            order: 1,
+            kind: TerrainMutationOpKind::SphereAdd,
+            params: TerrainMutationParams::Sphere {
+                center: [4.0, 4.0, 0.0],
+            },
+            radius: 3.0,
+            strength: 1.0,
+            falloff: 0.4,
+            event_id: 1,
+            timestamp: 1,
+            author: None,
+        };
+        let op_b = TerrainMutationOp {
+            op_id: "b".to_string(),
+            order: 0,
+            ..op_a.clone()
+        };
+
+        let mut rdb = RDBFile::new();
+        rdb.add(&project_settings_entry(project_key), &settings)
+            .expect("settings");
+        rdb.add(
+            &generator_entry(project_key, settings.active_generator_version),
+            &generator,
+        )
+        .expect("generator");
+        rdb.add(
+            &mutation_layer_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+            ),
+            &layer,
+        )
+        .expect("mutation");
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                op_a.order,
+                op_a.event_id,
+            ),
+            &op_a,
+        )
+        .expect("mutation op");
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                op_b.order,
+                op_b.event_id,
+            ),
+            &op_b,
+        )
+        .expect("mutation op");
+
+        let request = TerrainChunkBuildRequest {
+            chunk_coords: [0, 0],
+            lod: 0,
+        };
+        let report = build_terrain_chunks(&mut rdb, project_key, &[request]).expect("build");
+        assert_eq!(report.built_chunks, 1);
+        let coord_key = chunk_coord_key(0, 0);
+        let artifact_key = chunk_artifact_entry(project_key, &coord_key, "lod0");
+        let artifact_a = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key)
+            .expect("artifact");
+
+        let mut rdb_alt = RDBFile::new();
+        rdb_alt
+            .add(&project_settings_entry(project_key), &settings)
+            .expect("settings");
+        rdb_alt
+            .add(
+                &generator_entry(project_key, settings.active_generator_version),
+                &generator,
+            )
+            .expect("generator");
+        rdb_alt
+            .add(
+                &mutation_layer_entry(
+                    project_key,
+                    &layer.layer_id,
+                    settings.active_mutation_version,
+                ),
+                &layer,
+            )
+            .expect("mutation");
+        rdb_alt
+            .add(
+                &mutation_op_entry(
+                    project_key,
+                    &layer.layer_id,
+                    settings.active_mutation_version,
+                    op_b.order,
+                    op_b.event_id,
+                ),
+                &op_b,
+            )
+            .expect("mutation op");
+        rdb_alt
+            .add(
+                &mutation_op_entry(
+                    project_key,
+                    &layer.layer_id,
+                    settings.active_mutation_version,
+                    op_a.order,
+                    op_a.event_id,
+                ),
+                &op_a,
+            )
+            .expect("mutation op");
+
+        let report_alt =
+            build_terrain_chunks(&mut rdb_alt, project_key, &[request]).expect("build");
+        assert_eq!(report_alt.built_chunks, 1);
+        let artifact_b = rdb_alt
+            .fetch::<TerrainChunkArtifact>(&artifact_key)
+            .expect("artifact");
+        assert_eq!(artifact_a.content_hash, artifact_b.content_hash);
     }
 }

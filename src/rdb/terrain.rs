@@ -10,6 +10,7 @@ use crate::{RDBView, error::NorenError};
 /// - Project settings: `terrain/project/{project_key}/settings`
 /// - Generator definition (versioned): `terrain/generator/{project_key}/v{version}`
 /// - Mutation layer (versioned): `terrain/mutation_layer/{project_key}/{layer_id}/v{version}`
+/// - Mutation op (append-only): `terrain/mutation_op/{project_key}/{layer_id}/v{version}/o{order}/e{event}`
 /// - Chunk artifact: `terrain/chunk_artifact/{project_key}/{chunk_coord}/{lod_key}`
 /// - Chunk state: `terrain/chunk_state/{project_key}/{chunk_coord}`
 ///
@@ -24,6 +25,7 @@ use crate::{RDBView, error::NorenError};
 pub const TERRAIN_PROJECT_PREFIX: &str = "terrain/project";
 pub const TERRAIN_GENERATOR_PREFIX: &str = "terrain/generator";
 pub const TERRAIN_MUTATION_LAYER_PREFIX: &str = "terrain/mutation_layer";
+pub const TERRAIN_MUTATION_OP_PREFIX: &str = "terrain/mutation_op";
 pub const TERRAIN_CHUNK_ARTIFACT_PREFIX: &str = "terrain/chunk_artifact";
 pub const TERRAIN_CHUNK_STATE_PREFIX: &str = "terrain/chunk_state";
 
@@ -116,19 +118,66 @@ impl Default for TerrainGeneratorDefinition {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TerrainMutationOpKind {
+    SphereAdd,
+    SphereSub,
+    CapsuleAdd,
+    CapsuleSub,
+    Smooth,
+    MaterialPaint,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum TerrainMutationParams {
+    Sphere { center: [f32; 3] },
+    Capsule { start: [f32; 3], end: [f32; 3] },
+    Smooth { center: [f32; 3] },
+    MaterialPaint { center: [f32; 3], material_id: u32 },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TerrainMutationOp {
     pub op_id: String,
+    pub layer_id: String,
     pub enabled: bool,
-    pub weight: f32,
+    /// Deterministic ordering within the layer.
+    pub order: u32,
+    pub kind: TerrainMutationOpKind,
+    pub params: TerrainMutationParams,
+    /// World-space influence radius.
+    pub radius: f32,
+    /// Signed strength applied by the brush.
+    pub strength: f32,
+    /// Falloff factor from 0-1.
+    pub falloff: f32,
+    /// Append-only event index.
+    pub event_id: u32,
+    pub timestamp: u64,
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 impl TerrainMutationOp {
-    pub fn new(op_id: impl Into<String>) -> Self {
+    pub fn new_sphere(
+        op_id: impl Into<String>,
+        layer_id: impl Into<String>,
+        kind: TerrainMutationOpKind,
+        center: [f32; 3],
+    ) -> Self {
         Self {
             op_id: op_id.into(),
+            layer_id: layer_id.into(),
             enabled: true,
-            weight: 1.0,
+            order: 0,
+            kind,
+            params: TerrainMutationParams::Sphere { center },
+            radius: 4.0,
+            strength: 1.0,
+            falloff: 0.5,
+            event_id: 0,
+            timestamp: 0,
+            author: None,
         }
     }
 }
@@ -140,6 +189,7 @@ pub struct TerrainMutationLayer {
     pub order: u32,
     pub version: u32,
     /// Ordered mutation operations for the layer.
+    #[serde(default)]
     pub ops: Vec<TerrainMutationOp>,
     /// Optional list of chunk coordinates this layer affects. When omitted, the
     /// layer applies to every chunk.
@@ -167,7 +217,12 @@ impl TerrainMutationLayer {
 
 impl Default for TerrainMutationLayer {
     fn default() -> Self {
-        Self::new("layer-1", "Layer 1", 0).with_op(TerrainMutationOp::new("default-op"))
+        Self::new("layer-1", "Layer 1", 0).with_op(TerrainMutationOp::new_sphere(
+            "default-op",
+            "layer-1",
+            TerrainMutationOpKind::SphereAdd,
+            [0.0, 0.0, 0.0],
+        ))
     }
 }
 
@@ -241,6 +296,16 @@ pub fn generator_entry(project_key: &str, version: u32) -> String {
 
 pub fn mutation_layer_entry(project_key: &str, layer_id: &str, version: u32) -> String {
     format!("{TERRAIN_MUTATION_LAYER_PREFIX}/{project_key}/{layer_id}/v{version}")
+}
+
+pub fn mutation_op_entry(
+    project_key: &str,
+    layer_id: &str,
+    version: u32,
+    order: u32,
+    event_id: u32,
+) -> String {
+    format!("{TERRAIN_MUTATION_OP_PREFIX}/{project_key}/{layer_id}/v{version}/o{order}/e{event_id}")
 }
 
 pub fn chunk_coord_key(x: i32, y: i32) -> String {
@@ -521,11 +586,28 @@ mod tests {
         settings.active_generator_version = generator.version;
 
         let layer_id = "base-layer";
-        let layer_v1 =
-            TerrainMutationLayer::new(layer_id, "Base", 0).with_op(TerrainMutationOp::new("raise"));
+        let mut layer_v1 =
+            TerrainMutationLayer::new(layer_id, "Base", 0).with_op(TerrainMutationOp::new_sphere(
+                "raise",
+                layer_id,
+                TerrainMutationOpKind::SphereAdd,
+                [0.0, 0.0, 0.0],
+            ));
+        layer_v1.ops[0].order = 0;
+        layer_v1.ops[0].event_id = 1;
+        layer_v1.ops[0].timestamp = 1;
         let mut layer_v2 = layer_v1.clone();
         layer_v2.version = 2;
-        layer_v2.ops.push(TerrainMutationOp::new("erode"));
+        let mut erode = TerrainMutationOp::new_sphere(
+            "erode",
+            layer_id,
+            TerrainMutationOpKind::SphereSub,
+            [1.0, 1.0, 0.0],
+        );
+        erode.order = 1;
+        erode.event_id = 1;
+        erode.timestamp = 2;
+        layer_v2.ops.push(erode);
         settings.active_mutation_version = layer_v2.version;
 
         rdb.add(&project_settings_entry(project_key), &settings)?;
