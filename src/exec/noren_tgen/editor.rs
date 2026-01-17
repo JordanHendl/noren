@@ -6,67 +6,17 @@ use std::{
 
 use eframe::egui;
 use noren::{RDBEntryMeta, RDBFile, RdbErr};
-use serde::Deserialize as SerdeDeserialize;
-use serde::Serialize;
-
-#[derive(Clone, Debug, Serialize, SerdeDeserialize)]
-struct TerrainProjectSettings {
-    name: String,
-    seed: u64,
-    tile_size: f32,
-    tiles_per_chunk: [u32; 2],
-}
-
-impl Default for TerrainProjectSettings {
-    fn default() -> Self {
-        Self {
-            name: "New Terrain Project".to_string(),
-            seed: 1337,
-            tile_size: 1.0,
-            tiles_per_chunk: [32, 32],
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, SerdeDeserialize)]
-struct TerrainGeneratorSettings {
-    algorithm: String,
-    frequency: f32,
-    amplitude: f32,
-}
-
-impl Default for TerrainGeneratorSettings {
-    fn default() -> Self {
-        Self {
-            algorithm: "ridge-noise".to_string(),
-            frequency: 0.02,
-            amplitude: 64.0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, SerdeDeserialize)]
-struct TerrainMutationLayer {
-    name: String,
-    enabled: bool,
-    weight: f32,
-}
-
-impl TerrainMutationLayer {
-    fn with_index(idx: usize) -> Self {
-        Self {
-            name: format!("Layer {}", idx),
-            enabled: true,
-            weight: 1.0,
-        }
-    }
-}
+use noren::rdb::terrain::{
+    TerrainGeneratorDefinition, TerrainMutationLayer, TerrainMutationOp, TerrainProjectSettings,
+    generator_entry, mutation_layer_entry, project_settings_entry,
+};
 
 #[derive(Clone, Debug)]
 struct ChunkArtifactInfo {
     entry: String,
     region: String,
     coord: Option<(i32, i32)>,
+    lod: Option<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +24,7 @@ struct ProjectState {
     rdb_path: PathBuf,
     key: String,
     settings: TerrainProjectSettings,
-    generator: TerrainGeneratorSettings,
+    generator: TerrainGeneratorDefinition,
     mutation_layers: Vec<TerrainMutationLayer>,
     chunks: Vec<ChunkArtifactInfo>,
 }
@@ -203,29 +153,29 @@ impl TerrainEditorApp {
             ));
         }
 
-        let settings = match rdb.fetch::<TerrainProjectSettings>(&settings_entry(&project_key)) {
+        let settings = match rdb.fetch::<TerrainProjectSettings>(
+            &project_settings_entry(&project_key),
+        ) {
             Ok(value) => value,
             Err(_) => {
                 missing_logs.push("Project settings missing; using defaults.".to_string());
                 TerrainProjectSettings::default()
             }
         };
-        let generator = match rdb.fetch::<TerrainGeneratorSettings>(&generator_entry(&project_key))
-        {
+        let generator = match rdb.fetch::<TerrainGeneratorDefinition>(&generator_entry(
+            &project_key,
+            settings.active_generator_version,
+        )) {
             Ok(value) => value,
             Err(_) => {
-                missing_logs.push("Generator settings missing; using defaults.".to_string());
-                TerrainGeneratorSettings::default()
+                missing_logs.push("Generator definition missing; using defaults.".to_string());
+                TerrainGeneratorDefinition::default()
             }
         };
-        let mutation_layers =
-            match rdb.fetch::<Vec<TerrainMutationLayer>>(&mutation_layers_entry(&project_key)) {
-                Ok(value) => value,
-                Err(_) => {
-                    missing_logs.push("Mutation layers missing; using defaults.".to_string());
-                    Vec::new()
-                }
-            };
+        let mutation_layers = collect_mutation_layers(rdb, &project_key);
+        if mutation_layers.is_empty() {
+            missing_logs.push("Mutation layers missing; using defaults.".to_string());
+        }
 
         let chunks = collect_chunk_artifacts(&rdb.entries(), &project_key);
 
@@ -259,19 +209,32 @@ impl TerrainEditorApp {
             RDBFile::new()
         };
 
-        let settings = TerrainProjectSettings {
+        let mut settings = TerrainProjectSettings {
             name: format!("Terrain Project {project_key}"),
             ..TerrainProjectSettings::default()
         };
-        let generator = TerrainGeneratorSettings::default();
-        let mutation_layers = vec![TerrainMutationLayer::with_index(1)];
+        let generator = TerrainGeneratorDefinition::default();
+        let mutation_layers = vec![TerrainMutationLayer::new("layer-1", "Layer 1", 0)
+            .with_op(TerrainMutationOp::new("base-op"))];
 
-        rdb.upsert(&settings_entry(&project_key), &settings)
+        settings.active_generator_version = generator.version;
+        settings.active_mutation_version = mutation_layers
+            .first()
+            .map(|layer| layer.version)
+            .unwrap_or(1);
+        settings.generator_graph_id = generator.graph_id.clone();
+
+        rdb.upsert(&project_settings_entry(&project_key), &settings)
             .map_err(format_rdb_err)?;
-        rdb.upsert(&generator_entry(&project_key), &generator)
+        rdb.upsert(&generator_entry(&project_key, generator.version), &generator)
             .map_err(format_rdb_err)?;
-        rdb.upsert(&mutation_layers_entry(&project_key), &mutation_layers)
+        for layer in &mutation_layers {
+            rdb.upsert(
+                &mutation_layer_entry(&project_key, &layer.layer_id, layer.version),
+                layer,
+            )
             .map_err(format_rdb_err)?;
+        }
         rdb.save(&path).map_err(format_rdb_err)?;
 
         self.project_keys = collect_project_keys(&rdb.entries());
@@ -293,7 +256,11 @@ impl TerrainEditorApp {
     fn draw_tree(&mut self, ui: &mut egui::Ui) {
         ui.heading("Project Tree");
         let (mut add_layer_clicked, mut new_selection) = (false, None);
-        let (project_key, layer_names, chunk_regions) = if let Some(project) = &self.project {
+        let (project_key, layer_names, chunk_regions): (
+            Option<String>,
+            Vec<String>,
+            Vec<ChunkArtifactInfo>,
+        ) = if let Some(project) = &self.project {
             let layer_names = project
                 .mutation_layers
                 .iter()
@@ -428,6 +395,12 @@ impl TerrainEditorApp {
                         .text_edit_singleline(&mut project.generator.algorithm)
                         .changed();
                     ui.horizontal(|ui| {
+                        ui.label("Graph ID");
+                        changed |= ui
+                            .text_edit_singleline(&mut project.generator.graph_id)
+                            .changed();
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Frequency");
                         changed |= ui
                             .add(egui::DragValue::new(&mut project.generator.frequency).speed(0.01))
@@ -446,13 +419,23 @@ impl TerrainEditorApp {
                     if let Some(layer) = project.mutation_layers.get_mut(idx) {
                         ui.heading("Mutation layer");
                         changed |= ui.text_edit_singleline(&mut layer.name).changed();
-                        changed |= ui.checkbox(&mut layer.enabled, "Enabled").changed();
-                        ui.horizontal(|ui| {
-                            ui.label("Weight");
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut layer.weight).speed(0.05))
-                                .changed();
-                        });
+                        if layer.ops.is_empty() {
+                            layer.ops.push(TerrainMutationOp::new("op-1"));
+                            changed = true;
+                        }
+                        if let Some(op) = layer.ops.get_mut(0) {
+                            ui.horizontal(|ui| {
+                                ui.label("Op ID");
+                                changed |= ui.text_edit_singleline(&mut op.op_id).changed();
+                            });
+                            changed |= ui.checkbox(&mut op.enabled, "Enabled").changed();
+                            ui.horizontal(|ui| {
+                                ui.label("Weight");
+                                changed |= ui
+                                    .add(egui::DragValue::new(&mut op.weight).speed(0.05))
+                                    .changed();
+                            });
+                        }
                         if ui.button("Delete layer").clicked() {
                             project.mutation_layers.remove(idx);
                             self.selection = Selection::MutationLayer(idx.saturating_sub(1));
@@ -469,6 +452,9 @@ impl TerrainEditorApp {
                         ui.label(format!("Region: {}", chunk.region));
                         if let Some((x, y)) = chunk.coord {
                             ui.label(format!("Coord: ({}, {})", x, y));
+                        }
+                        if let Some(lod) = chunk.lod {
+                            ui.label(format!("LOD: {}", lod));
                         }
                     }
                 }
@@ -511,15 +497,26 @@ impl TerrainEditorApp {
             _ => return Ok(()),
         };
 
-        rdb.upsert(&settings_entry(&project.key), &project.settings)
-            .map_err(format_rdb_err)?;
-        rdb.upsert(&generator_entry(&project.key), &project.generator)
+        project.settings.active_generator_version = project.generator.version;
+        project.settings.generator_graph_id = project.generator.graph_id.clone();
+        if let Some(max_version) = project.mutation_layers.iter().map(|layer| layer.version).max() {
+            project.settings.active_mutation_version = max_version;
+        }
+
+        rdb.upsert(&project_settings_entry(&project.key), &project.settings)
             .map_err(format_rdb_err)?;
         rdb.upsert(
-            &mutation_layers_entry(&project.key),
-            &project.mutation_layers,
+            &generator_entry(&project.key, project.generator.version),
+            &project.generator,
         )
         .map_err(format_rdb_err)?;
+        for layer in &project.mutation_layers {
+            rdb.upsert(
+                &mutation_layer_entry(&project.key, &layer.layer_id, layer.version),
+                layer,
+            )
+            .map_err(format_rdb_err)?;
+        }
         rdb.save(&project.rdb_path).map_err(format_rdb_err)?;
 
         project.chunks = collect_chunk_artifacts(&rdb.entries(), &project.key);
@@ -530,9 +527,11 @@ impl TerrainEditorApp {
     fn add_layer(&mut self) {
         if let Some(project) = &mut self.project {
             let idx = project.mutation_layers.len() + 1;
+            let layer_id = format!("layer-{idx}");
             project
                 .mutation_layers
-                .push(TerrainMutationLayer::with_index(idx));
+                .push(TerrainMutationLayer::new(layer_id, format!("Layer {idx}"), idx as u32 - 1)
+                    .with_op(TerrainMutationOp::new(format!("op-{idx}"))));
             self.selection = Selection::MutationLayer(project.mutation_layers.len() - 1);
             if let Err(err) = self.save_project() {
                 self.set_error(err);
@@ -629,7 +628,7 @@ fn collect_project_keys(entries: &[RDBEntryMeta]) -> Vec<String> {
 
 fn collect_chunk_artifacts(entries: &[RDBEntryMeta], project_key: &str) -> Vec<ChunkArtifactInfo> {
     let mut artifacts = Vec::new();
-    let prefix = format!("terrain/project/{project_key}/");
+    let prefix = format!("terrain/chunk_artifact/{project_key}/");
     for entry in entries {
         if entry.name.starts_with(&prefix) {
             if let Some(info) = parse_project_chunk(&entry.name, project_key) {
@@ -645,27 +644,17 @@ fn collect_chunk_artifacts(entries: &[RDBEntryMeta], project_key: &str) -> Vec<C
 }
 
 fn parse_project_chunk(name: &str, project_key: &str) -> Option<ChunkArtifactInfo> {
-    let prefix = format!("terrain/project/{project_key}/");
+    let prefix = format!("terrain/chunk_artifact/{project_key}/");
     let remainder = name.strip_prefix(&prefix)?;
-    if let Some(remainder) = remainder.strip_prefix("chunk/") {
-        let mut parts = remainder.split('/');
-        let region = parts.next()?.to_string();
-        let coord_part = parts.next()?;
-        let coord = parse_coord(coord_part);
-        Some(ChunkArtifactInfo {
-            entry: name.to_string(),
-            region,
-            coord,
-        })
-    } else if let Some(remainder) = remainder.strip_prefix("chunk_") {
-        Some(ChunkArtifactInfo {
-            entry: name.to_string(),
-            region: "default".to_string(),
-            coord: parse_coord(remainder),
-        })
-    } else {
-        None
-    }
+    let mut parts = remainder.split('/');
+    let coord_part = parts.next()?;
+    let lod_part = parts.next()?;
+    Some(ChunkArtifactInfo {
+        entry: name.to_string(),
+        region: "default".to_string(),
+        coord: parse_coord(coord_part),
+        lod: parse_lod(lod_part),
+    })
 }
 
 fn parse_legacy_chunk(name: &str) -> Option<ChunkArtifactInfo> {
@@ -674,6 +663,7 @@ fn parse_legacy_chunk(name: &str) -> Option<ChunkArtifactInfo> {
         entry: name.to_string(),
         region: "legacy".to_string(),
         coord: parse_coord(remainder),
+        lod: None,
     })
 }
 
@@ -684,18 +674,42 @@ fn parse_coord(value: &str) -> Option<(i32, i32)> {
     Some((x, y))
 }
 
-fn settings_entry(project_key: &str) -> String {
-    format!("terrain/project/{project_key}/settings")
-}
-
-fn generator_entry(project_key: &str) -> String {
-    format!("terrain/project/{project_key}/generator")
-}
-
-fn mutation_layers_entry(project_key: &str) -> String {
-    format!("terrain/project/{project_key}/mutation_layers")
+fn parse_lod(value: &str) -> Option<u8> {
+    value.strip_prefix("lod")?.parse().ok()
 }
 
 fn format_rdb_err(err: RdbErr) -> String {
     format!("RDB error: {err}")
+}
+
+fn collect_mutation_layers(rdb: &mut RDBFile, project_key: &str) -> Vec<TerrainMutationLayer> {
+    let prefix = format!("terrain/mutation_layer/{project_key}/");
+    let mut layer_versions = BTreeMap::new();
+    for entry in rdb.entries() {
+        if let Some((layer_id, version)) = parse_mutation_layer_entry(&entry.name, &prefix) {
+            let current = layer_versions.entry(layer_id).or_insert(version);
+            if version > *current {
+                *current = version;
+            }
+        }
+    }
+
+    let mut layers = Vec::new();
+    for (layer_id, version) in layer_versions {
+        let entry = mutation_layer_entry(project_key, &layer_id, version);
+        if let Ok(layer) = rdb.fetch::<TerrainMutationLayer>(&entry) {
+            layers.push(layer);
+        }
+    }
+    layers.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.layer_id.cmp(&b.layer_id)));
+    layers
+}
+
+fn parse_mutation_layer_entry(name: &str, prefix: &str) -> Option<(String, u32)> {
+    let remainder = name.strip_prefix(prefix)?;
+    let mut parts = remainder.split('/');
+    let layer_id = parts.next()?.to_string();
+    let version_part = parts.next()?;
+    let version = version_part.strip_prefix('v')?.parse().ok()?;
+    Some((layer_id, version))
 }

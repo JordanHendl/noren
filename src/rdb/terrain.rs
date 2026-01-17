@@ -4,6 +4,216 @@ use tracing::info;
 use super::DatabaseEntry;
 use crate::{RDBView, error::NorenError};
 
+/// RDB schema for terrain data.
+///
+/// ## Entry naming conventions
+/// - Project settings: `terrain/project/{project_key}/settings`
+/// - Generator definition (versioned): `terrain/generator/{project_key}/v{version}`
+/// - Mutation layer (versioned): `terrain/mutation_layer/{project_key}/{layer_id}/v{version}`
+/// - Chunk artifact: `terrain/chunk_artifact/{project_key}/{chunk_coord}/{lod_key}`
+/// - Chunk state: `terrain/chunk_state/{project_key}/{chunk_coord}`
+///
+/// ## Migration strategy
+/// Existing terrain entries under `terrain/project/{project_key}/settings`,
+/// `terrain/project/{project_key}/generator`, and
+/// `terrain/project/{project_key}/mutation_layers` should be copied into the
+/// new versioned entries above. Consumers should then set
+/// `active_generator_version` and `active_mutation_version` in the project
+/// settings and write the new entries alongside existing data. Once clients are
+/// updated to use the new entries, legacy keys can be removed.
+pub const TERRAIN_PROJECT_PREFIX: &str = "terrain/project";
+pub const TERRAIN_GENERATOR_PREFIX: &str = "terrain/generator";
+pub const TERRAIN_MUTATION_LAYER_PREFIX: &str = "terrain/mutation_layer";
+pub const TERRAIN_CHUNK_ARTIFACT_PREFIX: &str = "terrain/chunk_artifact";
+pub const TERRAIN_CHUNK_STATE_PREFIX: &str = "terrain/chunk_state";
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainLodPolicy {
+    /// Maximum LOD index (0 is the highest detail).
+    pub max_lod: u8,
+    /// World-space distances at which to transition to the next LOD.
+    pub distance_bands: Vec<f32>,
+}
+
+impl Default for TerrainLodPolicy {
+    fn default() -> Self {
+        Self {
+            max_lod: 0,
+            distance_bands: vec![256.0, 512.0, 1024.0],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainProjectSettings {
+    pub name: String,
+    pub seed: u64,
+    /// Tile size in world units.
+    pub tile_size: f32,
+    /// Tile grid dimensions per chunk.
+    pub tiles_per_chunk: [u32; 2],
+    /// World bounds minimum (x, y, z).
+    pub world_bounds_min: [f32; 3],
+    /// World bounds maximum (x, y, z).
+    pub world_bounds_max: [f32; 3],
+    pub lod_policy: TerrainLodPolicy,
+    pub generator_graph_id: String,
+    /// The active generator version stored under `terrain/generator`.
+    pub active_generator_version: u32,
+    /// The active mutation layer version stored under `terrain/mutation_layer`.
+    pub active_mutation_version: u32,
+}
+
+impl Default for TerrainProjectSettings {
+    fn default() -> Self {
+        Self {
+            name: "New Terrain Project".to_string(),
+            seed: 1337,
+            tile_size: 1.0,
+            tiles_per_chunk: [32, 32],
+            world_bounds_min: [0.0, 0.0, 0.0],
+            world_bounds_max: [1024.0, 1024.0, 256.0],
+            lod_policy: TerrainLodPolicy::default(),
+            generator_graph_id: "default".to_string(),
+            active_generator_version: 1,
+            active_mutation_version: 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainGeneratorDefinition {
+    pub version: u32,
+    pub graph_id: String,
+    pub algorithm: String,
+    pub frequency: f32,
+    pub amplitude: f32,
+}
+
+impl Default for TerrainGeneratorDefinition {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            graph_id: "default".to_string(),
+            algorithm: "ridge-noise".to_string(),
+            frequency: 0.02,
+            amplitude: 64.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainMutationOp {
+    pub op_id: String,
+    pub enabled: bool,
+    pub weight: f32,
+}
+
+impl TerrainMutationOp {
+    pub fn new(op_id: impl Into<String>) -> Self {
+        Self {
+            op_id: op_id.into(),
+            enabled: true,
+            weight: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainMutationLayer {
+    pub layer_id: String,
+    pub name: String,
+    pub order: u32,
+    pub version: u32,
+    /// Ordered mutation operations for the layer.
+    pub ops: Vec<TerrainMutationOp>,
+}
+
+impl TerrainMutationLayer {
+    pub fn new(layer_id: impl Into<String>, name: impl Into<String>, order: u32) -> Self {
+        Self {
+            layer_id: layer_id.into(),
+            name: name.into(),
+            order,
+            version: 1,
+            ops: Vec::new(),
+        }
+    }
+
+    pub fn with_op(mut self, op: TerrainMutationOp) -> Self {
+        self.ops.push(op);
+        self
+    }
+}
+
+impl Default for TerrainMutationLayer {
+    fn default() -> Self {
+        Self::new("layer-1", "Layer 1", 0).with_op(TerrainMutationOp::new("default-op"))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainChunkArtifact {
+    pub project_key: String,
+    pub chunk_coords: [i32; 2],
+    pub lod: u8,
+    pub mesh_entry: String,
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+    pub content_hash: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainChunkLodHash {
+    pub lod: u8,
+    pub hash: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainChunkDependencyHashes {
+    pub generator_hash: u64,
+    pub mutation_hash: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainChunkState {
+    pub project_key: String,
+    pub chunk_coords: [i32; 2],
+    pub dirty_flags: u32,
+    pub generator_version: u32,
+    pub mutation_version: u32,
+    pub last_built_hashes: Vec<TerrainChunkLodHash>,
+    pub dependency_hashes: TerrainChunkDependencyHashes,
+}
+
+pub fn project_settings_entry(project_key: &str) -> String {
+    format!("{TERRAIN_PROJECT_PREFIX}/{project_key}/settings")
+}
+
+pub fn generator_entry(project_key: &str, version: u32) -> String {
+    format!("{TERRAIN_GENERATOR_PREFIX}/{project_key}/v{version}")
+}
+
+pub fn mutation_layer_entry(project_key: &str, layer_id: &str, version: u32) -> String {
+    format!("{TERRAIN_MUTATION_LAYER_PREFIX}/{project_key}/{layer_id}/v{version}")
+}
+
+pub fn chunk_coord_key(x: i32, y: i32) -> String {
+    format!("{x}_{y}")
+}
+
+pub fn lod_key(lod: u8) -> String {
+    format!("lod{lod}")
+}
+
+pub fn chunk_artifact_entry(project_key: &str, coord_key: &str, lod_key: &str) -> String {
+    format!("{TERRAIN_CHUNK_ARTIFACT_PREFIX}/{project_key}/{coord_key}/{lod_key}")
+}
+
+pub fn chunk_state_entry(project_key: &str, coord_key: &str) -> String {
+    format!("{TERRAIN_CHUNK_STATE_PREFIX}/{project_key}/{coord_key}")
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct TerrainTile {
     pub tile_id: u32,
@@ -251,6 +461,48 @@ mod tests {
         let mut db = TerrainDB::new(path.to_str().unwrap());
         let chunk = db.fetch_chunk("terrain/chunk_0_0")?;
         assert_eq!(chunk.mesh_entry, "geometry/terrain_chunk");
+        Ok(())
+    }
+
+    #[test]
+    fn mutation_layers_round_trip_with_versions() -> Result<(), NorenError> {
+        let mut rdb = RDBFile::new();
+        let project_key = "sample_project";
+
+        let mut settings = TerrainProjectSettings::default();
+        settings.name = "Sample Project".to_string();
+
+        let generator = TerrainGeneratorDefinition::default();
+        settings.active_generator_version = generator.version;
+
+        let layer_id = "base-layer";
+        let layer_v1 = TerrainMutationLayer::new(layer_id, "Base", 0)
+            .with_op(TerrainMutationOp::new("raise"));
+        let mut layer_v2 = layer_v1.clone();
+        layer_v2.version = 2;
+        layer_v2.ops.push(TerrainMutationOp::new("erode"));
+        settings.active_mutation_version = layer_v2.version;
+
+        rdb.add(&project_settings_entry(project_key), &settings)?;
+        rdb.add(&generator_entry(project_key, generator.version), &generator)?;
+        rdb.add(
+            &mutation_layer_entry(project_key, layer_id, layer_v1.version),
+            &layer_v1,
+        )?;
+        rdb.add(
+            &mutation_layer_entry(project_key, layer_id, layer_v2.version),
+            &layer_v2,
+        )?;
+
+        let settings_back =
+            rdb.fetch::<TerrainProjectSettings>(&project_settings_entry(project_key))?;
+        assert_eq!(settings_back.active_mutation_version, 2);
+        let layer_back =
+            rdb.fetch::<TerrainMutationLayer>(&mutation_layer_entry(project_key, layer_id, 2))?;
+        assert_eq!(layer_back.version, 2);
+        assert_eq!(layer_back.ops.len(), 2);
+        assert_eq!(layer_back.ops[0].op_id, "raise");
+        assert_eq!(layer_back.ops[1].op_id, "erode");
         Ok(())
     }
 }
