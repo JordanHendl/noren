@@ -220,6 +220,58 @@ impl RDBFile {
         Ok(())
     }
 
+    /// Adds or replaces a serializable object to the in-memory RDB under the provided name.
+    pub fn upsert<T: Serialize>(&mut self, name: &str, obj: &T) -> Result<(), RdbErr> {
+        let nameb = name64(name)?;
+        let new_bytes = to_bytes(obj);
+
+        let mut new_entries = Vec::with_capacity(self.entries.len() + 1);
+        let mut new_data = Vec::with_capacity(self.data.len() + new_bytes.len());
+        let mut replaced = false;
+
+        for entry in &self.entries {
+            if stored_name_bytes(&entry.name) == name.as_bytes() {
+                let offset = new_data.len() as u64;
+                new_data.extend_from_slice(&new_bytes);
+                new_entries.push(Entry {
+                    type_tag: portable_type_hash::<T>() as u32,
+                    offset,
+                    len: new_bytes.len() as u64,
+                    name: nameb,
+                });
+                replaced = true;
+            } else {
+                let data_start = entry.offset as usize;
+                let data_end = data_start + entry.len as usize;
+                let offset = new_data.len() as u64;
+                new_data.extend_from_slice(&self.data[data_start..data_end]);
+                new_entries.push(Entry {
+                    type_tag: entry.type_tag,
+                    offset,
+                    len: entry.len,
+                    name: entry.name,
+                });
+            }
+        }
+
+        if !replaced {
+            let offset = new_data.len() as u64;
+            new_data.extend_from_slice(&new_bytes);
+            new_entries.push(Entry {
+                type_tag: portable_type_hash::<T>() as u32,
+                offset,
+                len: new_bytes.len() as u64,
+                name: nameb,
+            });
+        }
+
+        self.entries = new_entries;
+        self.data = new_data;
+        self.mmap = None;
+
+        Ok(())
+    }
+
     /// Retrieves a deserialized object that was previously added by name.
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
         let name_bytes = name.as_bytes();
