@@ -3,6 +3,7 @@ mod furikake_state;
 pub mod meta;
 pub mod parsing;
 pub mod rdb;
+pub mod terrain;
 mod utils;
 use std::{collections::HashMap, io::ErrorKind, ptr::NonNull};
 

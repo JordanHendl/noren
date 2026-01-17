@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::DatabaseEntry;
+use super::{DatabaseEntry, primitives::Vertex};
 use crate::{RDBView, error::NorenError};
 
 /// RDB schema for terrain data.
@@ -26,6 +26,17 @@ pub const TERRAIN_GENERATOR_PREFIX: &str = "terrain/generator";
 pub const TERRAIN_MUTATION_LAYER_PREFIX: &str = "terrain/mutation_layer";
 pub const TERRAIN_CHUNK_ARTIFACT_PREFIX: &str = "terrain/chunk_artifact";
 pub const TERRAIN_CHUNK_STATE_PREFIX: &str = "terrain/chunk_state";
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum TerrainVertexLayout {
+    Standard,
+}
+
+impl Default for TerrainVertexLayout {
+    fn default() -> Self {
+        Self::Standard
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TerrainLodPolicy {
@@ -58,6 +69,8 @@ pub struct TerrainProjectSettings {
     pub world_bounds_max: [f32; 3],
     pub lod_policy: TerrainLodPolicy,
     pub generator_graph_id: String,
+    #[serde(default)]
+    pub vertex_layout: TerrainVertexLayout,
     /// The active generator version stored under `terrain/generator`.
     pub active_generator_version: u32,
     /// The active mutation layer version stored under `terrain/mutation_layer`.
@@ -75,6 +88,7 @@ impl Default for TerrainProjectSettings {
             world_bounds_max: [1024.0, 1024.0, 256.0],
             lod_policy: TerrainLodPolicy::default(),
             generator_graph_id: "default".to_string(),
+            vertex_layout: TerrainVertexLayout::Standard,
             active_generator_version: 1,
             active_mutation_version: 1,
         }
@@ -127,6 +141,10 @@ pub struct TerrainMutationLayer {
     pub version: u32,
     /// Ordered mutation operations for the layer.
     pub ops: Vec<TerrainMutationOp>,
+    /// Optional list of chunk coordinates this layer affects. When omitted, the
+    /// layer applies to every chunk.
+    #[serde(default)]
+    pub affected_chunks: Option<Vec<[i32; 2]>>,
 }
 
 impl TerrainMutationLayer {
@@ -137,6 +155,7 @@ impl TerrainMutationLayer {
             order,
             version: 1,
             ops: Vec::new(),
+            affected_chunks: None,
         }
     }
 
@@ -157,10 +176,21 @@ pub struct TerrainChunkArtifact {
     pub project_key: String,
     pub chunk_coords: [i32; 2],
     pub lod: u8,
-    pub mesh_entry: String,
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
+    #[serde(default)]
+    pub vertex_layout: TerrainVertexLayout,
+    #[serde(default)]
+    pub vertices: Vec<Vertex>,
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    #[serde(default)]
+    pub material_ids: Option<Vec<u32>>,
+    #[serde(default)]
+    pub material_weights: Option<Vec<[f32; 4]>>,
     pub content_hash: u64,
+    #[serde(default)]
+    pub mesh_entry: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -171,15 +201,30 @@ pub struct TerrainChunkLodHash {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TerrainChunkDependencyHashes {
+    #[serde(default)]
+    pub settings_hash: u64,
     pub generator_hash: u64,
     pub mutation_hash: u64,
 }
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TerrainDirtyReason {
+    SettingsChanged,
+    GeneratorChanged,
+    MutationChanged,
+}
+
+pub const TERRAIN_DIRTY_SETTINGS: u32 = 1 << 0;
+pub const TERRAIN_DIRTY_GENERATOR: u32 = 1 << 1;
+pub const TERRAIN_DIRTY_MUTATION: u32 = 1 << 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TerrainChunkState {
     pub project_key: String,
     pub chunk_coords: [i32; 2],
     pub dirty_flags: u32,
+    #[serde(default)]
+    pub dirty_reasons: Vec<TerrainDirtyReason>,
     pub generator_version: u32,
     pub mutation_version: u32,
     pub last_built_hashes: Vec<TerrainChunkLodHash>,
@@ -476,8 +521,8 @@ mod tests {
         settings.active_generator_version = generator.version;
 
         let layer_id = "base-layer";
-        let layer_v1 = TerrainMutationLayer::new(layer_id, "Base", 0)
-            .with_op(TerrainMutationOp::new("raise"));
+        let layer_v1 =
+            TerrainMutationLayer::new(layer_id, "Base", 0).with_op(TerrainMutationOp::new("raise"));
         let mut layer_v2 = layer_v1.clone();
         layer_v2.version = 2;
         layer_v2.ops.push(TerrainMutationOp::new("erode"));

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Vertex type for PBR rendering and skeletal meshes
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Zeroable, Pod, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Zeroable, Pod, Serialize, Deserialize, PartialEq)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
