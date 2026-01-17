@@ -3,7 +3,9 @@ use std::{any::type_name, env, fs, path::PathBuf, process, sync::OnceLock};
 use bincode::deserialize;
 use noren::{
     RDBEntryMeta, RDBView,
-    rdb::{AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton},
+    rdb::{
+        AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton, TerrainChunk,
+    },
     type_tag_for,
 };
 use serde::de::DeserializeOwned;
@@ -193,6 +195,7 @@ fn known_types() -> &'static [KnownType] {
             KnownType::with::<HostCubemap>(describe_cubemap),
             KnownType::with::<Skeleton>(describe_skeleton),
             KnownType::with::<ShaderModule>(describe_shader),
+            KnownType::with::<TerrainChunk>(describe_terrain),
         ]
     })
 }
@@ -422,6 +425,21 @@ fn describe_shader(module: &ShaderModule) -> String {
         artifact.stage,
         artifact.spirv.len(),
         bindings
+    )
+}
+
+fn describe_terrain(chunk: &TerrainChunk) -> String {
+    let tile_count = chunk.tiles.len();
+    let height_count = chunk.heights.len();
+    format!(
+        "Chunk coords: {:?}\nOrigin: {:?}\nTile size: {:.2}\nTiles: {:?} ({} entries)\nHeights: {} samples\nMesh entry: {}",
+        chunk.chunk_coords,
+        chunk.origin,
+        chunk.tile_size,
+        chunk.tiles_per_chunk,
+        tile_count,
+        height_count,
+        chunk.mesh_entry
     )
 }
 

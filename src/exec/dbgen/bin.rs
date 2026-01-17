@@ -530,13 +530,9 @@ fn parse_font_append(mut args: impl Iterator<Item = String>) -> Result<FontAppen
             }
             "--collection-index" => {
                 let value = next_value("--collection-index", &mut args)?;
-                collection_index = Some(
-                    value
-                        .parse::<u32>()
-                        .map_err(|_| format!(
-                            "--collection-index expects an integer, received '{value}'"
-                        ))?,
-                );
+                collection_index = Some(value.parse::<u32>().map_err(|_| {
+                    format!("--collection-index expects an integer, received '{value}'")
+                })?);
             }
             other => return Err(format!("unexpected argument to append font: {other}")),
         }
@@ -1414,7 +1410,8 @@ fn build_fonts(
         RDBFile::new()
     };
 
-    let mut seen_entries: HashSet<String> = rdb.entries().into_iter().map(|meta| meta.name).collect();
+    let mut seen_entries: HashSet<String> =
+        rdb.entries().into_iter().map(|meta| meta.name).collect();
     for entry in entries {
         seen_entries.insert(entry.entry.clone());
     }
@@ -1482,13 +1479,11 @@ fn build_font_atlases(
             collection_index: font.info.collection_index,
             ..FontSettings::default()
         };
-        let parsed_font =
-            Font::from_bytes(font.data.clone(), settings).map_err(|err| {
-                BuildError::message(format!("font parse error for {}: {err}", font.info.name))
-            })?;
+        let parsed_font = Font::from_bytes(font.data.clone(), settings).map_err(|err| {
+            BuildError::message(format!("font parse error for {}: {err}", font.info.name))
+        })?;
         let image_entry = font_atlas_image_entry(&font.info.name);
-        let (image, glyphs, metrics) =
-            generate_font_atlas(&parsed_font, &image_entry, 16.0, 2)?;
+        let (image, glyphs, metrics) = generate_font_atlas(&parsed_font, &image_entry, 16.0, 2)?;
         let display_name = parsed_font
             .name()
             .map(str::to_string)
@@ -1618,9 +1613,15 @@ fn generate_font_atlas(
     let line_metrics = font.horizontal_line_metrics(size);
     let metrics = FontMetrics {
         em_size: size,
-        line_height: line_metrics.map(|metrics| metrics.new_line_size).unwrap_or(size),
-        ascender: line_metrics.map(|metrics| metrics.ascent).unwrap_or_default(),
-        descender: line_metrics.map(|metrics| metrics.descent).unwrap_or_default(),
+        line_height: line_metrics
+            .map(|metrics| metrics.new_line_size)
+            .unwrap_or(size),
+        ascender: line_metrics
+            .map(|metrics| metrics.ascent)
+            .unwrap_or_default(),
+        descender: line_metrics
+            .map(|metrics| metrics.descent)
+            .unwrap_or_default(),
         underline_y: 0.0,
         underline_thickness: 0.0,
     };
@@ -2033,8 +2034,9 @@ fn load_font(base_dir: &Path, entry: &FontEntry) -> Result<HostFont, BuildError>
         collection_index: entry.collection_index,
         ..Default::default()
     };
-    Font::from_bytes(data.clone(), settings)
-        .map_err(|err| BuildError::message(format!("font parse error for {}: {err}", path.display())))?;
+    Font::from_bytes(data.clone(), settings).map_err(|err| {
+        BuildError::message(format!("font parse error for {}: {err}", path.display()))
+    })?;
 
     Ok(HostFont::new_with_index(
         entry.entry.clone(),
@@ -2823,6 +2825,7 @@ mod tests {
                     sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
+                    terrain: "terrain.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
                     atlases: "atlases.json".into(),
@@ -2971,6 +2974,7 @@ mod tests {
         assert_eq!(layout.sdf_fonts, "sdf_fonts.json");
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
+        assert_eq!(layout.terrain, "terrain.rdb");
         assert_eq!(layout.textures, "textures.json");
         assert_eq!(layout.atlases, "atlases.json");
         assert_eq!(layout.meshes, "meshes.json");
@@ -3024,6 +3028,7 @@ mod tests {
                     sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
+                    terrain: "terrain.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
                     atlases: "atlases.json".into(),
@@ -3129,6 +3134,7 @@ mod tests {
         assert_eq!(layout.sdf_fonts, "sdf_fonts.json");
         assert_eq!(layout.skeletons, "skeletons.rdb");
         assert_eq!(layout.animations, "animations.rdb");
+        assert_eq!(layout.terrain, "terrain.rdb");
     }
 
     #[test]
@@ -3154,6 +3160,7 @@ mod tests {
                     sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
+                    terrain: "terrain.rdb".into(),
                     textures: "textures.json".into(),
                     atlases: "atlases.json".into(),
                     materials: "materials.json".into(),
@@ -3271,6 +3278,7 @@ mod tests {
                     sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
+                    terrain: "terrain.rdb".into(),
                     materials: "materials.json".into(),
                     textures: "textures.json".into(),
                     atlases: "atlases.json".into(),
@@ -3321,6 +3329,7 @@ mod tests {
                     sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
+                    terrain: "terrain.rdb".into(),
                     textures: "textures.json".into(),
                     atlases: "atlases.json".into(),
                     materials: "materials.json".into(),
@@ -3383,6 +3392,7 @@ mod tests {
                     sdf_fonts: "sdf_fonts.json".into(),
                     skeletons: "skeletons.rdb".into(),
                     animations: "animations.rdb".into(),
+                    terrain: "terrain.rdb".into(),
                     textures: "textures.json".into(),
                     atlases: "atlases.json".into(),
                     materials: "materials.json".into(),

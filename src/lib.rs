@@ -84,6 +84,7 @@ pub struct DB {
     skeletons: SkeletonDB,
     animations: AnimationDB,
     shaders: ShaderDB,
+    terrain: TerrainDB,
     ctx: Option<NonNull<dashi::Context>>,
     meta_layout: Option<MetaLayout>,
     graphics_pipeline_layouts: HashMap<String, dashi::Handle<dashi::GraphicsPipelineLayout>>,
@@ -210,6 +211,7 @@ impl DB {
         let skeletons = SkeletonDB::new(&format!("{}/{}", info.base_dir, layout.skeletons));
         let animations = AnimationDB::new(&format!("{}/{}", info.base_dir, layout.animations));
         let shaders = ShaderDB::new(&format!("{}/{}", info.base_dir, layout.shaders));
+        let terrain = TerrainDB::new(&format!("{}/{}", info.base_dir, layout.terrain));
         let meta_layout = load_meta_layout(info.base_dir, &layout)?;
 
         if let Some(layout) = meta_layout.as_ref() {
@@ -225,6 +227,7 @@ impl DB {
             skeletons,
             animations,
             shaders,
+            terrain,
             ctx: None,
             meta_layout,
             graphics_pipeline_layouts: HashMap::new(),
@@ -310,6 +313,16 @@ impl DB {
         &mut self.animations
     }
 
+    /// Returns an immutable reference to the terrain database.
+    pub fn terrain(&self) -> &TerrainDB {
+        &self.terrain
+    }
+
+    /// Returns a mutable reference to the terrain database.
+    pub fn terrain_mut(&mut self) -> &mut TerrainDB {
+        &mut self.terrain
+    }
+
     /// Returns an immutable reference to the shader database.
     pub fn shaders(&self) -> &ShaderDB {
         &self.shaders
@@ -366,6 +379,11 @@ impl DB {
     /// Enumerates shader module entries available for program creation.
     pub fn enumerate_shader_modules(&self) -> Vec<String> {
         self.shaders.enumerate_entries()
+    }
+
+    /// Enumerates terrain chunk entries available in the backing database.
+    pub fn enumerate_terrain_chunks(&self) -> Vec<String> {
+        self.terrain.enumerate_entries()
     }
 
     /// Enumerates logical texture definitions declared in the model layout.
