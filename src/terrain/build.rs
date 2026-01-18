@@ -551,8 +551,83 @@ fn extract_chunk_surface(
         }
     }
 
+    add_chunk_skirts(
+        settings,
+        field,
+        &mut vertices,
+        &mut indices,
+        &mut min_bounds,
+    );
+
     match settings.vertex_layout {
         TerrainVertexLayout::Standard => (vertices, indices, min_bounds, max_bounds),
+    }
+}
+
+fn add_chunk_skirts(
+    settings: &TerrainProjectSettings,
+    field: &ChunkFieldSamples,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    min_bounds: &mut [f32; 3],
+) {
+    if field.grid_x < 2 || field.grid_y < 2 {
+        return;
+    }
+    let base_drop = (settings.tile_size * field.step as f32 * 2.0).max(1.0);
+    let desired_z = min_bounds[2] - base_drop;
+    let skirt_z = desired_z.min(settings.world_bounds_min[2]);
+    let skirt_depth = min_bounds[2] - skirt_z;
+    if skirt_depth <= 0.0 {
+        return;
+    }
+
+    let grid_x = field.grid_x;
+    let grid_y = field.grid_y;
+
+    let mut edge_indices = Vec::new();
+    edge_indices.extend((0..grid_x).map(|x| (x) as u32));
+    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+
+    edge_indices.clear();
+    edge_indices.extend((0..grid_x).map(|x| ((grid_y - 1) * grid_x + x) as u32));
+    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+
+    edge_indices.clear();
+    edge_indices.extend((0..grid_y).map(|y| (y * grid_x) as u32));
+    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+
+    edge_indices.clear();
+    edge_indices.extend((0..grid_y).map(|y| (y * grid_x + (grid_x - 1)) as u32));
+    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+
+    min_bounds[2] = min_bounds[2].min(skirt_z);
+}
+
+fn append_skirt_edge(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    edge: &[u32],
+    skirt_depth: f32,
+) {
+    if edge.len() < 2 {
+        return;
+    }
+    let start_index = vertices.len() as u32;
+    for &idx in edge {
+        if let Some(src) = vertices.get(idx as usize).cloned() {
+            let mut v = src;
+            v.position[2] -= skirt_depth;
+            v.normal = [0.0, 0.0, -1.0];
+            vertices.push(v);
+        }
+    }
+    for i in 0..edge.len() - 1 {
+        let top0 = edge[i];
+        let top1 = edge[i + 1];
+        let skirt0 = start_index + i as u32;
+        let skirt1 = start_index + i as u32 + 1;
+        indices.extend_from_slice(&[top0, top1, skirt1, top0, skirt1, skirt0]);
     }
 }
 

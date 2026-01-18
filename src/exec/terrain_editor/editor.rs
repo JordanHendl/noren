@@ -99,6 +99,7 @@ enum PreviewScope {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LodSelection {
+    Auto,
     All,
     Single(u8),
 }
@@ -271,7 +272,7 @@ impl ChunkPreviewCache {
         info: &ChunkArtifactInfo,
         rdb: &mut RDBFile,
     ) -> Option<&'a ChunkMeshResource> {
-        let s: &mut Self = unsafe{&mut *(self as *mut Self)};
+        let s: &mut Self = unsafe { &mut *(self as *mut Self) };
         if let Some(mesh) = self.meshes.get(&key) {
             if mesh.entry_offset == info.offset && mesh.entry_len == info.len {
                 return Some(mesh);
@@ -336,7 +337,7 @@ impl Default for TerrainEditorApp {
                 mode: ViewportMode::Paint,
                 camera_mode: CameraMode::Orbit,
                 scope: PreviewScope::AllChunks,
-                lod_selection: LodSelection::All,
+                lod_selection: LodSelection::Auto,
                 max_chunks: 256,
                 max_chunk_distance: 1400.0,
                 enable_distance_culling: true,
@@ -358,7 +359,7 @@ impl Default for TerrainEditorApp {
             preview_cache: ChunkPreviewCache::default(),
             build_options: BuildOptions {
                 lod: 0,
-                build_all_lods: false,
+                build_all_lods: true,
             },
             build_progress: BuildJobProgress::default(),
             build_job: None,
@@ -906,7 +907,18 @@ impl TerrainEditorApp {
         painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::DARK_GRAY));
 
         if let Some(project) = &self.project {
-            self.draw_paint_overlay(painter, rect, project);
+            let settings = project.settings.clone();
+            let layers = project.mutation_layers.clone();
+            let project_key = project.key.clone();
+            let active_layer = self.active_layer;
+            self.draw_paint_overlay(
+                painter,
+                rect,
+                &settings,
+                &layers,
+                &project_key,
+                active_layer,
+            );
         }
 
         let mut hovered_world = None;
@@ -944,16 +956,19 @@ impl TerrainEditorApp {
     }
 
     fn draw_paint_overlay(
-        &self,
+        &mut self,
         painter: &egui::Painter,
         rect: egui::Rect,
-        project: &ProjectState,
+        settings: &TerrainProjectSettings,
+        layers: &[TerrainMutationLayer],
+        project_key: &str,
+        active_layer: Option<usize>,
     ) {
-        let settings = &project.settings;
+        if let Some(rdb) = self.rdb.as_mut() {
+            draw_dirty_overlay(painter, rect, settings, rdb, project_key);
+        }
         let max_ops = 400usize;
-        let active_layer = self.active_layer;
-        let layers = project
-            .mutation_layers
+        let layers = layers
             .iter()
             .enumerate()
             .filter(|(idx, _)| active_layer.map_or(true, |active| active == *idx));
@@ -975,8 +990,7 @@ impl TerrainEditorApp {
                         }
                     }
                     TerrainMutationParams::Capsule { start, end } => {
-                        let start_pos =
-                            world_to_viewport(settings, rect, [start[0], start[1]]);
+                        let start_pos = world_to_viewport(settings, rect, [start[0], start[1]]);
                         let end_pos = world_to_viewport(settings, rect, [end[0], end[1]]);
                         if let (Some(start_pos), Some(end_pos)) = (start_pos, end_pos) {
                             painter.line_segment([start_pos, end_pos], (1.0, color));
@@ -1098,7 +1112,7 @@ impl TerrainEditorApp {
                 job.cancel.store(true, Ordering::Relaxed);
             }
         }
-        let s: &mut Self = unsafe{&mut *(self as *mut Self)};
+        let s: &mut Self = unsafe { &mut *(self as *mut Self) };
         if trigger_dirty {
             let lods = self.selected_build_lods();
             if let Some(project) = self.project.as_ref() {
@@ -1217,6 +1231,7 @@ impl TerrainEditorApp {
             .unwrap_or(0);
         ui.horizontal(|ui| {
             ui.label("LOD view");
+            ui.selectable_value(&mut self.preview.lod_selection, LodSelection::Auto, "Auto");
             ui.selectable_value(&mut self.preview.lod_selection, LodSelection::All, "All");
             for lod in 0..=max_lod {
                 ui.selectable_value(
@@ -1237,7 +1252,10 @@ impl TerrainEditorApp {
             ui.label("chunks");
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.preview.enable_distance_culling, "Distance culling");
+            ui.checkbox(
+                &mut self.preview.enable_distance_culling,
+                "Distance culling",
+            );
             ui.add_enabled(
                 self.preview.enable_distance_culling,
                 egui::DragValue::new(&mut self.preview.max_chunk_distance)
@@ -1249,12 +1267,6 @@ impl TerrainEditorApp {
     }
 
     fn draw_preview_viewport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let chunk_infos = self.preview_chunk_infos();
-        if chunk_infos.is_empty() {
-            ui.label("No chunk artifacts to preview.");
-            return;
-        }
-
         let available = ui.available_size();
         let viewport_height = available.y.max(220.0);
         let (rect, response) = ui.allocate_exact_size(
@@ -1271,6 +1283,17 @@ impl TerrainEditorApp {
         self.update_preview_camera(ctx, &response, rect);
 
         let (camera_pos, camera_target) = self.preview_camera_pose();
+        let chunk_infos = self.preview_chunk_infos(camera_pos);
+        if chunk_infos.is_empty() {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "No chunk artifacts to preview.",
+                egui::FontId::proportional(16.0),
+                egui::Color32::LIGHT_GRAY,
+            );
+            return;
+        }
         let aspect = (rect.width() / rect.height().max(1.0)).max(0.1);
         let view = Mat4::look_at_rh(camera_pos, camera_target, Vec3::Z);
         let proj =
@@ -1306,9 +1329,8 @@ impl TerrainEditorApp {
                 }
                 candidate_infos.push((distance, info));
             }
-            candidate_infos.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            candidate_infos
+                .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             for (_, info) in candidate_infos
                 .into_iter()
                 .take(self.preview.max_chunks.max(1))
@@ -1377,18 +1399,15 @@ impl TerrainEditorApp {
                 let i0 = tri[0] as usize;
                 let i1 = tri[1] as usize;
                 let i2 = tri[2] as usize;
-                let Some((p0, d0)) =
-                    project_point(mesh.positions[i0] - center, view_proj, rect)
+                let Some((p0, d0)) = project_point(mesh.positions[i0] - center, view_proj, rect)
                 else {
                     continue;
                 };
-                let Some((p1, d1)) =
-                    project_point(mesh.positions[i1] - center, view_proj, rect)
+                let Some((p1, d1)) = project_point(mesh.positions[i1] - center, view_proj, rect)
                 else {
                     continue;
                 };
-                let Some((p2, d2)) =
-                    project_point(mesh.positions[i2] - center, view_proj, rect)
+                let Some((p2, d2)) = project_point(mesh.positions[i2] - center, view_proj, rect)
                 else {
                     continue;
                 };
@@ -1462,7 +1481,7 @@ impl TerrainEditorApp {
         }
     }
 
-    fn preview_chunk_infos(&self) -> Vec<ChunkArtifactInfo> {
+    fn preview_chunk_infos(&self, camera_pos: Vec3) -> Vec<ChunkArtifactInfo> {
         let Some(project) = &self.project else {
             return Vec::new();
         };
@@ -1480,12 +1499,77 @@ impl TerrainEditorApp {
         };
 
         match self.preview.lod_selection {
+            LodSelection::Auto => {
+                self.select_lods_for_preview(chunks, &project.settings, camera_pos)
+            }
             LodSelection::All => chunks,
             LodSelection::Single(lod) => {
                 chunks.retain(|chunk| chunk.lod == Some(lod));
                 chunks
             }
         }
+    }
+
+    fn lod_for_distance(&self, settings: &TerrainProjectSettings, distance: f32) -> u8 {
+        let mut lod = 0_u8;
+        for (idx, band) in settings.lod_policy.distance_bands.iter().enumerate() {
+            if distance > *band {
+                lod = lod.saturating_add(1).max((idx + 1) as u8);
+            }
+        }
+        lod.min(settings.lod_policy.max_lod)
+    }
+
+    fn select_lods_for_preview(
+        &self,
+        chunks: Vec<ChunkArtifactInfo>,
+        settings: &TerrainProjectSettings,
+        camera_pos: Vec3,
+    ) -> Vec<ChunkArtifactInfo> {
+        let mut by_coord: HashMap<(i32, i32), Vec<ChunkArtifactInfo>> = HashMap::new();
+        let mut fallbacks = Vec::new();
+        for chunk in chunks {
+            if let Some(coord) = chunk.coord {
+                by_coord.entry(coord).or_default().push(chunk);
+            } else {
+                fallbacks.push(chunk);
+            }
+        }
+
+        let chunk_size = Vec3::new(
+            settings.tile_size * settings.tiles_per_chunk[0] as f32,
+            settings.tile_size * settings.tiles_per_chunk[1] as f32,
+            (settings.world_bounds_max[2] - settings.world_bounds_min[2]).max(1.0),
+        );
+        let mut selected = Vec::new();
+        for (coord, mut options) in by_coord {
+            options.sort_by_key(|info| info.lod.unwrap_or(0));
+            let center = Vec3::new(
+                coord.0 as f32 * chunk_size.x + chunk_size.x * 0.5,
+                coord.1 as f32 * chunk_size.y + chunk_size.y * 0.5,
+                settings.world_bounds_min[2] + chunk_size.z * 0.5,
+            );
+            let distance = (center - camera_pos).length();
+            let desired = self.lod_for_distance(settings, distance);
+            if let Some(info) = options
+                .iter()
+                .find(|info| info.lod == Some(desired))
+                .cloned()
+            {
+                selected.push(info);
+                continue;
+            }
+            if let Some(info) = options
+                .iter()
+                .min_by_key(|info| info.lod.unwrap_or(0).abs_diff(desired))
+                .cloned()
+            {
+                selected.push(info);
+            }
+        }
+
+        selected.extend(fallbacks);
+        selected
     }
 
     fn preview_camera_pose(&self) -> (Vec3, Vec3) {
@@ -2275,6 +2359,54 @@ fn collect_chunk_artifacts(entries: &[RDBEntryMeta], project_key: &str) -> Vec<C
     artifacts
 }
 
+fn collect_dirty_chunks(rdb: &mut RDBFile, project_key: &str) -> Vec<[i32; 2]> {
+    let prefix = format!("terrain/chunk_state/{project_key}/");
+    let mut chunks = Vec::new();
+    for entry in rdb.entries() {
+        if let Some(coord) = parse_chunk_state_entry(&entry.name, &prefix) {
+            if let Ok(state) = rdb.fetch::<TerrainChunkState>(&entry.name) {
+                if state.dirty_flags != 0 {
+                    chunks.push([coord.0, coord.1]);
+                }
+            }
+        }
+    }
+    chunks
+}
+
+fn draw_dirty_overlay(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    settings: &TerrainProjectSettings,
+    rdb: &mut RDBFile,
+    project_key: &str,
+) {
+    let dirty_chunks = collect_dirty_chunks(rdb, project_key);
+    if dirty_chunks.is_empty() {
+        return;
+    }
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let tint = egui::Color32::from_rgba_premultiplied(255, 120, 120, 40);
+    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 120, 120));
+
+    for coords in dirty_chunks {
+        let min_x = settings.world_bounds_min[0] + coords[0] as f32 * chunk_size_x;
+        let min_y = settings.world_bounds_min[1] + coords[1] as f32 * chunk_size_y;
+        let max_x = min_x + chunk_size_x;
+        let max_y = min_y + chunk_size_y;
+
+        let min_pos = world_to_viewport(settings, rect, [min_x, max_y]);
+        let max_pos = world_to_viewport(settings, rect, [max_x, min_y]);
+        let (Some(min_pos), Some(max_pos)) = (min_pos, max_pos) else {
+            continue;
+        };
+        let chunk_rect = egui::Rect::from_min_max(min_pos, max_pos);
+        painter.rect_filled(chunk_rect, 0.0, tint);
+        painter.rect_stroke(chunk_rect, 0.0, stroke);
+    }
+}
+
 fn parse_project_chunk(entry: &RDBEntryMeta, project_key: &str) -> Option<ChunkArtifactInfo> {
     let prefix = format!("terrain/chunk_artifact/{project_key}/");
     let remainder = entry.name.strip_prefix(&prefix)?;
@@ -2711,63 +2843,203 @@ fn build_params_for_brush(
     }
 }
 
+fn affected_chunks_for_op(
+    settings: &TerrainProjectSettings,
+    op: &TerrainMutationOp,
+) -> Vec<[i32; 2]> {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+        return Vec::new();
+    }
+
+    let (min_x, max_x, min_y, max_y, min_z, max_z) = match op.params {
+        TerrainMutationParams::Sphere { center }
+        | TerrainMutationParams::Smooth { center }
+        | TerrainMutationParams::MaterialPaint { center, .. } => (
+            center[0] - op.radius,
+            center[0] + op.radius,
+            center[1] - op.radius,
+            center[1] + op.radius,
+            center[2] - op.radius,
+            center[2] + op.radius,
+        ),
+        TerrainMutationParams::Capsule { start, end } => (
+            start[0].min(end[0]) - op.radius,
+            start[0].max(end[0]) + op.radius,
+            start[1].min(end[1]) - op.radius,
+            start[1].max(end[1]) + op.radius,
+            start[2].min(end[2]) - op.radius,
+            start[2].max(end[2]) + op.radius,
+        ),
+    };
+
+    if max_x < settings.world_bounds_min[0] || min_x > settings.world_bounds_max[0] {
+        return Vec::new();
+    }
+    if max_y < settings.world_bounds_min[1] || min_y > settings.world_bounds_max[1] {
+        return Vec::new();
+    }
+    let (max_chunk_x, max_chunk_y) = max_chunk_coords(settings, chunk_size_x, chunk_size_y);
+    let (min_chunk_x, min_chunk_y) = chunk_coords_for_world(settings, min_x, min_y);
+    let (max_chunk_x_raw, max_chunk_y_raw) = chunk_coords_for_world(settings, max_x, max_y);
+    let min_chunk_x = min_chunk_x.clamp(0, max_chunk_x);
+    let min_chunk_y = min_chunk_y.clamp(0, max_chunk_y);
+    let max_chunk_x = max_chunk_x_raw.clamp(0, max_chunk_x);
+    let max_chunk_y = max_chunk_y_raw.clamp(0, max_chunk_y);
+
+    if min_z > settings.world_bounds_max[2] || max_z < settings.world_bounds_min[2] {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    for chunk_x in min_chunk_x..=max_chunk_x {
+        for chunk_y in min_chunk_y..=max_chunk_y {
+            let (aabb_min, aabb_max) =
+                chunk_aabb(settings, chunk_x, chunk_y, chunk_size_x, chunk_size_y);
+            let intersects = match op.params {
+                TerrainMutationParams::Sphere { center }
+                | TerrainMutationParams::Smooth { center }
+                | TerrainMutationParams::MaterialPaint { center, .. } => {
+                    sphere_intersects_aabb(center, op.radius, aabb_min, aabb_max)
+                }
+                TerrainMutationParams::Capsule { start, end } => {
+                    let (expanded_min, expanded_max) = expand_aabb(aabb_min, aabb_max, op.radius);
+                    segment_intersects_aabb(start, end, expanded_min, expanded_max)
+                }
+            };
+            if intersects {
+                chunks.push([chunk_x, chunk_y]);
+            }
+        }
+    }
+    chunks
+}
+
+fn max_chunk_coords(
+    settings: &TerrainProjectSettings,
+    chunk_size_x: f32,
+    chunk_size_y: f32,
+) -> (i32, i32) {
+    let world_size_x = (settings.world_bounds_max[0] - settings.world_bounds_min[0]).max(0.0);
+    let world_size_y = (settings.world_bounds_max[1] - settings.world_bounds_min[1]).max(0.0);
+    let count_x = (world_size_x / chunk_size_x).ceil().max(1.0) as i32;
+    let count_y = (world_size_y / chunk_size_y).ceil().max(1.0) as i32;
+    (count_x.saturating_sub(1), count_y.saturating_sub(1))
+}
+
+fn chunk_aabb(
+    settings: &TerrainProjectSettings,
+    chunk_x: i32,
+    chunk_y: i32,
+    chunk_size_x: f32,
+    chunk_size_y: f32,
+) -> ([f32; 3], [f32; 3]) {
+    let min_x = settings.world_bounds_min[0] + chunk_x as f32 * chunk_size_x;
+    let min_y = settings.world_bounds_min[1] + chunk_y as f32 * chunk_size_y;
+    let min_z = settings.world_bounds_min[2];
+    let max_x = min_x + chunk_size_x;
+    let max_y = min_y + chunk_size_y;
+    let max_z = settings.world_bounds_max[2];
+    ([min_x, min_y, min_z], [max_x, max_y, max_z])
+}
+
+fn expand_aabb(min: [f32; 3], max: [f32; 3], radius: f32) -> ([f32; 3], [f32; 3]) {
+    (
+        [min[0] - radius, min[1] - radius, min[2] - radius],
+        [max[0] + radius, max[1] + radius, max[2] + radius],
+    )
+}
+
+fn sphere_intersects_aabb(
+    center: [f32; 3],
+    radius: f32,
+    aabb_min: [f32; 3],
+    aabb_max: [f32; 3],
+) -> bool {
+    let mut dist_sq = 0.0;
+    for i in 0..3 {
+        let c = center[i];
+        if c < aabb_min[i] {
+            let d = aabb_min[i] - c;
+            dist_sq += d * d;
+        } else if c > aabb_max[i] {
+            let d = c - aabb_max[i];
+            dist_sq += d * d;
+        }
+    }
+    dist_sq <= radius * radius
+}
+
+fn segment_intersects_aabb(
+    start: [f32; 3],
+    end: [f32; 3],
+    aabb_min: [f32; 3],
+    aabb_max: [f32; 3],
+) -> bool {
+    let mut t_min: f32 = 0.0;
+    let mut t_max: f32 = 1.0;
+    let dir = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    for axis in 0..3 {
+        let origin = start[axis];
+        let direction = dir[axis];
+        if direction.abs() < 1e-6 {
+            if origin < aabb_min[axis] || origin > aabb_max[axis] {
+                return false;
+            }
+        } else {
+            let inv = 1.0 / direction;
+            let mut t1 = (aabb_min[axis] - origin) * inv;
+            let mut t2 = (aabb_max[axis] - origin) * inv;
+            if t1 > t2 {
+                std::mem::swap(&mut t1, &mut t2);
+            }
+            t_min = t_min.max(t1);
+            t_max = t_max.min(t2);
+            if t_min > t_max {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn mark_chunks_dirty(
     rdb: &mut RDBFile,
     project: &ProjectState,
     op: &TerrainMutationOp,
 ) -> Result<(), String> {
-    let (min_x, max_x, min_y, max_y) = match op.params {
-        TerrainMutationParams::Sphere { center }
-        | TerrainMutationParams::Smooth { center }
-        | TerrainMutationParams::MaterialPaint { center, .. } => {
-            let min_x = center[0] - op.radius;
-            let max_x = center[0] + op.radius;
-            let min_y = center[1] - op.radius;
-            let max_y = center[1] + op.radius;
-            (min_x, max_x, min_y, max_y)
-        }
-        TerrainMutationParams::Capsule { start, end } => {
-            let min_x = start[0].min(end[0]) - op.radius;
-            let max_x = start[0].max(end[0]) + op.radius;
-            let min_y = start[1].min(end[1]) - op.radius;
-            let max_y = start[1].max(end[1]) + op.radius;
-            (min_x, max_x, min_y, max_y)
-        }
-    };
-    let (min_chunk_x, min_chunk_y) = chunk_coords_for_world(&project.settings, min_x, min_y);
-    let (max_chunk_x, max_chunk_y) = chunk_coords_for_world(&project.settings, max_x, max_y);
-    for chunk_x in min_chunk_x..=max_chunk_x {
-        for chunk_y in min_chunk_y..=max_chunk_y {
-            let coord_key = chunk_coord_key(chunk_x, chunk_y);
-            let state_key = chunk_state_entry(&project.key, &coord_key);
-            let mut state =
-                rdb.fetch::<TerrainChunkState>(&state_key)
-                    .unwrap_or(TerrainChunkState {
-                        project_key: project.key.clone(),
-                        chunk_coords: [chunk_x, chunk_y],
-                        dirty_flags: 0,
-                        dirty_reasons: Vec::new(),
-                        generator_version: project.settings.active_generator_version,
-                        mutation_version: project.settings.active_mutation_version,
-                        last_built_hashes: Vec::new(),
-                        dependency_hashes: TerrainChunkDependencyHashes {
-                            settings_hash: 0,
-                            generator_hash: 0,
-                            mutation_hash: 0,
-                        },
-                    });
-            state.dirty_flags |= TERRAIN_DIRTY_MUTATION;
-            if !state
+    let affected_chunks = affected_chunks_for_op(&project.settings, op);
+    for chunk_coords in affected_chunks {
+        let coord_key = chunk_coord_key(chunk_coords[0], chunk_coords[1]);
+        let state_key = chunk_state_entry(&project.key, &coord_key);
+        let mut state = rdb
+            .fetch::<TerrainChunkState>(&state_key)
+            .unwrap_or(TerrainChunkState {
+                project_key: project.key.clone(),
+                chunk_coords,
+                dirty_flags: 0,
+                dirty_reasons: Vec::new(),
+                generator_version: project.settings.active_generator_version,
+                mutation_version: project.settings.active_mutation_version,
+                last_built_hashes: Vec::new(),
+                dependency_hashes: TerrainChunkDependencyHashes {
+                    settings_hash: 0,
+                    generator_hash: 0,
+                    mutation_hash: 0,
+                },
+            });
+        state.dirty_flags |= TERRAIN_DIRTY_MUTATION;
+        if !state
+            .dirty_reasons
+            .iter()
+            .any(|reason| *reason == TerrainDirtyReason::MutationChanged)
+        {
+            state
                 .dirty_reasons
-                .iter()
-                .any(|reason| *reason == TerrainDirtyReason::MutationChanged)
-            {
-                state
-                    .dirty_reasons
-                    .push(TerrainDirtyReason::MutationChanged);
-            }
-            rdb.upsert(&state_key, &state).map_err(format_rdb_err)?;
+                .push(TerrainDirtyReason::MutationChanged);
         }
+        rdb.upsert(&state_key, &state).map_err(format_rdb_err)?;
     }
     Ok(())
 }
