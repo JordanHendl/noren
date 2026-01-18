@@ -31,6 +31,8 @@ struct ChunkArtifactInfo {
     region: String,
     coord: Option<(i32, i32)>,
     lod: Option<u8>,
+    offset: u64,
+    len: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +130,9 @@ struct PreviewSettings {
     camera_mode: CameraMode,
     scope: PreviewScope,
     lod_selection: LodSelection,
+    max_chunks: usize,
+    max_chunk_distance: f32,
+    enable_distance_culling: bool,
     show_wireframe: bool,
     show_bounds: bool,
     show_lod_colors: bool,
@@ -151,6 +156,8 @@ struct ChunkMeshResource {
     indices: Vec<u32>,
     bounds_min: Vec3,
     bounds_max: Vec3,
+    entry_offset: u64,
+    entry_len: u64,
 }
 
 #[derive(Default)]
@@ -218,11 +225,17 @@ impl ChunkPreviewCache {
         &mut self,
         key: ChunkMeshKey,
         artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+        entry_offset: u64,
+        entry_len: u64,
     ) -> &ChunkMeshResource {
         let needs_update = self
             .meshes
             .get(&key)
-            .map(|mesh| mesh.content_hash != artifact.content_hash)
+            .map(|mesh| {
+                mesh.content_hash != artifact.content_hash
+                    || mesh.entry_offset != entry_offset
+                    || mesh.entry_len != entry_len
+            })
             .unwrap_or(true);
         if needs_update {
             let positions = artifact
@@ -242,12 +255,34 @@ impl ChunkPreviewCache {
                 indices: artifact.indices.clone(),
                 bounds_min: Vec3::from(artifact.bounds_min),
                 bounds_max: Vec3::from(artifact.bounds_max),
+                entry_offset,
+                entry_len,
             };
             self.meshes.insert(key, mesh);
         }
         self.meshes
             .get(&key)
             .expect("mesh should exist after upsert")
+    }
+
+    fn ensure_mesh<'a>(
+        &'a mut self,
+        key: ChunkMeshKey,
+        info: &ChunkArtifactInfo,
+        rdb: &mut RDBFile,
+    ) -> Option<&'a ChunkMeshResource> {
+        let s: &mut Self = unsafe{&mut *(self as *mut Self)};
+        if let Some(mesh) = self.meshes.get(&key) {
+            if mesh.entry_offset == info.offset && mesh.entry_len == info.len {
+                return Some(mesh);
+            }
+        }
+
+        let Ok(artifact) = rdb.fetch::<noren::rdb::terrain::TerrainChunkArtifact>(&info.entry)
+        else {
+            return None;
+        };
+        Some(Self::upsert(s, key, &artifact, info.offset, info.len))
     }
 
     fn retain_keys(&mut self, keys: &HashSet<ChunkMeshKey>) {
@@ -302,6 +337,9 @@ impl Default for TerrainEditorApp {
                 camera_mode: CameraMode::Orbit,
                 scope: PreviewScope::AllChunks,
                 lod_selection: LodSelection::All,
+                max_chunks: 256,
+                max_chunk_distance: 1400.0,
+                enable_distance_culling: true,
                 show_wireframe: true,
                 show_bounds: false,
                 show_lod_colors: true,
@@ -1188,6 +1226,26 @@ impl TerrainEditorApp {
                 );
             }
         });
+
+        ui.horizontal(|ui| {
+            ui.label("Preview limit");
+            ui.add(
+                egui::DragValue::new(&mut self.preview.max_chunks)
+                    .clamp_range(1..=4096)
+                    .speed(1),
+            );
+            ui.label("chunks");
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.preview.enable_distance_culling, "Distance culling");
+            ui.add_enabled(
+                self.preview.enable_distance_culling,
+                egui::DragValue::new(&mut self.preview.max_chunk_distance)
+                    .clamp_range(100.0..=10000.0)
+                    .speed(25.0)
+                    .suffix(" units"),
+            );
+        });
     }
 
     fn draw_preview_viewport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1222,8 +1280,39 @@ impl TerrainEditorApp {
 
         let mut valid_keys = HashSet::new();
         let mut mesh_keys = Vec::new();
-        if let Some(rdb) = self.rdb.as_mut() {
+        if let (Some(rdb), Some(project)) = (self.rdb.as_mut(), self.project.as_ref()) {
+            let chunk_size = Vec3::new(
+                project.settings.tile_size * project.settings.tiles_per_chunk[0] as f32,
+                project.settings.tile_size * project.settings.tiles_per_chunk[1] as f32,
+                (project.settings.world_bounds_max[2] - project.settings.world_bounds_min[2])
+                    .max(1.0),
+            );
+            let chunk_radius = chunk_size.length() * 0.5;
+            let mut candidate_infos: Vec<(f32, ChunkArtifactInfo)> = Vec::new();
             for info in chunk_infos {
+                let mut distance = 0.0;
+                if let Some(coord) = info.coord {
+                    let center = Vec3::new(
+                        coord.0 as f32 * chunk_size.x + chunk_size.x * 0.5,
+                        coord.1 as f32 * chunk_size.y + chunk_size.y * 0.5,
+                        project.settings.world_bounds_min[2] + chunk_size.z * 0.5,
+                    );
+                    distance = (center - camera_pos).length();
+                    if self.preview.enable_distance_culling
+                        && (distance - chunk_radius).max(0.0) > self.preview.max_chunk_distance
+                    {
+                        continue;
+                    }
+                }
+                candidate_infos.push((distance, info));
+            }
+            candidate_infos.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for (_, info) in candidate_infos
+                .into_iter()
+                .take(self.preview.max_chunks.max(1))
+            {
                 let Some((coords, lod)) = info.coord.zip(info.lod) else {
                     continue;
                 };
@@ -1231,10 +1320,7 @@ impl TerrainEditorApp {
                     coords: [coords.0, coords.1],
                     lod,
                 };
-                if let Ok(artifact) =
-                    rdb.fetch::<noren::rdb::terrain::TerrainChunkArtifact>(&info.entry)
-                {
-                    self.preview_cache.upsert(key, &artifact);
+                if self.preview_cache.ensure_mesh(key, &info, rdb).is_some() {
                     valid_keys.insert(key);
                     mesh_keys.push(key);
                 }
@@ -1770,7 +1856,25 @@ impl TerrainEditorApp {
                         lod: chunk.lod,
                     };
                     if self.preview.mode == ViewportMode::Preview {
-                        self.preview_cache.upsert(key, &artifact);
+                        if let Some(project) = self.project.as_ref() {
+                            let coord_key =
+                                chunk_coord_key(chunk.chunk_coords[0], chunk.chunk_coords[1]);
+                            let artifact_key = chunk_artifact_entry(
+                                &project.key,
+                                &coord_key,
+                                &format!("lod{}", chunk.lod),
+                            );
+                            if let Some(info) = project
+                                .chunks
+                                .iter()
+                                .find(|chunk_info| chunk_info.entry == artifact_key)
+                            {
+                                self.preview_cache
+                                    .upsert(key, &artifact, info.offset, info.len);
+                            } else {
+                                self.preview_cache.meshes.remove(&key);
+                            }
+                        }
                     } else {
                         self.preview_cache.meshes.remove(&key);
                     }
@@ -2159,11 +2263,11 @@ fn collect_chunk_artifacts(entries: &[RDBEntryMeta], project_key: &str) -> Vec<C
     let prefix = format!("terrain/chunk_artifact/{project_key}/");
     for entry in entries {
         if entry.name.starts_with(&prefix) {
-            if let Some(info) = parse_project_chunk(&entry.name, project_key) {
+            if let Some(info) = parse_project_chunk(entry, project_key) {
                 artifacts.push(info);
             }
         } else if entry.name.starts_with("terrain/chunk_") {
-            if let Some(info) = parse_legacy_chunk(&entry.name) {
+            if let Some(info) = parse_legacy_chunk(entry) {
                 artifacts.push(info);
             }
         }
@@ -2171,27 +2275,31 @@ fn collect_chunk_artifacts(entries: &[RDBEntryMeta], project_key: &str) -> Vec<C
     artifacts
 }
 
-fn parse_project_chunk(name: &str, project_key: &str) -> Option<ChunkArtifactInfo> {
+fn parse_project_chunk(entry: &RDBEntryMeta, project_key: &str) -> Option<ChunkArtifactInfo> {
     let prefix = format!("terrain/chunk_artifact/{project_key}/");
-    let remainder = name.strip_prefix(&prefix)?;
+    let remainder = entry.name.strip_prefix(&prefix)?;
     let mut parts = remainder.split('/');
     let coord_part = parts.next()?;
     let lod_part = parts.next()?;
     Some(ChunkArtifactInfo {
-        entry: name.to_string(),
+        entry: entry.name.clone(),
         region: "default".to_string(),
         coord: parse_coord(coord_part),
         lod: parse_lod(lod_part),
+        offset: entry.offset,
+        len: entry.len,
     })
 }
 
-fn parse_legacy_chunk(name: &str) -> Option<ChunkArtifactInfo> {
-    let remainder = name.strip_prefix("terrain/chunk_")?;
+fn parse_legacy_chunk(entry: &RDBEntryMeta) -> Option<ChunkArtifactInfo> {
+    let remainder = entry.name.strip_prefix("terrain/chunk_")?;
     Some(ChunkArtifactInfo {
-        entry: name.to_string(),
+        entry: entry.name.clone(),
         region: "legacy".to_string(),
         coord: parse_coord(remainder),
         lod: None,
+        offset: entry.offset,
+        len: entry.len,
     })
 }
 
