@@ -1152,7 +1152,10 @@ impl TerrainEditorApp {
             egui::vec2(available.x, viewport_height),
             egui::Sense::click_and_drag(),
         );
-        let painter = ui.painter();
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, egui::Color32::from_gray(14));
         painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::DARK_GRAY));
 
@@ -1204,6 +1207,16 @@ impl TerrainEditorApp {
             return;
         }
 
+        let center = {
+            let mut min = Vec3::splat(f32::MAX);
+            let mut max = Vec3::splat(f32::MIN);
+            for (_, mesh) in &meshes_to_draw {
+                min = min.min(mesh.bounds_min);
+                max = max.max(mesh.bounds_max);
+            }
+            (min + max) * 0.5
+        };
+
         #[derive(Clone)]
         struct PreviewTriangle {
             vertices: [egui::epaint::Vertex; 3],
@@ -1227,13 +1240,19 @@ impl TerrainEditorApp {
                 let i0 = tri[0] as usize;
                 let i1 = tri[1] as usize;
                 let i2 = tri[2] as usize;
-                let Some((p0, d0)) = project_point(mesh.positions[i0], view_proj, rect) else {
+                let Some((p0, d0)) =
+                    project_point(mesh.positions[i0] - center, view_proj, rect)
+                else {
                     continue;
                 };
-                let Some((p1, d1)) = project_point(mesh.positions[i1], view_proj, rect) else {
+                let Some((p1, d1)) =
+                    project_point(mesh.positions[i1] - center, view_proj, rect)
+                else {
                     continue;
                 };
-                let Some((p2, d2)) = project_point(mesh.positions[i2], view_proj, rect) else {
+                let Some((p2, d2)) =
+                    project_point(mesh.positions[i2] - center, view_proj, rect)
+                else {
                     continue;
                 };
                 let n0 = mesh.normals.get(i0).copied().unwrap_or(Vec3::Z).normalize();
@@ -1272,8 +1291,8 @@ impl TerrainEditorApp {
 
             if self.preview.show_bounds {
                 bounds_segments.extend(project_bounds(
-                    mesh.bounds_min,
-                    mesh.bounds_max,
+                    mesh.bounds_min - center,
+                    mesh.bounds_max - center,
                     view_proj,
                     rect,
                 ));
@@ -1699,7 +1718,11 @@ impl TerrainEditorApp {
                         coords: chunk.chunk_coords,
                         lod: chunk.lod,
                     };
-                    self.preview_cache.upsert(key, &artifact);
+                    if self.preview.mode == ViewportMode::Preview {
+                        self.preview_cache.upsert(key, &artifact);
+                    } else {
+                        self.preview_cache.meshes.remove(&key);
+                    }
                     self.log(format!(
                         "Built chunk ({}, {}) LOD {}",
                         chunk.chunk_coords[0], chunk.chunk_coords[1], chunk.lod
