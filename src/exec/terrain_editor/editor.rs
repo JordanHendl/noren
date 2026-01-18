@@ -867,6 +867,10 @@ impl TerrainEditorApp {
         painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
         painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::DARK_GRAY));
 
+        if let Some(project) = &self.project {
+            self.draw_paint_overlay(painter, rect, project);
+        }
+
         let mut hovered_world = None;
         let settings = self
             .project
@@ -895,6 +899,53 @@ impl TerrainEditorApp {
                 if self.should_stamp(now) {
                     if let Err(err) = self.apply_brush_stamp(world_pos) {
                         self.set_error(err);
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_paint_overlay(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        project: &ProjectState,
+    ) {
+        let settings = &project.settings;
+        let max_ops = 400usize;
+        let active_layer = self.active_layer;
+        let layers = project
+            .mutation_layers
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| active_layer.map_or(true, |active| active == *idx));
+        for (idx, layer) in layers {
+            let color = paint_layer_color(idx);
+            for op in layer.ops.iter().rev().take(max_ops) {
+                if !op.enabled {
+                    continue;
+                }
+                match &op.params {
+                    TerrainMutationParams::Sphere { center }
+                    | TerrainMutationParams::Smooth { center }
+                    | TerrainMutationParams::MaterialPaint { center, .. } => {
+                        if let Some(pos) = world_to_viewport(settings, rect, [center[0], center[1]])
+                        {
+                            let radius = world_radius_to_screen(settings, rect, op.radius);
+                            painter.circle_stroke(pos, radius, (1.0, color));
+                            painter.circle_filled(pos, 2.5, color);
+                        }
+                    }
+                    TerrainMutationParams::Capsule { start, end } => {
+                        let start_pos =
+                            world_to_viewport(settings, rect, [start[0], start[1]]);
+                        let end_pos = world_to_viewport(settings, rect, [end[0], end[1]]);
+                        if let (Some(start_pos), Some(end_pos)) = (start_pos, end_pos) {
+                            painter.line_segment([start_pos, end_pos], (1.0, color));
+                            let radius = world_radius_to_screen(settings, rect, op.radius);
+                            painter.circle_stroke(start_pos, radius, (1.0, color));
+                            painter.circle_stroke(end_pos, radius, (1.0, color));
+                        }
                     }
                 }
             }
@@ -2331,10 +2382,45 @@ fn viewport_to_world(
     Some([world_x, world_y])
 }
 
+fn world_to_viewport(
+    settings: &TerrainProjectSettings,
+    rect: egui::Rect,
+    world_pos: [f32; 2],
+) -> Option<egui::Pos2> {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let min = settings.world_bounds_min;
+    let max = settings.world_bounds_max;
+    let range_x = (max[0] - min[0]).max(f32::EPSILON);
+    let range_y = (max[1] - min[1]).max(f32::EPSILON);
+    let u = (world_pos[0] - min[0]) / range_x;
+    let v = (max[1] - world_pos[1]) / range_y;
+    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+        return None;
+    }
+    Some(egui::pos2(
+        rect.left() + u * rect.width(),
+        rect.top() + v * rect.height(),
+    ))
+}
+
 fn world_radius_to_screen(settings: &TerrainProjectSettings, rect: egui::Rect, radius: f32) -> f32 {
     let world_width = (settings.world_bounds_max[0] - settings.world_bounds_min[0]).max(1.0);
     let scale = rect.width() / world_width;
     radius * scale
+}
+
+fn paint_layer_color(layer_index: usize) -> egui::Color32 {
+    const COLORS: [egui::Color32; 6] = [
+        egui::Color32::from_rgb(120, 200, 255),
+        egui::Color32::from_rgb(255, 160, 80),
+        egui::Color32::from_rgb(160, 220, 120),
+        egui::Color32::from_rgb(240, 120, 200),
+        egui::Color32::from_rgb(200, 200, 120),
+        egui::Color32::from_rgb(160, 160, 240),
+    ];
+    COLORS[layer_index % COLORS.len()]
 }
 
 fn project_point(position: Vec3, view_proj: Mat4, rect: egui::Rect) -> Option<(egui::Pos2, f32)> {
