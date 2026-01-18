@@ -39,8 +39,8 @@ name = "rdbinspect"
 path = "src/exec/rdbinspect/bin.rs"
 
 [[bin]]
-name = "noren_tgen"
-path = "src/exec/noren_tgen/bin.rs"
+name = "noren_terrain_editor"
+path = "src/exec/terrain_editor/bin.rs"
 
 [dev-dependencies]
 rand = "0.8"

@@ -120,6 +120,11 @@ impl TerrainEditorApp {
                     self.rdb_path_input = path.display().to_string();
                 }
             }
+            if ui.button("Init RDB").clicked() {
+                if let Err(err) = self.init_rdb_from_input() {
+                    self.set_error(err);
+                }
+            }
             if ui.button("Load RDB").clicked() {
                 if let Err(err) = self.load_rdb_from_input() {
                     self.set_error(err);
@@ -173,6 +178,30 @@ impl TerrainEditorApp {
         }
         self.rdb = Some(rdb);
         self.log(format!("Loaded RDB: {}", path.display()));
+        Ok(())
+    }
+
+    fn init_rdb_from_input(&mut self) -> Result<(), String> {
+        let path = self.rdb_path()?;
+        if path.exists() {
+            return Err("RDB already exists at the provided path.".to_string());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("Failed to create RDB folder: {err}"))?;
+        }
+        let rdb = RDBFile::new();
+        rdb.save(&path).map_err(format_rdb_err)?;
+        self.rdb = Some(rdb);
+        self.project = None;
+        self.selection = Selection::None;
+        self.active_layer = None;
+        self.project_keys.clear();
+        self.project_key_input.clear();
+        self.log(format!(
+            "Initialized new RDB: {}. Use New Project to add terrain data.",
+            path.display()
+        ));
         Ok(())
     }
 
