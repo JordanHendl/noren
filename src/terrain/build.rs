@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerrainChunkBuildRequest {
     pub chunk_coords: [i32; 2],
     pub lod: u8,
@@ -29,6 +29,48 @@ pub struct TerrainBuildReport {
     pub built_chunks: usize,
     pub skipped_chunks: usize,
     pub updated_states: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerrainChunkBuildPhase {
+    FieldEval,
+    SurfaceExtraction,
+    Optimize,
+    Write,
+}
+
+impl TerrainChunkBuildPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FieldEval => "field eval",
+            Self::SurfaceExtraction => "surface extraction",
+            Self::Optimize => "optimize",
+            Self::Write => "write",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerrainChunkBuildStatus {
+    Built,
+    Skipped,
+    Cancelled,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainChunkBuildOutcome {
+    pub status: TerrainChunkBuildStatus,
+    pub artifact: Option<TerrainChunkArtifact>,
+    pub state: Option<TerrainChunkState>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainBuildContext {
+    pub settings: TerrainProjectSettings,
+    pub generator: TerrainGeneratorDefinition,
+    pub mutation_layers: Vec<TerrainMutationLayer>,
+    pub settings_hash: u64,
+    pub generator_hash: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -67,6 +109,47 @@ pub fn build_terrain_chunks(
         return Ok(TerrainBuildReport::default());
     }
 
+    let context = prepare_terrain_build_context(rdb, project_key)?;
+    let mut report = TerrainBuildReport::default();
+
+    for request in requests {
+        let outcome = build_terrain_chunk_with_context(
+            rdb,
+            project_key,
+            &context,
+            *request,
+            |_| {},
+            || false,
+        )?;
+        match outcome.status {
+            TerrainChunkBuildStatus::Built => {
+                let coord_key = chunk_coord_key(request.chunk_coords[0], request.chunk_coords[1]);
+                let state_key = chunk_state_entry(project_key, &coord_key);
+                let artifact_key =
+                    chunk_artifact_entry(project_key, &coord_key, &lod_key(request.lod));
+                if let Some(artifact) = &outcome.artifact {
+                    rdb.upsert(&artifact_key, artifact)?;
+                }
+                if let Some(state) = &outcome.state {
+                    rdb.upsert(&state_key, state)?;
+                    report.updated_states += 1;
+                }
+                report.built_chunks += 1;
+            }
+            TerrainChunkBuildStatus::Skipped => {
+                report.skipped_chunks += 1;
+            }
+            TerrainChunkBuildStatus::Cancelled => {}
+        }
+    }
+
+    Ok(report)
+}
+
+pub fn prepare_terrain_build_context(
+    rdb: &mut RDBFile,
+    project_key: &str,
+) -> Result<TerrainBuildContext, RdbErr> {
     let settings = rdb.fetch::<TerrainProjectSettings>(&project_settings_entry(project_key))?;
     let generator = rdb.fetch::<TerrainGeneratorDefinition>(&generator_entry(
         project_key,
@@ -79,106 +162,141 @@ pub fn build_terrain_chunks(
         project_key,
         settings.active_mutation_version,
     )?;
-
     let settings_hash = hash_serialize(&settings_hash_input(&settings));
     let generator_hash = hash_serialize(&generator);
 
-    let mut report = TerrainBuildReport::default();
+    Ok(TerrainBuildContext {
+        settings,
+        generator,
+        mutation_layers,
+        settings_hash,
+        generator_hash,
+    })
+}
 
-    for request in requests {
-        let coord_key = chunk_coord_key(request.chunk_coords[0], request.chunk_coords[1]);
-        let state_key = chunk_state_entry(project_key, &coord_key);
-        let artifact_key = chunk_artifact_entry(project_key, &coord_key, &lod_key(request.lod));
+pub fn build_terrain_chunk_with_context(
+    rdb: &mut RDBFile,
+    project_key: &str,
+    context: &TerrainBuildContext,
+    request: TerrainChunkBuildRequest,
+    mut phase_callback: impl FnMut(TerrainChunkBuildPhase),
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<TerrainChunkBuildOutcome, RdbErr> {
+    let coord_key = chunk_coord_key(request.chunk_coords[0], request.chunk_coords[1]);
+    let state_key = chunk_state_entry(project_key, &coord_key);
 
-        let relevant_layers = relevant_mutation_layers(&mutation_layers, request.chunk_coords);
-        let mutation_hash = hash_serialize(&TerrainMutationHashInput {
-            mutation_layers: &relevant_layers,
-        });
-        let content_hash = hash_serialize(&TerrainChunkHashInput {
-            settings: settings_hash_input(&settings),
-            generator: &generator,
-            mutation_layers: &relevant_layers,
-            chunk_coords: request.chunk_coords,
-            lod: request.lod,
-        });
+    let relevant_layers = relevant_mutation_layers(&context.mutation_layers, request.chunk_coords);
+    let mutation_hash = hash_serialize(&TerrainMutationHashInput {
+        mutation_layers: &relevant_layers,
+    });
+    let content_hash = hash_serialize(&TerrainChunkHashInput {
+        settings: settings_hash_input(&context.settings),
+        generator: &context.generator,
+        mutation_layers: &relevant_layers,
+        chunk_coords: request.chunk_coords,
+        lod: request.lod,
+    });
 
-        let existing_state = rdb.fetch::<TerrainChunkState>(&state_key).ok();
-        let mut dirty_flags = 0;
-        let mut dirty_reasons = Vec::new();
-        if let Some(state) = &existing_state {
-            if state.dependency_hashes.settings_hash != settings_hash {
-                dirty_flags |= TERRAIN_DIRTY_SETTINGS;
-                dirty_reasons.push(TerrainDirtyReason::SettingsChanged);
-            }
-            if state.dependency_hashes.generator_hash != generator_hash {
-                dirty_flags |= TERRAIN_DIRTY_GENERATOR;
-                dirty_reasons.push(TerrainDirtyReason::GeneratorChanged);
-            }
-            if state.dependency_hashes.mutation_hash != mutation_hash {
-                dirty_flags |= TERRAIN_DIRTY_MUTATION;
-                dirty_reasons.push(TerrainDirtyReason::MutationChanged);
-            }
-        } else {
-            dirty_flags = TERRAIN_DIRTY_SETTINGS | TERRAIN_DIRTY_GENERATOR | TERRAIN_DIRTY_MUTATION;
-            dirty_reasons = vec![
-                TerrainDirtyReason::SettingsChanged,
-                TerrainDirtyReason::GeneratorChanged,
-                TerrainDirtyReason::MutationChanged,
-            ];
+    let existing_state = rdb.fetch::<TerrainChunkState>(&state_key).ok();
+    let mut dirty_flags = 0;
+    let mut dirty_reasons = Vec::new();
+    if let Some(state) = &existing_state {
+        if state.dependency_hashes.settings_hash != context.settings_hash {
+            dirty_flags |= TERRAIN_DIRTY_SETTINGS;
+            dirty_reasons.push(TerrainDirtyReason::SettingsChanged);
         }
-
-        let existing_hash = existing_state
-            .as_ref()
-            .and_then(|state| {
-                state
-                    .last_built_hashes
-                    .iter()
-                    .find(|h| h.lod == request.lod)
-            })
-            .map(|h| h.hash);
-        if existing_hash == Some(content_hash) && dirty_flags == 0 {
-            report.skipped_chunks += 1;
-            continue;
+        if state.dependency_hashes.generator_hash != context.generator_hash {
+            dirty_flags |= TERRAIN_DIRTY_GENERATOR;
+            dirty_reasons.push(TerrainDirtyReason::GeneratorChanged);
         }
-
-        let artifact = build_chunk_artifact(
-            project_key,
-            &settings,
-            &generator,
-            &relevant_layers,
-            request.chunk_coords,
-            request.lod,
-            content_hash,
-        );
-        rdb.upsert(&artifact_key, &artifact)?;
-
-        let mut last_built_hashes = existing_state
-            .as_ref()
-            .map(|state| state.last_built_hashes.clone())
-            .unwrap_or_default();
-        upsert_lod_hash(&mut last_built_hashes, request.lod, content_hash);
-
-        let state = TerrainChunkState {
-            project_key: project_key.to_string(),
-            chunk_coords: request.chunk_coords,
-            dirty_flags,
-            dirty_reasons,
-            generator_version: settings.active_generator_version,
-            mutation_version: settings.active_mutation_version,
-            last_built_hashes,
-            dependency_hashes: TerrainChunkDependencyHashes {
-                settings_hash,
-                generator_hash,
-                mutation_hash,
-            },
-        };
-        rdb.upsert(&state_key, &state)?;
-
-        report.built_chunks += 1;
-        report.updated_states += 1;
+        if state.dependency_hashes.mutation_hash != mutation_hash {
+            dirty_flags |= TERRAIN_DIRTY_MUTATION;
+            dirty_reasons.push(TerrainDirtyReason::MutationChanged);
+        }
+    } else {
+        dirty_flags = TERRAIN_DIRTY_SETTINGS | TERRAIN_DIRTY_GENERATOR | TERRAIN_DIRTY_MUTATION;
+        dirty_reasons = vec![
+            TerrainDirtyReason::SettingsChanged,
+            TerrainDirtyReason::GeneratorChanged,
+            TerrainDirtyReason::MutationChanged,
+        ];
     }
 
-    Ok(report)
+    let existing_hash = existing_state
+        .as_ref()
+        .and_then(|state| {
+            state
+                .last_built_hashes
+                .iter()
+                .find(|h| h.lod == request.lod)
+        })
+        .map(|h| h.hash);
+    if existing_hash == Some(content_hash) && dirty_flags == 0 {
+        return Ok(TerrainChunkBuildOutcome {
+            status: TerrainChunkBuildStatus::Skipped,
+            artifact: None,
+            state: None,
+        });
+    }
+
+    let geometry = generate_chunk_geometry_phased(
+        &context.settings,
+        &context.generator,
+        &relevant_layers,
+        request.chunk_coords,
+        request.lod,
+        &mut phase_callback,
+        &mut should_cancel,
+    );
+    let Some((vertices, indices, bounds_min, bounds_max)) = geometry else {
+        return Ok(TerrainChunkBuildOutcome {
+            status: TerrainChunkBuildStatus::Cancelled,
+            artifact: None,
+            state: None,
+        });
+    };
+
+    let artifact = TerrainChunkArtifact {
+        project_key: project_key.to_string(),
+        chunk_coords: request.chunk_coords,
+        lod: request.lod,
+        bounds_min,
+        bounds_max,
+        vertex_layout: context.settings.vertex_layout.clone(),
+        vertices,
+        indices,
+        material_ids: None,
+        material_weights: None,
+        content_hash,
+        mesh_entry: "geometry/terrain_chunk".to_string(),
+    };
+
+    let mut last_built_hashes = existing_state
+        .as_ref()
+        .map(|state| state.last_built_hashes.clone())
+        .unwrap_or_default();
+    upsert_lod_hash(&mut last_built_hashes, request.lod, content_hash);
+
+    let state = TerrainChunkState {
+        project_key: project_key.to_string(),
+        chunk_coords: request.chunk_coords,
+        dirty_flags,
+        dirty_reasons,
+        generator_version: context.settings.active_generator_version,
+        mutation_version: context.settings.active_mutation_version,
+        last_built_hashes,
+        dependency_hashes: TerrainChunkDependencyHashes {
+            settings_hash: context.settings_hash,
+            generator_hash: context.generator_hash,
+            mutation_hash,
+        },
+    };
+
+    Ok(TerrainChunkBuildOutcome {
+        status: TerrainChunkBuildStatus::Built,
+        artifact: Some(artifact),
+        state: Some(state),
+    })
 }
 
 fn collect_active_mutation_layers(
@@ -302,40 +420,54 @@ fn upsert_lod_hash(hashes: &mut Vec<TerrainChunkLodHash>, lod: u8, hash: u64) {
     hashes.sort_by_key(|entry| entry.lod);
 }
 
-fn build_chunk_artifact(
-    project_key: &str,
-    settings: &TerrainProjectSettings,
-    generator: &TerrainGeneratorDefinition,
-    mutation_layers: &[TerrainMutationLayer],
-    chunk_coords: [i32; 2],
-    lod: u8,
-    content_hash: u64,
-) -> TerrainChunkArtifact {
-    let (vertices, indices, bounds_min, bounds_max) =
-        generate_chunk_geometry(settings, generator, mutation_layers, chunk_coords, lod);
-    TerrainChunkArtifact {
-        project_key: project_key.to_string(),
-        chunk_coords,
-        lod,
-        bounds_min,
-        bounds_max,
-        vertex_layout: settings.vertex_layout.clone(),
-        vertices,
-        indices,
-        material_ids: None,
-        material_weights: None,
-        content_hash,
-        mesh_entry: "geometry/terrain_chunk".to_string(),
-    }
+struct ChunkFieldSamples {
+    grid_x: u32,
+    grid_y: u32,
+    step: u32,
+    origin_x: f32,
+    origin_y: f32,
+    heights: Vec<f32>,
 }
 
-fn generate_chunk_geometry(
+fn generate_chunk_geometry_phased(
     settings: &TerrainProjectSettings,
     generator: &TerrainGeneratorDefinition,
     mutation_layers: &[TerrainMutationLayer],
     chunk_coords: [i32; 2],
     lod: u8,
-) -> (Vec<Vertex>, Vec<u32>, [f32; 3], [f32; 3]) {
+    phase_callback: &mut impl FnMut(TerrainChunkBuildPhase),
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Option<(Vec<Vertex>, Vec<u32>, [f32; 3], [f32; 3])> {
+    phase_callback(TerrainChunkBuildPhase::FieldEval);
+    let field = evaluate_chunk_field(settings, generator, mutation_layers, chunk_coords, lod);
+    if should_cancel() {
+        return None;
+    }
+
+    phase_callback(TerrainChunkBuildPhase::SurfaceExtraction);
+    let (mut vertices, mut indices, bounds_min, bounds_max) =
+        extract_chunk_surface(settings, &field);
+    if should_cancel() {
+        return None;
+    }
+
+    phase_callback(TerrainChunkBuildPhase::Optimize);
+    vertices.shrink_to_fit();
+    indices.shrink_to_fit();
+    if should_cancel() {
+        return None;
+    }
+
+    Some((vertices, indices, bounds_min, bounds_max))
+}
+
+fn evaluate_chunk_field(
+    settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    mutation_layers: &[TerrainMutationLayer],
+    chunk_coords: [i32; 2],
+    lod: u8,
+) -> ChunkFieldSamples {
     let step = 1_u32.checked_shl(lod as u32).unwrap_or(1).max(1);
     let tiles_x = settings.tiles_per_chunk[0];
     let tiles_y = settings.tiles_per_chunk[1];
@@ -355,6 +487,32 @@ fn generate_chunk_geometry(
         }
     }
 
+    ChunkFieldSamples {
+        grid_x,
+        grid_y,
+        step,
+        origin_x,
+        origin_y,
+        heights,
+    }
+}
+
+fn extract_chunk_surface(
+    settings: &TerrainProjectSettings,
+    field: &ChunkFieldSamples,
+) -> (Vec<Vertex>, Vec<u32>, [f32; 3], [f32; 3]) {
+    let ChunkFieldSamples {
+        grid_x,
+        grid_y,
+        step,
+        origin_x,
+        origin_y,
+        heights,
+    } = field;
+    let grid_x = *grid_x;
+    let grid_y = *grid_y;
+    let step = *step;
+
     let mut vertices = Vec::with_capacity((grid_x * grid_y) as usize);
     let mut min_bounds = [f32::MAX; 3];
     let mut max_bounds = [f32::MIN; 3];
@@ -363,7 +521,7 @@ fn generate_chunk_geometry(
             let world_x = origin_x + x as f32 * step as f32 * settings.tile_size;
             let world_y = origin_y + y as f32 * step as f32 * settings.tile_size;
             let height = heights[(y * grid_x + x) as usize];
-            let normal = estimate_normal(grid_x, grid_y, x, y, &heights, settings, step);
+            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
             let position = [world_x, world_y, height];
             let uv = [
                 x as f32 / (grid_x.saturating_sub(1).max(1)) as f32,

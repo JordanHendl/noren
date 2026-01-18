@@ -1,10 +1,17 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use eframe::egui;
+use glam::{Mat4, Vec3, Vec4};
 use noren::rdb::terrain::{
     TERRAIN_DIRTY_MUTATION, TerrainChunkDependencyHashes, TerrainChunkState, TerrainDirtyReason,
     TerrainGeneratorDefinition, TerrainMutationLayer, TerrainMutationOp, TerrainMutationOpKind,
@@ -12,7 +19,10 @@ use noren::rdb::terrain::{
     chunk_state_entry, generator_entry, mutation_layer_entry, mutation_op_entry,
     project_settings_entry,
 };
-use noren::terrain::sample_height_with_mutations;
+use noren::terrain::{
+    TerrainChunkBuildPhase, TerrainChunkBuildRequest, TerrainChunkBuildStatus,
+    build_terrain_chunk_with_context, prepare_terrain_build_context, sample_height_with_mutations,
+};
 use noren::{RDBEntryMeta, RDBFile, RdbErr};
 
 #[derive(Clone, Debug)]
@@ -67,6 +77,188 @@ struct ViewportState {
     last_stamp_pos: Option<[f32; 3]>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportMode {
+    Paint,
+    Preview,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CameraMode {
+    Orbit,
+    FreeFly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewScope {
+    AllChunks,
+    SelectedChunk,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LodSelection {
+    All,
+    Single(u8),
+}
+
+#[derive(Clone, Debug)]
+struct PreviewCamera {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+    target: Vec3,
+    position: Vec3,
+}
+
+impl PreviewCamera {
+    fn forward(&self) -> Vec3 {
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        Vec3::new(cos_pitch * cos_yaw, cos_pitch * sin_yaw, sin_pitch).normalize()
+    }
+
+    fn orbit_position(&self) -> Vec3 {
+        self.target - self.forward() * self.distance
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PreviewSettings {
+    mode: ViewportMode,
+    camera_mode: CameraMode,
+    scope: PreviewScope,
+    lod_selection: LodSelection,
+    show_wireframe: bool,
+    show_bounds: bool,
+    show_lod_colors: bool,
+    camera_speed: f32,
+    orbit_sensitivity: f32,
+    fly_sensitivity: f32,
+    fov_y_degrees: f32,
+    camera: PreviewCamera,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct ChunkMeshKey {
+    coords: [i32; 2],
+    lod: u8,
+}
+
+struct ChunkMeshResource {
+    content_hash: u64,
+    positions: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    indices: Vec<u32>,
+    bounds_min: Vec3,
+    bounds_max: Vec3,
+}
+
+#[derive(Default)]
+struct ChunkPreviewCache {
+    meshes: HashMap<ChunkMeshKey, ChunkMeshResource>,
+}
+
+#[derive(Clone, Debug)]
+struct BuildOptions {
+    lod: u8,
+    build_all_lods: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BuildJobCurrent {
+    chunk: TerrainChunkBuildRequest,
+    phase: TerrainChunkBuildPhase,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BuildJobProgress {
+    queued: Vec<TerrainChunkBuildRequest>,
+    current: Option<BuildJobCurrent>,
+    built: usize,
+    skipped: usize,
+    cancelled: bool,
+    errors: Vec<String>,
+}
+
+enum BuildJobEvent {
+    Started {
+        queued: Vec<TerrainChunkBuildRequest>,
+    },
+    Phase {
+        chunk: TerrainChunkBuildRequest,
+        phase: TerrainChunkBuildPhase,
+    },
+    Built {
+        chunk: TerrainChunkBuildRequest,
+        artifact: noren::rdb::terrain::TerrainChunkArtifact,
+        state: TerrainChunkState,
+    },
+    Skipped {
+        chunk: TerrainChunkBuildRequest,
+    },
+    Failed {
+        chunk: TerrainChunkBuildRequest,
+        error: String,
+    },
+    JobFailed {
+        error: String,
+    },
+    Cancelled,
+    Finished,
+}
+
+struct BuildJobHandle {
+    cancel: Arc<AtomicBool>,
+    receiver: mpsc::Receiver<BuildJobEvent>,
+    handle: JoinHandle<()>,
+}
+
+impl ChunkPreviewCache {
+    fn upsert(
+        &mut self,
+        key: ChunkMeshKey,
+        artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+    ) -> &ChunkMeshResource {
+        let needs_update = self
+            .meshes
+            .get(&key)
+            .map(|mesh| mesh.content_hash != artifact.content_hash)
+            .unwrap_or(true);
+        if needs_update {
+            let positions = artifact
+                .vertices
+                .iter()
+                .map(|vertex| Vec3::from(vertex.position))
+                .collect::<Vec<_>>();
+            let normals = artifact
+                .vertices
+                .iter()
+                .map(|vertex| Vec3::from(vertex.normal))
+                .collect::<Vec<_>>();
+            let mesh = ChunkMeshResource {
+                content_hash: artifact.content_hash,
+                positions,
+                normals,
+                indices: artifact.indices.clone(),
+                bounds_min: Vec3::from(artifact.bounds_min),
+                bounds_max: Vec3::from(artifact.bounds_max),
+            };
+            self.meshes.insert(key, mesh);
+        }
+        self.meshes
+            .get(&key)
+            .expect("mesh should exist after upsert")
+    }
+
+    fn retain_keys(&mut self, keys: &HashSet<ChunkMeshKey>) {
+        self.meshes.retain(|key, _| keys.contains(key));
+    }
+
+    fn get(&self, key: &ChunkMeshKey) -> Option<&ChunkMeshResource> {
+        self.meshes.get(key)
+    }
+}
+
 pub struct TerrainEditorApp {
     rdb_path_input: String,
     project_key_input: String,
@@ -77,6 +269,11 @@ pub struct TerrainEditorApp {
     active_layer: Option<usize>,
     brush: BrushSettings,
     viewport: ViewportState,
+    preview: PreviewSettings,
+    preview_cache: ChunkPreviewCache,
+    build_options: BuildOptions,
+    build_progress: BuildJobProgress,
+    build_job: Option<BuildJobHandle>,
     log: Vec<String>,
     validation: Vec<String>,
     last_error: Option<String>,
@@ -100,6 +297,33 @@ impl Default for TerrainEditorApp {
                 stamp_interval: 0.12,
             },
             viewport: ViewportState::default(),
+            preview: PreviewSettings {
+                mode: ViewportMode::Paint,
+                camera_mode: CameraMode::Orbit,
+                scope: PreviewScope::AllChunks,
+                lod_selection: LodSelection::All,
+                show_wireframe: true,
+                show_bounds: false,
+                show_lod_colors: true,
+                camera_speed: 40.0,
+                orbit_sensitivity: 0.01,
+                fly_sensitivity: 0.01,
+                fov_y_degrees: 50.0,
+                camera: PreviewCamera {
+                    yaw: 0.8,
+                    pitch: 0.4,
+                    distance: 140.0,
+                    target: Vec3::new(0.0, 0.0, 0.0),
+                    position: Vec3::new(0.0, -120.0, 80.0),
+                },
+            },
+            preview_cache: ChunkPreviewCache::default(),
+            build_options: BuildOptions {
+                lod: 0,
+                build_all_lods: false,
+            },
+            build_progress: BuildJobProgress::default(),
+            build_job: None,
             log: Vec::new(),
             validation: Vec::new(),
             last_error: None,
@@ -177,6 +401,7 @@ impl TerrainEditorApp {
             }
         }
         self.rdb = Some(rdb);
+        self.preview_cache.meshes.clear();
         self.log(format!("Loaded RDB: {}", path.display()));
         Ok(())
     }
@@ -196,6 +421,7 @@ impl TerrainEditorApp {
         self.project = None;
         self.selection = Selection::None;
         self.active_layer = None;
+        self.preview_cache.meshes.clear();
         self.project_keys.clear();
         self.project_key_input.clear();
         self.log(format!(
@@ -257,6 +483,7 @@ impl TerrainEditorApp {
             chunks,
         });
         self.selection = Selection::Settings;
+        self.preview_cache.meshes.clear();
         self.active_layer = self
             .project
             .as_ref()
@@ -360,6 +587,7 @@ impl TerrainEditorApp {
         });
         self.selection = Selection::Settings;
         self.active_layer = Some(0);
+        self.preview_cache.meshes.clear();
         self.log("Created new project and saved to RDB.");
         Ok(())
     }
@@ -605,10 +833,30 @@ impl TerrainEditorApp {
             ui.label("Open a project to begin painting mutations.");
             return;
         }
+        self.draw_build_panel(ui);
+        ui.add_space(6.0);
 
-        self.draw_brush_controls(ui);
-        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Mode");
+            ui.selectable_value(&mut self.preview.mode, ViewportMode::Paint, "Paint");
+            ui.selectable_value(&mut self.preview.mode, ViewportMode::Preview, "Preview");
+        });
 
+        match self.preview.mode {
+            ViewportMode::Paint => {
+                self.draw_brush_controls(ui);
+                ui.add_space(8.0);
+                self.draw_paint_viewport(ui, ctx);
+            }
+            ViewportMode::Preview => {
+                self.draw_preview_controls(ui);
+                ui.add_space(8.0);
+                self.draw_preview_viewport(ui, ctx);
+            }
+        }
+    }
+
+    fn draw_paint_viewport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let available = ui.available_size();
         let viewport_height = available.y.max(220.0);
         let (rect, response) = ui.allocate_exact_size(
@@ -707,6 +955,797 @@ impl TerrainEditorApp {
                         });
                 });
             }
+        }
+    }
+
+    fn draw_build_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Build");
+        let Some(project) = &self.project else {
+            ui.label("Open a project to build chunks.");
+            return;
+        };
+        let max_lod = project.settings.lod_policy.max_lod;
+        if self.build_options.lod > max_lod {
+            self.build_options.lod = max_lod;
+        }
+
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.build_options.build_all_lods, "All LODs");
+            ui.label("LOD");
+            ui.add(
+                egui::DragValue::new(&mut self.build_options.lod)
+                    .speed(1)
+                    .clamp_range(0..=max_lod),
+            );
+        });
+
+        let build_active = self.build_job.is_some();
+        let mut trigger_dirty = false;
+        let mut trigger_selected = false;
+        let mut trigger_cancel = false;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!build_active, egui::Button::new("Build dirty chunks"))
+                .clicked()
+            {
+                trigger_dirty = true;
+            }
+            if ui
+                .add_enabled(!build_active, egui::Button::new("Build selected chunk"))
+                .clicked()
+            {
+                trigger_selected = true;
+            }
+            if ui
+                .add_enabled(build_active, egui::Button::new("Cancel build"))
+                .clicked()
+            {
+                trigger_cancel = true;
+            }
+        });
+
+        if trigger_cancel {
+            if let Some(job) = &self.build_job {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let s: &mut Self = unsafe{&mut *(self as *mut Self)};
+        if trigger_dirty {
+            let lods = self.selected_build_lods();
+            if let Some(project) = self.project.as_ref() {
+                let requests = Self::collect_dirty_chunk_requests(s, project, &lods);
+                self.start_build_job(requests);
+            }
+        }
+        if trigger_selected {
+            if let Some(project) = self.project.as_ref() {
+                if let Some(requests) = self.collect_selected_chunk_requests(project) {
+                    self.start_build_job(requests);
+                } else {
+                    self.log("No chunk artifact selected to build.");
+                }
+            }
+        }
+
+        if self.build_progress.queued.is_empty() && !build_active {
+            ui.label("No build queued.");
+            return;
+        }
+
+        ui.separator();
+        let queued_count = self.build_progress.queued.len();
+        let built_count = self.build_progress.built;
+        let skipped_count = self.build_progress.skipped;
+        let status = if build_active {
+            "Running"
+        } else if self.build_progress.cancelled {
+            "Cancelled"
+        } else {
+            "Idle"
+        };
+        ui.label(format!(
+            "Status: {status} | Built: {built_count} | Skipped: {skipped_count} | Queued: {queued_count}",
+        ));
+        if let Some(current) = &self.build_progress.current {
+            ui.label(format!(
+                "Current: ({}, {}) LOD {} - {}",
+                current.chunk.chunk_coords[0],
+                current.chunk.chunk_coords[1],
+                current.chunk.lod,
+                current.phase.label()
+            ));
+        }
+
+        if !self.build_progress.queued.is_empty() {
+            let preview = self
+                .build_progress
+                .queued
+                .iter()
+                .take(6)
+                .map(|chunk| {
+                    format!(
+                        "({}, {}) LOD {}",
+                        chunk.chunk_coords[0], chunk.chunk_coords[1], chunk.lod
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            ui.label(format!("Queued chunks: {preview}"));
+        }
+
+        if !self.build_progress.errors.is_empty() {
+            ui.colored_label(egui::Color32::RED, "Build errors:");
+            for error in &self.build_progress.errors {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+        }
+    }
+
+    fn draw_preview_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Camera");
+            ui.selectable_value(&mut self.preview.camera_mode, CameraMode::Orbit, "Orbit");
+            ui.selectable_value(
+                &mut self.preview.camera_mode,
+                CameraMode::FreeFly,
+                "Free-fly",
+            );
+            if ui.button("Reset").clicked() {
+                self.preview.camera = PreviewCamera {
+                    yaw: 0.8,
+                    pitch: 0.4,
+                    distance: 140.0,
+                    target: Vec3::new(0.0, 0.0, 0.0),
+                    position: Vec3::new(0.0, -120.0, 80.0),
+                };
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Scope");
+            ui.selectable_value(
+                &mut self.preview.scope,
+                PreviewScope::AllChunks,
+                "All chunks",
+            );
+            ui.selectable_value(
+                &mut self.preview.scope,
+                PreviewScope::SelectedChunk,
+                "Selected chunk",
+            );
+        });
+
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.preview.show_wireframe, "Wireframe");
+            ui.checkbox(&mut self.preview.show_bounds, "Chunk bounds");
+            ui.checkbox(&mut self.preview.show_lod_colors, "LOD debug colors");
+        });
+
+        let max_lod = self
+            .project
+            .as_ref()
+            .map(|project| project.settings.lod_policy.max_lod)
+            .unwrap_or(0);
+        ui.horizontal(|ui| {
+            ui.label("LOD view");
+            ui.selectable_value(&mut self.preview.lod_selection, LodSelection::All, "All");
+            for lod in 0..=max_lod {
+                ui.selectable_value(
+                    &mut self.preview.lod_selection,
+                    LodSelection::Single(lod),
+                    format!("{lod}"),
+                );
+            }
+        });
+    }
+
+    fn draw_preview_viewport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let chunk_infos = self.preview_chunk_infos();
+        if chunk_infos.is_empty() {
+            ui.label("No chunk artifacts to preview.");
+            return;
+        }
+
+        let available = ui.available_size();
+        let viewport_height = available.y.max(220.0);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(available.x, viewport_height),
+            egui::Sense::click_and_drag(),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(rect, 0.0, egui::Color32::from_gray(14));
+        painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::DARK_GRAY));
+
+        self.update_preview_camera(ctx, &response, rect);
+
+        let (camera_pos, camera_target) = self.preview_camera_pose();
+        let aspect = (rect.width() / rect.height().max(1.0)).max(0.1);
+        let view = Mat4::look_at_rh(camera_pos, camera_target, Vec3::Z);
+        let proj =
+            Mat4::perspective_rh(self.preview.fov_y_degrees.to_radians(), aspect, 0.1, 6000.0);
+        let view_proj = proj * view;
+        let light_dir = Vec3::new(0.4, 0.6, 1.0).normalize();
+
+        let mut valid_keys = HashSet::new();
+        let mut mesh_keys = Vec::new();
+        if let Some(rdb) = self.rdb.as_mut() {
+            for info in chunk_infos {
+                let Some((coords, lod)) = info.coord.zip(info.lod) else {
+                    continue;
+                };
+                let key = ChunkMeshKey {
+                    coords: [coords.0, coords.1],
+                    lod,
+                };
+                if let Ok(artifact) =
+                    rdb.fetch::<noren::rdb::terrain::TerrainChunkArtifact>(&info.entry)
+                {
+                    self.preview_cache.upsert(key, &artifact);
+                    valid_keys.insert(key);
+                    mesh_keys.push(key);
+                }
+            }
+        }
+        self.preview_cache.retain_keys(&valid_keys);
+
+        let meshes_to_draw = mesh_keys
+            .iter()
+            .filter_map(|key| self.preview_cache.get(key).map(|mesh| (*key, mesh)))
+            .collect::<Vec<_>>();
+
+        if meshes_to_draw.is_empty() {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "No meshes loaded",
+                egui::FontId::proportional(16.0),
+                egui::Color32::LIGHT_GRAY,
+            );
+            return;
+        }
+
+        #[derive(Clone)]
+        struct PreviewTriangle {
+            vertices: [egui::epaint::Vertex; 3],
+            depth: f32,
+        }
+
+        let mut triangles: Vec<PreviewTriangle> = Vec::new();
+        let mut wireframe_segments: Vec<(egui::Pos2, egui::Pos2)> = Vec::new();
+        let mut bounds_segments: Vec<(egui::Pos2, egui::Pos2)> = Vec::new();
+
+        for (key, mesh) in meshes_to_draw {
+            let base_color = if self.preview.show_lod_colors {
+                lod_debug_color(key.lod)
+            } else {
+                egui::Color32::from_rgb(120, 160, 190)
+            };
+            for tri in mesh.indices.chunks(3) {
+                if tri.len() < 3 {
+                    continue;
+                }
+                let i0 = tri[0] as usize;
+                let i1 = tri[1] as usize;
+                let i2 = tri[2] as usize;
+                let Some((p0, d0)) = project_point(mesh.positions[i0], view_proj, rect) else {
+                    continue;
+                };
+                let Some((p1, d1)) = project_point(mesh.positions[i1], view_proj, rect) else {
+                    continue;
+                };
+                let Some((p2, d2)) = project_point(mesh.positions[i2], view_proj, rect) else {
+                    continue;
+                };
+                let n0 = mesh.normals.get(i0).copied().unwrap_or(Vec3::Z).normalize();
+                let n1 = mesh.normals.get(i1).copied().unwrap_or(Vec3::Z).normalize();
+                let n2 = mesh.normals.get(i2).copied().unwrap_or(Vec3::Z).normalize();
+                let c0 = shade_color(base_color, n0, light_dir);
+                let c1 = shade_color(base_color, n1, light_dir);
+                let c2 = shade_color(base_color, n2, light_dir);
+                let depth = (d0 + d1 + d2) / 3.0;
+                triangles.push(PreviewTriangle {
+                    vertices: [
+                        egui::epaint::Vertex {
+                            pos: p0,
+                            uv: egui::Pos2::ZERO,
+                            color: c0,
+                        },
+                        egui::epaint::Vertex {
+                            pos: p1,
+                            uv: egui::Pos2::ZERO,
+                            color: c1,
+                        },
+                        egui::epaint::Vertex {
+                            pos: p2,
+                            uv: egui::Pos2::ZERO,
+                            color: c2,
+                        },
+                    ],
+                    depth,
+                });
+                if self.preview.show_wireframe {
+                    wireframe_segments.push((p0, p1));
+                    wireframe_segments.push((p1, p2));
+                    wireframe_segments.push((p2, p0));
+                }
+            }
+
+            if self.preview.show_bounds {
+                bounds_segments.extend(project_bounds(
+                    mesh.bounds_min,
+                    mesh.bounds_max,
+                    view_proj,
+                    rect,
+                ));
+            }
+        }
+
+        triangles.sort_by(|a, b| {
+            a.depth
+                .partial_cmp(&b.depth)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut mesh = egui::Mesh::default();
+        for tri in triangles {
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.extend_from_slice(&tri.vertices);
+            mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+
+        if self.preview.show_wireframe {
+            for (start, end) in wireframe_segments {
+                painter.line_segment([start, end], (1.0, egui::Color32::from_gray(200)));
+            }
+        }
+
+        if self.preview.show_bounds {
+            for (start, end) in bounds_segments {
+                painter.line_segment([start, end], (1.0, egui::Color32::from_rgb(255, 160, 80)));
+            }
+        }
+    }
+
+    fn preview_chunk_infos(&self) -> Vec<ChunkArtifactInfo> {
+        let Some(project) = &self.project else {
+            return Vec::new();
+        };
+        let mut chunks: Vec<ChunkArtifactInfo> = match self.preview.scope {
+            PreviewScope::AllChunks => project.chunks.clone(),
+            PreviewScope::SelectedChunk => match self.selection {
+                Selection::ChunkArtifact(idx) => project
+                    .chunks
+                    .get(idx)
+                    .cloned()
+                    .map(|chunk| vec![chunk])
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
+        };
+
+        match self.preview.lod_selection {
+            LodSelection::All => chunks,
+            LodSelection::Single(lod) => {
+                chunks.retain(|chunk| chunk.lod == Some(lod));
+                chunks
+            }
+        }
+    }
+
+    fn preview_camera_pose(&self) -> (Vec3, Vec3) {
+        let forward = self.preview.camera.forward();
+        match self.preview.camera_mode {
+            CameraMode::Orbit => (
+                self.preview.camera.orbit_position(),
+                self.preview.camera.target,
+            ),
+            CameraMode::FreeFly => (
+                self.preview.camera.position,
+                self.preview.camera.position + forward,
+            ),
+        }
+    }
+
+    fn update_preview_camera(
+        &mut self,
+        ctx: &egui::Context,
+        response: &egui::Response,
+        rect: egui::Rect,
+    ) {
+        if !response.hovered() {
+            return;
+        }
+        let drag_delta = response.drag_delta();
+        let shift = ctx.input(|input| input.modifiers.shift);
+        let scroll_delta = ctx.input(|input| input.raw_scroll_delta.y);
+
+        let sensitivity = match self.preview.camera_mode {
+            CameraMode::Orbit => self.preview.orbit_sensitivity,
+            CameraMode::FreeFly => self.preview.fly_sensitivity,
+        };
+
+        if response.dragged_by(egui::PointerButton::Primary) {
+            if self.preview.camera_mode == CameraMode::Orbit && shift {
+                let (camera_pos, camera_target) = self.preview_camera_pose();
+                let forward = (camera_target - camera_pos).normalize_or_zero();
+                let right = forward.cross(Vec3::Z).normalize_or_zero();
+                let up = right.cross(forward).normalize_or_zero();
+                let scale = self.preview.camera.distance * 0.002;
+                let offset = (-right * drag_delta.x + up * drag_delta.y) * scale;
+                self.preview.camera.target += offset;
+            } else {
+                self.preview.camera.yaw -= drag_delta.x * sensitivity;
+                self.preview.camera.pitch =
+                    (self.preview.camera.pitch - drag_delta.y * sensitivity).clamp(-1.5, 1.5);
+            }
+        }
+
+        match self.preview.camera_mode {
+            CameraMode::Orbit => {
+                if scroll_delta.abs() > 0.0 {
+                    self.preview.camera.distance =
+                        (self.preview.camera.distance - scroll_delta * 0.4).clamp(8.0, 8000.0);
+                }
+            }
+            CameraMode::FreeFly => {
+                let dt = ctx.input(|input| input.unstable_dt).max(0.016);
+                let speed = if shift {
+                    self.preview.camera_speed * 2.5
+                } else {
+                    self.preview.camera_speed
+                };
+                let forward = self.preview.camera.forward();
+                let right = forward.cross(Vec3::Z).normalize_or_zero();
+                let mut velocity = Vec3::ZERO;
+                if ctx.input(|input| input.key_down(egui::Key::W)) {
+                    velocity += forward;
+                }
+                if ctx.input(|input| input.key_down(egui::Key::S)) {
+                    velocity -= forward;
+                }
+                if ctx.input(|input| input.key_down(egui::Key::A)) {
+                    velocity -= right;
+                }
+                if ctx.input(|input| input.key_down(egui::Key::D)) {
+                    velocity += right;
+                }
+                if ctx.input(|input| input.key_down(egui::Key::Q)) {
+                    velocity -= Vec3::Z;
+                }
+                if ctx.input(|input| input.key_down(egui::Key::E)) {
+                    velocity += Vec3::Z;
+                }
+                if velocity.length_squared() > 0.0 {
+                    self.preview.camera.position += velocity.normalize_or_zero() * speed * dt;
+                }
+            }
+        }
+
+        if response.double_clicked()
+            && rect.contains(response.interact_pointer_pos().unwrap_or(rect.center()))
+        {
+            self.preview.camera.target = Vec3::new(0.0, 0.0, 0.0);
+        }
+    }
+
+    fn selected_build_lods(&self) -> Vec<u8> {
+        let max_lod = self
+            .project
+            .as_ref()
+            .map(|project| project.settings.lod_policy.max_lod)
+            .unwrap_or(0);
+        if self.build_options.build_all_lods {
+            (0..=max_lod).collect()
+        } else {
+            vec![self.build_options.lod.min(max_lod)]
+        }
+    }
+
+    fn collect_dirty_chunk_requests(
+        &mut self,
+        project: &ProjectState,
+        lods: &[u8],
+    ) -> Vec<TerrainChunkBuildRequest> {
+        let Some(rdb) = self.rdb.as_mut() else {
+            return Vec::new();
+        };
+        let prefix = format!("terrain/chunk_state/{}/", project.key);
+        let mut requests = Vec::new();
+        for entry in rdb.entries() {
+            if let Some(coord) = parse_chunk_state_entry(&entry.name, &prefix) {
+                if let Ok(state) = rdb.fetch::<TerrainChunkState>(&entry.name) {
+                    if state.dirty_flags == 0 {
+                        continue;
+                    }
+                    for lod in lods {
+                        requests.push(TerrainChunkBuildRequest {
+                            chunk_coords: [coord.0, coord.1],
+                            lod: *lod,
+                        });
+                    }
+                }
+            }
+        }
+        requests
+    }
+
+    fn collect_selected_chunk_requests(
+        &self,
+        project: &ProjectState,
+    ) -> Option<Vec<TerrainChunkBuildRequest>> {
+        let Selection::ChunkArtifact(idx) = self.selection else {
+            return None;
+        };
+        let chunk = project.chunks.get(idx)?;
+        let coord = chunk.coord?;
+        let lods = if self.build_options.build_all_lods {
+            (0..=project.settings.lod_policy.max_lod).collect::<Vec<_>>()
+        } else if let Some(lod) = chunk.lod {
+            vec![lod]
+        } else {
+            self.selected_build_lods()
+        };
+        Some(
+            lods.into_iter()
+                .map(|lod| TerrainChunkBuildRequest {
+                    chunk_coords: [coord.0, coord.1],
+                    lod,
+                })
+                .collect(),
+        )
+    }
+
+    fn start_build_job(&mut self, requests: Vec<TerrainChunkBuildRequest>) {
+        if requests.is_empty() {
+            self.log("No chunks queued for build.");
+            return;
+        }
+        if self.build_job.is_some() {
+            self.log("Build already running.");
+            return;
+        }
+        let Some(project) = &self.project else {
+            return;
+        };
+        let rdb_path = project.rdb_path.clone();
+        let project_key = project.key.clone();
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_thread = Arc::clone(&cancel);
+        let build_requests = requests.clone();
+        let handle = thread::spawn(move || {
+            let _ = sender.send(BuildJobEvent::Started {
+                queued: build_requests.clone(),
+            });
+            let mut rdb = match RDBFile::load(&rdb_path) {
+                Ok(rdb) => rdb,
+                Err(err) => {
+                    let _ = sender.send(BuildJobEvent::JobFailed {
+                        error: format!("Failed to load RDB: {err}"),
+                    });
+                    let _ = sender.send(BuildJobEvent::Finished);
+                    return;
+                }
+            };
+            let context = match prepare_terrain_build_context(&mut rdb, &project_key) {
+                Ok(context) => context,
+                Err(err) => {
+                    let _ = sender.send(BuildJobEvent::JobFailed {
+                        error: format!("Failed to prepare build context: {err}"),
+                    });
+                    let _ = sender.send(BuildJobEvent::Finished);
+                    return;
+                }
+            };
+
+            for request in build_requests {
+                if cancel_thread.load(Ordering::Relaxed) {
+                    let _ = sender.send(BuildJobEvent::Cancelled);
+                    break;
+                }
+                let phase_sender = &sender;
+                let outcome = build_terrain_chunk_with_context(
+                    &mut rdb,
+                    &project_key,
+                    &context,
+                    request,
+                    |phase| {
+                        let _ = phase_sender.send(BuildJobEvent::Phase {
+                            chunk: request,
+                            phase,
+                        });
+                    },
+                    || cancel_thread.load(Ordering::Relaxed),
+                );
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        let _ = sender.send(BuildJobEvent::Failed {
+                            chunk: request,
+                            error: format!("Build failed: {err}"),
+                        });
+                        continue;
+                    }
+                };
+                match outcome.status {
+                    TerrainChunkBuildStatus::Skipped => {
+                        let _ = sender.send(BuildJobEvent::Skipped { chunk: request });
+                    }
+                    TerrainChunkBuildStatus::Cancelled => {
+                        let _ = sender.send(BuildJobEvent::Cancelled);
+                        break;
+                    }
+                    TerrainChunkBuildStatus::Built => {
+                        if cancel_thread.load(Ordering::Relaxed) {
+                            let _ = sender.send(BuildJobEvent::Cancelled);
+                            break;
+                        }
+                        let _ = sender.send(BuildJobEvent::Phase {
+                            chunk: request,
+                            phase: TerrainChunkBuildPhase::Write,
+                        });
+                        let Some(artifact) = outcome.artifact else {
+                            let _ = sender.send(BuildJobEvent::Failed {
+                                chunk: request,
+                                error: "Missing artifact".to_string(),
+                            });
+                            continue;
+                        };
+                        let Some(state) = outcome.state else {
+                            let _ = sender.send(BuildJobEvent::Failed {
+                                chunk: request,
+                                error: "Missing state".to_string(),
+                            });
+                            continue;
+                        };
+                        let coord_key =
+                            chunk_coord_key(request.chunk_coords[0], request.chunk_coords[1]);
+                        let artifact_key = chunk_artifact_entry(
+                            &project_key,
+                            &coord_key,
+                            &format!("lod{}", request.lod),
+                        );
+                        let state_key = chunk_state_entry(&project_key, &coord_key);
+                        if let Err(err) = rdb.upsert(&artifact_key, &artifact) {
+                            let _ = sender.send(BuildJobEvent::Failed {
+                                chunk: request,
+                                error: format!("Failed to update artifact: {err}"),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = rdb.upsert(&state_key, &state) {
+                            let _ = sender.send(BuildJobEvent::Failed {
+                                chunk: request,
+                                error: format!("Failed to update chunk state: {err}"),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = save_rdb_atomic(&rdb, &rdb_path) {
+                            let _ = sender.send(BuildJobEvent::Failed {
+                                chunk: request,
+                                error: format!("Failed to save RDB: {err}"),
+                            });
+                            continue;
+                        }
+                        let _ = sender.send(BuildJobEvent::Built {
+                            chunk: request,
+                            artifact,
+                            state,
+                        });
+                    }
+                }
+            }
+            let _ = sender.send(BuildJobEvent::Finished);
+        });
+
+        self.build_progress = BuildJobProgress::default();
+        self.build_progress.queued = requests;
+        self.build_job = Some(BuildJobHandle {
+            cancel,
+            receiver,
+            handle,
+        });
+        self.log("Queued build job.");
+    }
+
+    fn poll_build_events(&mut self, ctx: &egui::Context) {
+        let mut job_finished = false;
+        let events = if let Some(job) = self.build_job.as_ref() {
+            let mut events = Vec::new();
+            while let Ok(event) = job.receiver.try_recv() {
+                events.push(event);
+            }
+            events
+        } else {
+            Vec::new()
+        };
+
+        for event in events {
+            match event {
+                BuildJobEvent::Started { queued } => {
+                    self.build_progress = BuildJobProgress {
+                        queued,
+                        ..BuildJobProgress::default()
+                    };
+                }
+                BuildJobEvent::Phase { chunk, phase } => {
+                    self.build_progress.current = Some(BuildJobCurrent { chunk, phase });
+                }
+                BuildJobEvent::Built {
+                    chunk,
+                    artifact,
+                    state,
+                } => {
+                    self.build_progress.built += 1;
+                    self.build_progress.queued.retain(|entry| *entry != chunk);
+                    self.build_progress.current = None;
+                    if let Some(rdb) = self.rdb.as_mut() {
+                        let coord_key =
+                            chunk_coord_key(chunk.chunk_coords[0], chunk.chunk_coords[1]);
+                        let artifact_key = chunk_artifact_entry(
+                            &state.project_key,
+                            &coord_key,
+                            &format!("lod{}", chunk.lod),
+                        );
+                        let state_key = chunk_state_entry(&state.project_key, &coord_key);
+                        let _ = rdb.upsert(&artifact_key, &artifact);
+                        let _ = rdb.upsert(&state_key, &state);
+                    }
+                    if let (Some(rdb), Some(project)) = (self.rdb.as_ref(), self.project.as_mut()) {
+                        let entries = rdb.entries();
+                        project.chunks = collect_chunk_artifacts(&entries, &project.key);
+                    }
+                    let key = ChunkMeshKey {
+                        coords: chunk.chunk_coords,
+                        lod: chunk.lod,
+                    };
+                    self.preview_cache.upsert(key, &artifact);
+                    self.log(format!(
+                        "Built chunk ({}, {}) LOD {}",
+                        chunk.chunk_coords[0], chunk.chunk_coords[1], chunk.lod
+                    ));
+                }
+                BuildJobEvent::Skipped { chunk } => {
+                    self.build_progress.skipped += 1;
+                    self.build_progress.queued.retain(|entry| *entry != chunk);
+                    self.build_progress.current = None;
+                    self.log(format!(
+                        "Skipped chunk ({}, {}) LOD {}",
+                        chunk.chunk_coords[0], chunk.chunk_coords[1], chunk.lod
+                    ));
+                }
+                BuildJobEvent::Failed { chunk, error } => {
+                    self.build_progress.errors.push(format!(
+                        "Chunk ({}, {}) LOD {}: {error}",
+                        chunk.chunk_coords[0], chunk.chunk_coords[1], chunk.lod
+                    ));
+                    self.build_progress.queued.retain(|entry| *entry != chunk);
+                    self.build_progress.current = None;
+                }
+                BuildJobEvent::JobFailed { error } => {
+                    self.build_progress.errors.push(error.clone());
+                    self.log(format!("Build job failed: {error}"));
+                }
+                BuildJobEvent::Cancelled => {
+                    self.build_progress.cancelled = true;
+                    self.log("Build job cancelled.");
+                }
+                BuildJobEvent::Finished => {
+                    job_finished = true;
+                }
+            }
+        }
+
+        if let Some(job) = &self.build_job {
+            if job.handle.is_finished() || job_finished {
+                if let Some(job) = self.build_job.take() {
+                    let _ = job.handle.join();
+                }
+            }
+        }
+
+        if self.build_job.is_some() {
+            ctx.request_repaint();
         }
     }
 
@@ -1005,6 +2044,7 @@ impl TerrainEditorApp {
 
 impl eframe::App for TerrainEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_build_events(ctx);
         self.refresh_validation();
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -1092,8 +2132,31 @@ fn parse_lod(value: &str) -> Option<u8> {
     value.strip_prefix("lod")?.parse().ok()
 }
 
+fn parse_chunk_state_entry(name: &str, prefix: &str) -> Option<(i32, i32)> {
+    let remainder = name.strip_prefix(prefix)?;
+    parse_coord(remainder)
+}
+
 fn format_rdb_err(err: RdbErr) -> String {
     format!("RDB error: {err}")
+}
+
+fn save_rdb_atomic(rdb: &RDBFile, path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "RDB path has no parent directory".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid RDB filename".to_string())?;
+    let temp_path = parent.join(format!("{file_name}.tmp"));
+    rdb.save(&temp_path).map_err(format_rdb_err)?;
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|err| format!("Failed to remove old RDB: {err}"))?;
+    }
+    std::fs::rename(&temp_path, path)
+        .map_err(|err| format!("Failed to replace RDB file: {err}"))?;
+    Ok(())
 }
 
 fn collect_mutation_layers(rdb: &mut RDBFile, project_key: &str) -> Vec<TerrainMutationLayer> {
@@ -1249,6 +2312,86 @@ fn world_radius_to_screen(settings: &TerrainProjectSettings, rect: egui::Rect, r
     let world_width = (settings.world_bounds_max[0] - settings.world_bounds_min[0]).max(1.0);
     let scale = rect.width() / world_width;
     radius * scale
+}
+
+fn project_point(position: Vec3, view_proj: Mat4, rect: egui::Rect) -> Option<(egui::Pos2, f32)> {
+    let clip = view_proj * Vec4::new(position.x, position.y, position.z, 1.0);
+    if clip.w.abs() <= f32::EPSILON {
+        return None;
+    }
+    let ndc = clip / clip.w;
+    if ndc.z < -1.0 || ndc.z > 1.0 {
+        return None;
+    }
+    let x = rect.left() + (ndc.x * 0.5 + 0.5) * rect.width();
+    let y = rect.top() + (1.0 - (ndc.y * 0.5 + 0.5)) * rect.height();
+    Some((egui::pos2(x, y), ndc.z))
+}
+
+fn project_bounds(
+    min: Vec3,
+    max: Vec3,
+    view_proj: Mat4,
+    rect: egui::Rect,
+) -> Vec<(egui::Pos2, egui::Pos2)> {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+    let mut projected = Vec::new();
+    for corner in corners {
+        projected.push(project_point(corner, view_proj, rect).map(|(pos, _)| pos));
+    }
+    let edges = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    let mut segments = Vec::new();
+    for (a, b) in edges {
+        if let (Some(start), Some(end)) = (projected[a], projected[b]) {
+            segments.push((start, end));
+        }
+    }
+    segments
+}
+
+fn lod_debug_color(lod: u8) -> egui::Color32 {
+    const COLORS: [egui::Color32; 6] = [
+        egui::Color32::from_rgb(110, 180, 255),
+        egui::Color32::from_rgb(120, 230, 120),
+        egui::Color32::from_rgb(255, 200, 120),
+        egui::Color32::from_rgb(250, 140, 140),
+        egui::Color32::from_rgb(200, 160, 255),
+        egui::Color32::from_rgb(160, 200, 220),
+    ];
+    let idx = (lod as usize) % COLORS.len();
+    COLORS[idx]
+}
+
+fn shade_color(base: egui::Color32, normal: Vec3, light_dir: Vec3) -> egui::Color32 {
+    let brightness = normal.dot(light_dir).clamp(0.0, 1.0);
+    let ambient = 0.25;
+    let factor = ambient + (1.0 - ambient) * brightness;
+    let r = (base.r() as f32 * factor).clamp(0.0, 255.0) as u8;
+    let g = (base.g() as f32 * factor).clamp(0.0, 255.0) as u8;
+    let b = (base.b() as f32 * factor).clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgb(r, g, b)
 }
 
 fn chunk_coords_for_world(
