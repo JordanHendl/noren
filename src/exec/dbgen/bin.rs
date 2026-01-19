@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
     io::BufReader,
     path::{Path, PathBuf},
@@ -13,7 +13,7 @@ use fontdue::{Font, FontSettings};
 use gltf::{animation::util::ReadOutputs, image::Format};
 use image::DynamicImage;
 use noren::{
-    DatabaseLayoutFile, NorenError, RDBFile, RdbErr,
+    DatabaseLayoutFile, NorenError, RDBEntryMeta, RDBFile, RdbErr,
     defaults::{
         DEFAULT_IMAGE_ENTRY, default_fonts, default_image, default_primitives, default_sounds,
         ensure_default_assets,
@@ -28,6 +28,11 @@ use noren::{
         AnimationTargetPath, AudioClip, AudioFormat, GeometryLayer, HostCubemap, HostFont,
         HostGeometry, HostImage, ImageInfo, Joint, ShaderModule, Skeleton, index_vertices,
         primitives::Vertex,
+        terrain::{
+            TERRAIN_MUTATION_LAYER_PREFIX, TERRAIN_MUTATION_OP_PREFIX, TerrainGeneratorDefinition,
+            TerrainMutationLayer, TerrainMutationOp, TerrainProjectSettings, generator_entry,
+            mutation_layer_entry, mutation_op_entry, project_settings_entry,
+        },
     },
     validate_database_layout,
 };
@@ -110,6 +115,13 @@ fn main() {
         Command::AppendAudio(args) => append_audio(&args, &logger, cli.write_binaries),
         Command::AppendFont(args) => append_font(&args, &logger, cli.write_binaries),
         Command::AppendShader(args) => append_shader(&args, &logger, cli.write_binaries),
+        Command::Terrain(cmd) => match cmd {
+            TerrainCommand::Init(args) => init_terrain_project(&args, &logger, cli.write_binaries),
+            TerrainCommand::Export(args) => export_terrain_project(&args, &logger),
+            TerrainCommand::Import(args) => {
+                import_terrain_project(&args, &logger, cli.write_binaries)
+            }
+        },
     };
 
     if let Err(err) = result {
@@ -158,6 +170,7 @@ fn parse_command(program: &str, args: impl Iterator<Item = String>) -> Result<Cl
                     }
                     "validate" => parse_validate_command(args)?,
                     "append" => parse_append_command(args)?,
+                    "terrain" => parse_terrain_command(args)?,
                     path => Command::Build {
                         append: false,
                         spec: PathBuf::from(path),
@@ -217,6 +230,23 @@ fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Comman
         "font" => parse_font_append(args).map(Command::AppendFont),
         "shader" => parse_shader_append(args).map(Command::AppendShader),
         other => Err(format!("unknown append resource type: {other}")),
+    }
+}
+
+fn parse_terrain_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(kind) = args.next() else {
+        return Err("terrain requires a subcommand (init, export, import)".into());
+    };
+
+    match kind.as_str() {
+        "init" => parse_terrain_init(args).map(|args| Command::Terrain(TerrainCommand::Init(args))),
+        "export" => {
+            parse_terrain_export(args).map(|args| Command::Terrain(TerrainCommand::Export(args)))
+        }
+        "import" => {
+            parse_terrain_import(args).map(|args| Command::Terrain(TerrainCommand::Import(args)))
+        }
+        other => Err(format!("unknown terrain subcommand: {other}")),
     }
 }
 
@@ -587,6 +617,97 @@ fn parse_shader_append(mut args: impl Iterator<Item = String>) -> Result<ShaderA
     })
 }
 
+fn parse_terrain_init(mut args: impl Iterator<Item = String>) -> Result<TerrainInitArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut project_key: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut seed: Option<u64> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                rdb = Some(PathBuf::from(next_value("--rdb", &mut args)?));
+            }
+            "--project" => {
+                project_key = Some(next_value("--project", &mut args)?);
+            }
+            "--name" => {
+                name = Some(next_value("--name", &mut args)?);
+            }
+            "--seed" => {
+                let value = next_value("--seed", &mut args)?;
+                seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| "--seed expects a positive integer".to_string())?,
+                );
+            }
+            other => return Err(format!("unexpected argument to terrain init: {other}")),
+        }
+    }
+
+    Ok(TerrainInitArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        project_key: project_key.ok_or_else(|| "--project is required".to_string())?,
+        name,
+        seed,
+    })
+}
+
+fn parse_terrain_export(mut args: impl Iterator<Item = String>) -> Result<TerrainExportArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut project_key: Option<String> = None;
+    let mut output: Option<PathBuf> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                rdb = Some(PathBuf::from(next_value("--rdb", &mut args)?));
+            }
+            "--project" => {
+                project_key = Some(next_value("--project", &mut args)?);
+            }
+            "--out" => {
+                output = Some(PathBuf::from(next_value("--out", &mut args)?));
+            }
+            other => return Err(format!("unexpected argument to terrain export: {other}")),
+        }
+    }
+
+    Ok(TerrainExportArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        project_key: project_key.ok_or_else(|| "--project is required".to_string())?,
+        output: output.ok_or_else(|| "--out is required".to_string())?,
+    })
+}
+
+fn parse_terrain_import(mut args: impl Iterator<Item = String>) -> Result<TerrainImportArgs, String> {
+    let mut rdb: Option<PathBuf> = None;
+    let mut input: Option<PathBuf> = None;
+    let mut project_key: Option<String> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                rdb = Some(PathBuf::from(next_value("--rdb", &mut args)?));
+            }
+            "--input" => {
+                input = Some(PathBuf::from(next_value("--input", &mut args)?));
+            }
+            "--project" => {
+                project_key = Some(next_value("--project", &mut args)?);
+            }
+            other => return Err(format!("unexpected argument to terrain import: {other}")),
+        }
+    }
+
+    Ok(TerrainImportArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        input: input.ok_or_else(|| "--input is required".to_string())?,
+        project_key,
+    })
+}
+
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> Result<String, String> {
     args.next()
         .ok_or_else(|| format!("{flag} requires a value"))
@@ -604,6 +725,14 @@ enum Command {
     AppendAudio(AudioAppendArgs),
     AppendFont(FontAppendArgs),
     AppendShader(ShaderAppendArgs),
+    Terrain(TerrainCommand),
+}
+
+#[derive(Debug)]
+enum TerrainCommand {
+    Init(TerrainInitArgs),
+    Export(TerrainExportArgs),
+    Import(TerrainImportArgs),
 }
 
 #[derive(Debug)]
@@ -658,6 +787,28 @@ struct FontAppendArgs {
 struct ShaderAppendArgs {
     rdb: PathBuf,
     entry: ShaderEntry,
+}
+
+#[derive(Debug)]
+struct TerrainInitArgs {
+    rdb: PathBuf,
+    project_key: String,
+    name: Option<String>,
+    seed: Option<u64>,
+}
+
+#[derive(Debug)]
+struct TerrainExportArgs {
+    rdb: PathBuf,
+    project_key: String,
+    output: PathBuf,
+}
+
+#[derive(Debug)]
+struct TerrainImportArgs {
+    rdb: PathBuf,
+    input: PathBuf,
+    project_key: Option<String>,
 }
 
 fn run_from_path(
@@ -1843,6 +1994,262 @@ fn append_shader(
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct TerrainProjectExport {
+    project_key: String,
+    settings: TerrainProjectSettings,
+    generator: TerrainGeneratorDefinition,
+    mutation_layers: Vec<TerrainMutationLayer>,
+}
+
+fn init_terrain_project(
+    args: &TerrainInitArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    let settings_key = project_settings_entry(&args.project_key);
+    if rdb.entries().iter().any(|entry| entry.name == settings_key) {
+        return Err(BuildError::message(format!(
+            "terrain project '{}' already exists",
+            args.project_key
+        )));
+    }
+
+    let mut settings = TerrainProjectSettings::default();
+    if let Some(name) = &args.name {
+        settings.name = name.clone();
+    }
+    if let Some(seed) = args.seed {
+        settings.seed = seed;
+    }
+
+    let generator = TerrainGeneratorDefinition::default();
+    settings.active_generator_version = generator.version;
+
+    let layer = TerrainMutationLayer::new("layer-1", "Layer 1", 0);
+    settings.active_mutation_version = layer.version;
+
+    rdb.add(&settings_key, &settings).map_err(BuildError::from)?;
+    rdb.add(
+        &generator_entry(&args.project_key, generator.version),
+        &generator,
+    )
+    .map_err(BuildError::from)?;
+    rdb.add(
+        &mutation_layer_entry(&args.project_key, &layer.layer_id, layer.version),
+        &layer,
+    )
+    .map_err(BuildError::from)?;
+
+    if write_binaries {
+        logger.log(format!("terrain: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("terrain: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
+fn export_terrain_project(args: &TerrainExportArgs, logger: &Logger) -> Result<(), BuildError> {
+    let mut rdb = RDBFile::load(&args.rdb).map_err(BuildError::from)?;
+    rdb.unmap();
+    let settings = rdb
+        .fetch::<TerrainProjectSettings>(&project_settings_entry(&args.project_key))
+        .map_err(BuildError::from)?;
+    let generator = rdb
+        .fetch::<TerrainGeneratorDefinition>(&generator_entry(
+            &args.project_key,
+            settings.active_generator_version,
+        ))
+        .map_err(BuildError::from)?;
+    let entries = rdb.entries();
+    let mutation_layers = collect_terrain_layers(
+        &entries,
+        &mut rdb,
+        &args.project_key,
+        settings.active_mutation_version,
+    )?;
+
+    let payload = TerrainProjectExport {
+        project_key: args.project_key.clone(),
+        settings,
+        generator,
+        mutation_layers,
+    };
+
+    if let Some(parent) = args.output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = File::create(&args.output)?;
+    serde_json::to_writer_pretty(file, &payload)?;
+    logger.log(format!(
+        "terrain: exported project '{}' to {}",
+        args.project_key,
+        args.output.display()
+    ));
+    Ok(())
+}
+
+fn import_terrain_project(
+    args: &TerrainImportArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    let file = File::open(&args.input)?;
+    let reader = BufReader::new(file);
+    let mut payload: TerrainProjectExport = serde_json::from_reader(reader)?;
+    if let Some(project_key) = &args.project_key {
+        payload.project_key = project_key.clone();
+    }
+
+    rdb.add(
+        &project_settings_entry(&payload.project_key),
+        &payload.settings,
+    )
+    .map_err(BuildError::from)?;
+    rdb.add(
+        &generator_entry(&payload.project_key, payload.generator.version),
+        &payload.generator,
+    )
+    .map_err(BuildError::from)?;
+    for layer in &payload.mutation_layers {
+        rdb.add(
+            &mutation_layer_entry(&payload.project_key, &layer.layer_id, layer.version),
+            layer,
+        )
+        .map_err(BuildError::from)?;
+        for op in &layer.ops {
+            rdb.add(
+                &mutation_op_entry(
+                    &payload.project_key,
+                    &layer.layer_id,
+                    layer.version,
+                    op.order,
+                    op.event_id,
+                ),
+                op,
+            )
+            .map_err(BuildError::from)?;
+        }
+    }
+
+    if write_binaries {
+        logger.log(format!("terrain: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("terrain: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
+fn collect_terrain_layers(
+    entries: &[RDBEntryMeta],
+    rdb: &mut RDBFile,
+    project_key: &str,
+    active_version: u32,
+) -> Result<Vec<TerrainMutationLayer>, BuildError> {
+    let prefix = format!("{TERRAIN_MUTATION_LAYER_PREFIX}/{project_key}/");
+    let mut layer_versions: BTreeMap<String, u32> = BTreeMap::new();
+    for entry in entries {
+        if let Some((layer_id, version)) = parse_mutation_layer_entry(&entry.name, &prefix) {
+            if version > active_version {
+                continue;
+            }
+            let current = layer_versions.entry(layer_id).or_insert(version);
+            if version > *current {
+                *current = version;
+            }
+        }
+    }
+
+    let mut layers = Vec::new();
+    for (layer_id, version) in layer_versions {
+        let entry = mutation_layer_entry(project_key, &layer_id, version);
+        let mut layer = rdb.fetch::<TerrainMutationLayer>(&entry).map_err(BuildError::from)?;
+        let op_events =
+            collect_terrain_ops(entries, rdb, project_key, &layer_id, active_version)?;
+        if !op_events.is_empty() {
+            layer.ops = op_events;
+        }
+        layers.push(layer);
+    }
+    layers.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.layer_id.cmp(&b.layer_id)));
+    Ok(layers)
+}
+
+fn collect_terrain_ops(
+    entries: &[RDBEntryMeta],
+    rdb: &mut RDBFile,
+    project_key: &str,
+    layer_id: &str,
+    active_version: u32,
+) -> Result<Vec<TerrainMutationOp>, BuildError> {
+    let prefix = format!("{TERRAIN_MUTATION_OP_PREFIX}/{project_key}/{layer_id}/");
+    let mut latest: BTreeMap<String, TerrainMutationOp> = BTreeMap::new();
+    for entry in entries {
+        if let Some((version, order, event_id)) = parse_mutation_op_entry(&entry.name, &prefix) {
+            if version > active_version {
+                continue;
+            }
+            let mut op = rdb.fetch::<TerrainMutationOp>(&entry.name).map_err(BuildError::from)?;
+            op.order = order;
+            op.event_id = event_id;
+            latest
+                .entry(op.op_id.clone())
+                .and_modify(|current| {
+                    if op.event_id > current.event_id {
+                        *current = op.clone();
+                    }
+                })
+                .or_insert(op);
+        }
+    }
+    let mut ops: Vec<TerrainMutationOp> = latest.into_values().collect();
+    ops.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.op_id.cmp(&b.op_id)));
+    Ok(ops)
+}
+
+fn parse_mutation_op_entry(name: &str, prefix: &str) -> Option<(u32, u32, u32)> {
+    let remainder = name.strip_prefix(prefix)?;
+    let mut parts = remainder.split('/');
+    let version_part = parts.next()?;
+    let order_part = parts.next()?;
+    let event_part = parts.next()?;
+    let version = version_part.strip_prefix('v')?.parse().ok()?;
+    let order = order_part.strip_prefix('o')?.parse().ok()?;
+    let event_id = event_part.strip_prefix('e')?.parse().ok()?;
+    Some((version, order, event_id))
+}
+
+fn parse_mutation_layer_entry(name: &str, prefix: &str) -> Option<(String, u32)> {
+    let remainder = name.strip_prefix(prefix)?;
+    let mut parts = remainder.split('/');
+    let layer_id = parts.next()?.to_string();
+    let version_part = parts.next()?;
+    let version = version_part.strip_prefix('v')?.parse().ok()?;
+    Some((layer_id, version))
+}
+
 fn load_image(base_dir: &Path, entry: &ImageEntry) -> Result<HostImage, BuildError> {
     let path = resolve_path(base_dir, &entry.file);
     let image = image::open(&path)?;
@@ -2396,6 +2803,15 @@ fn print_usage(program: &str) {
     );
     eprintln!(
         "  {program} append shader --rdb <shaders.rdb> --entry <name> --stage <stage> --shader <file>"
+    );
+    eprintln!(
+        "  {program} terrain init --rdb <terrain.rdb> --project <key> [--name <name>] [--seed <seed>]"
+    );
+    eprintln!(
+        "  {program} terrain export --rdb <terrain.rdb> --project <key> --out <file>"
+    );
+    eprintln!(
+        "  {program} terrain import --rdb <terrain.rdb> --input <file> [--project <key>]"
     );
     eprintln!("");
     eprintln!("Options:");

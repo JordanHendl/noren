@@ -104,6 +104,10 @@ pub struct TerrainGeneratorDefinition {
     pub algorithm: String,
     pub frequency: f32,
     pub amplitude: f32,
+    #[serde(default = "default_biome_frequency")]
+    pub biome_frequency: f32,
+    #[serde(default)]
+    pub material_rules: Vec<TerrainMaterialRule>,
 }
 
 impl Default for TerrainGeneratorDefinition {
@@ -114,8 +118,90 @@ impl Default for TerrainGeneratorDefinition {
             algorithm: "ridge-noise".to_string(),
             frequency: 0.02,
             amplitude: 64.0,
+            biome_frequency: default_biome_frequency(),
+            material_rules: default_material_rules(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainMaterialRule {
+    pub material_id: u32,
+    #[serde(default = "default_height_range")]
+    pub height_range: [f32; 2],
+    #[serde(default = "default_slope_range")]
+    pub slope_range: [f32; 2],
+    #[serde(default = "default_biome_range")]
+    pub biome_range: [f32; 2],
+    #[serde(default = "default_rule_blend")]
+    pub blend: f32,
+    #[serde(default = "default_rule_weight")]
+    pub weight: f32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TerrainMaterialBlendMode {
+    Blend,
+    Overwrite,
+}
+
+impl Default for TerrainMaterialBlendMode {
+    fn default() -> Self {
+        Self::Blend
+    }
+}
+
+fn default_height_range() -> [f32; 2] {
+    [-1.0e9, 1.0e9]
+}
+
+fn default_slope_range() -> [f32; 2] {
+    [0.0, 1.0]
+}
+
+fn default_biome_range() -> [f32; 2] {
+    [0.0, 1.0]
+}
+
+fn default_rule_blend() -> f32 {
+    0.2
+}
+
+fn default_rule_weight() -> f32 {
+    1.0
+}
+
+fn default_biome_frequency() -> f32 {
+    0.0075
+}
+
+fn default_material_rules() -> Vec<TerrainMaterialRule> {
+    vec![
+        TerrainMaterialRule {
+            material_id: 1,
+            height_range: [-200.0, 120.0],
+            slope_range: [0.0, 0.5],
+            biome_range: [0.0, 1.0],
+            blend: 0.15,
+            weight: 1.0,
+        },
+        TerrainMaterialRule {
+            material_id: 2,
+            height_range: [-200.0, 600.0],
+            slope_range: [0.35, 1.0],
+            biome_range: [0.0, 1.0],
+            blend: 0.2,
+            weight: 1.0,
+        },
+        TerrainMaterialRule {
+            material_id: 3,
+            height_range: [80.0, 600.0],
+            slope_range: [0.0, 0.65],
+            biome_range: [0.2, 0.8],
+            blend: 0.25,
+            weight: 1.0,
+        },
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,7 +219,12 @@ pub enum TerrainMutationParams {
     Sphere { center: [f32; 3] },
     Capsule { start: [f32; 3], end: [f32; 3] },
     Smooth { center: [f32; 3] },
-    MaterialPaint { center: [f32; 3], material_id: u32 },
+    MaterialPaint {
+        center: [f32; 3],
+        material_id: u32,
+        #[serde(default)]
+        blend_mode: TerrainMaterialBlendMode,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -513,6 +604,7 @@ mod tests {
     use super::*;
     use crate::utils::rdbfile::RDBFile;
     use tempfile::tempdir;
+    use bincode::{deserialize, serialize};
 
     fn sample_chunk() -> TerrainChunk {
         TerrainChunk {
@@ -631,5 +723,60 @@ mod tests {
         assert_eq!(layer_back.ops[0].op_id, "raise");
         assert_eq!(layer_back.ops[1].op_id, "erode");
         Ok(())
+    }
+
+    #[test]
+    fn legacy_material_paint_ops_upgrade_with_default_blend_mode() {
+        #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+        enum LegacyTerrainMutationParams {
+            Sphere { center: [f32; 3] },
+            Capsule { start: [f32; 3], end: [f32; 3] },
+            Smooth { center: [f32; 3] },
+            MaterialPaint { center: [f32; 3], material_id: u32 },
+        }
+
+        #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+        struct LegacyTerrainMutationOp {
+            op_id: String,
+            layer_id: String,
+            enabled: bool,
+            order: u32,
+            kind: TerrainMutationOpKind,
+            params: LegacyTerrainMutationParams,
+            radius: f32,
+            strength: f32,
+            falloff: f32,
+            event_id: u32,
+            timestamp: u64,
+            #[serde(default)]
+            author: Option<String>,
+        }
+
+        let legacy = LegacyTerrainMutationOp {
+            op_id: "paint".to_string(),
+            layer_id: "layer-1".to_string(),
+            enabled: true,
+            order: 0,
+            kind: TerrainMutationOpKind::MaterialPaint,
+            params: LegacyTerrainMutationParams::MaterialPaint {
+                center: [1.0, 2.0, 0.0],
+                material_id: 4,
+            },
+            radius: 3.0,
+            strength: 0.8,
+            falloff: 0.5,
+            event_id: 1,
+            timestamp: 1,
+            author: None,
+        };
+
+        let bytes = serialize(&legacy).expect("serialize");
+        let upgraded: TerrainMutationOp = deserialize(&bytes).expect("deserialize");
+        match upgraded.params {
+            TerrainMutationParams::MaterialPaint { blend_mode, .. } => {
+                assert_eq!(blend_mode, TerrainMaterialBlendMode::Blend);
+            }
+            _ => panic!("expected MaterialPaint params"),
+        }
     }
 }

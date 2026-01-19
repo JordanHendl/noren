@@ -155,6 +155,8 @@ struct ChunkMeshResource {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
     indices: Vec<u32>,
+    material_ids: Option<Vec<[u32; 4]>>,
+    material_weights: Option<Vec<[f32; 4]>>,
     bounds_min: Vec3,
     bounds_max: Vec3,
     entry_offset: u64,
@@ -249,11 +251,15 @@ impl ChunkPreviewCache {
                 .iter()
                 .map(|vertex| Vec3::from(vertex.normal))
                 .collect::<Vec<_>>();
+            let material_ids = collect_material_ids(artifact);
+            let material_weights = collect_material_weights(artifact);
             let mesh = ChunkMeshResource {
                 content_hash: artifact.content_hash,
                 positions,
                 normals,
                 indices: artifact.indices.clone(),
+                material_ids,
+                material_weights,
                 bounds_min: Vec3::from(artifact.bounds_min),
                 bounds_max: Vec3::from(artifact.bounds_max),
                 entry_offset,
@@ -981,7 +987,11 @@ impl TerrainEditorApp {
                 match &op.params {
                     TerrainMutationParams::Sphere { center }
                     | TerrainMutationParams::Smooth { center }
-                    | TerrainMutationParams::MaterialPaint { center, .. } => {
+                    | TerrainMutationParams::MaterialPaint {
+                        center,
+                        material_id: _,
+                        blend_mode: _,
+                    } => {
                         if let Some(pos) = world_to_viewport(settings, rect, [center[0], center[1]])
                         {
                             let radius = world_radius_to_screen(settings, rect, op.radius);
@@ -1387,11 +1397,6 @@ impl TerrainEditorApp {
         let mut bounds_segments: Vec<(egui::Pos2, egui::Pos2)> = Vec::new();
 
         for (key, mesh) in meshes_to_draw {
-            let base_color = if self.preview.show_lod_colors {
-                lod_debug_color(key.lod)
-            } else {
-                egui::Color32::from_rgb(120, 160, 190)
-            };
             for tri in mesh.indices.chunks(3) {
                 if tri.len() < 3 {
                     continue;
@@ -1414,9 +1419,36 @@ impl TerrainEditorApp {
                 let n0 = mesh.normals.get(i0).copied().unwrap_or(Vec3::Z).normalize();
                 let n1 = mesh.normals.get(i1).copied().unwrap_or(Vec3::Z).normalize();
                 let n2 = mesh.normals.get(i2).copied().unwrap_or(Vec3::Z).normalize();
-                let c0 = shade_color(base_color, n0, light_dir);
-                let c1 = shade_color(base_color, n1, light_dir);
-                let c2 = shade_color(base_color, n2, light_dir);
+                let base0 = if self.preview.show_lod_colors {
+                    lod_debug_color(key.lod)
+                } else {
+                    triplanar_tint(
+                        material_color_for_vertex(mesh, i0),
+                        mesh.positions[i0],
+                        n0,
+                    )
+                };
+                let base1 = if self.preview.show_lod_colors {
+                    lod_debug_color(key.lod)
+                } else {
+                    triplanar_tint(
+                        material_color_for_vertex(mesh, i1),
+                        mesh.positions[i1],
+                        n1,
+                    )
+                };
+                let base2 = if self.preview.show_lod_colors {
+                    lod_debug_color(key.lod)
+                } else {
+                    triplanar_tint(
+                        material_color_for_vertex(mesh, i2),
+                        mesh.positions[i2],
+                        n2,
+                    )
+                };
+                let c0 = shade_color(base0, n0, light_dir);
+                let c1 = shade_color(base1, n1, light_dir);
+                let c2 = shade_color(base2, n2, light_dir);
                 let depth = (d0 + d1 + d2) / 3.0;
                 triangles.push(PreviewTriangle {
                     vertices: [
@@ -2743,6 +2775,105 @@ fn shade_color(base: egui::Color32, normal: Vec3, light_dir: Vec3) -> egui::Colo
     egui::Color32::from_rgb(r, g, b)
 }
 
+fn material_palette_color(id: u32) -> egui::Color32 {
+    let hash = id.wrapping_mul(0x9E3779B1).rotate_left(7);
+    let r = 80 + (hash & 0x7F) as u8;
+    let g = 80 + ((hash >> 8) & 0x7F) as u8;
+    let b = 80 + ((hash >> 16) & 0x7F) as u8;
+    egui::Color32::from_rgb(r, g, b)
+}
+
+fn material_color_for_vertex(mesh: &ChunkMeshResource, index: usize) -> egui::Color32 {
+    let Some(ids) = mesh.material_ids.as_ref() else {
+        return egui::Color32::from_rgb(120, 160, 190);
+    };
+    let Some(weights) = mesh.material_weights.as_ref() else {
+        return egui::Color32::from_rgb(120, 160, 190);
+    };
+    let Some(id_set) = ids.get(index) else {
+        return egui::Color32::from_rgb(120, 160, 190);
+    };
+    let Some(weight_set) = weights.get(index) else {
+        return egui::Color32::from_rgb(120, 160, 190);
+    };
+
+    let mut r = 0.0;
+    let mut g = 0.0;
+    let mut b = 0.0;
+    for (id, weight) in id_set.iter().zip(weight_set.iter()) {
+        let color = material_palette_color(*id);
+        r += *weight * color.r() as f32;
+        g += *weight * color.g() as f32;
+        b += *weight * color.b() as f32;
+    }
+    egui::Color32::from_rgb(r.clamp(0.0, 255.0) as u8, g.clamp(0.0, 255.0) as u8, b.clamp(0.0, 255.0) as u8)
+}
+
+fn triplanar_tint(base: egui::Color32, position: Vec3, normal: Vec3) -> egui::Color32 {
+    let weights = normal.abs();
+    let sum = (weights.x + weights.y + weights.z).max(0.0001);
+    let wx = weights.x / sum;
+    let wy = weights.y / sum;
+    let wz = weights.z / sum;
+
+    let x_variation = world_variation(position.y, position.z, 0.09);
+    let y_variation = world_variation(position.x, position.z, 0.09);
+    let z_variation = world_variation(position.x, position.y, 0.09);
+
+    let x_color = scale_color(base, 0.85 + 0.15 * x_variation);
+    let y_color = scale_color(base, 0.85 + 0.15 * y_variation);
+    let z_color = scale_color(base, 0.85 + 0.15 * z_variation);
+
+    blend_colors(blend_colors(x_color, y_color, wy / (wx + wy).max(0.0001)), z_color, wz)
+}
+
+fn blend_colors(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let r = a.r() as f32 + (b.r() as f32 - a.r() as f32) * t;
+    let g = a.g() as f32 + (b.g() as f32 - a.g() as f32) * t;
+    let b_val = a.b() as f32 + (b.b() as f32 - a.b() as f32) * t;
+    egui::Color32::from_rgb(r as u8, g as u8, b_val as u8)
+}
+
+fn scale_color(color: egui::Color32, scale: f32) -> egui::Color32 {
+    let scale = scale.clamp(0.0, 2.0);
+    egui::Color32::from_rgb(
+        (color.r() as f32 * scale).clamp(0.0, 255.0) as u8,
+        (color.g() as f32 * scale).clamp(0.0, 255.0) as u8,
+        (color.b() as f32 * scale).clamp(0.0, 255.0) as u8,
+    )
+}
+
+fn world_variation(a: f32, b: f32, scale: f32) -> f32 {
+    let value = (a * scale).sin() * 12.9898 + (b * scale).cos() * 78.233;
+    value.sin().abs().clamp(0.0, 1.0)
+}
+
+fn collect_material_ids(
+    artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+) -> Option<Vec<[u32; 4]>> {
+    let ids = artifact.material_ids.as_ref()?;
+    if ids.len() < artifact.vertices.len() * 4 {
+        return None;
+    }
+    Some(
+        ids.chunks(4)
+            .take(artifact.vertices.len())
+            .map(|chunk| [chunk[0], chunk[1], chunk[2], chunk[3]])
+            .collect(),
+    )
+}
+
+fn collect_material_weights(
+    artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+) -> Option<Vec<[f32; 4]>> {
+    let weights = artifact.material_weights.as_ref()?;
+    if weights.len() < artifact.vertices.len() {
+        return None;
+    }
+    Some(weights[..artifact.vertices.len()].to_vec())
+}
+
 fn chunk_coords_for_world(
     settings: &TerrainProjectSettings,
     world_x: f32,
@@ -2838,6 +2969,7 @@ fn build_params_for_brush(
             TerrainMutationParams::MaterialPaint {
                 center: world_pos,
                 material_id: 0,
+                blend_mode: noren::rdb::terrain::TerrainMaterialBlendMode::Blend,
             },
         ),
     }
@@ -2856,7 +2988,11 @@ fn affected_chunks_for_op(
     let (min_x, max_x, min_y, max_y, min_z, max_z) = match op.params {
         TerrainMutationParams::Sphere { center }
         | TerrainMutationParams::Smooth { center }
-        | TerrainMutationParams::MaterialPaint { center, .. } => (
+        | TerrainMutationParams::MaterialPaint {
+            center,
+            material_id: _,
+            blend_mode: _,
+        } => (
             center[0] - op.radius,
             center[0] + op.radius,
             center[1] - op.radius,
@@ -2900,7 +3036,11 @@ fn affected_chunks_for_op(
             let intersects = match op.params {
                 TerrainMutationParams::Sphere { center }
                 | TerrainMutationParams::Smooth { center }
-                | TerrainMutationParams::MaterialPaint { center, .. } => {
+                | TerrainMutationParams::MaterialPaint {
+                    center,
+                    material_id: _,
+                    blend_mode: _,
+                } => {
                     sphere_intersects_aabb(center, op.radius, aabb_min, aabb_max)
                 }
                 TerrainMutationParams::Capsule { start, end } => {

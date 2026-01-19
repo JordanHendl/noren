@@ -4,7 +4,9 @@ use bincode::deserialize;
 use noren::{
     RDBEntryMeta, RDBView,
     rdb::{
-        AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton, TerrainChunk,
+        AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton,
+        TerrainChunk, TerrainChunkArtifact, TerrainChunkState, TerrainGeneratorDefinition,
+        TerrainMutationLayer, TerrainMutationOp, TerrainProjectSettings,
     },
     type_tag_for,
 };
@@ -196,6 +198,12 @@ fn known_types() -> &'static [KnownType] {
             KnownType::with::<Skeleton>(describe_skeleton),
             KnownType::with::<ShaderModule>(describe_shader),
             KnownType::with::<TerrainChunk>(describe_terrain),
+            KnownType::with::<TerrainChunkArtifact>(describe_terrain_artifact),
+            KnownType::with::<TerrainChunkState>(describe_terrain_state),
+            KnownType::with::<TerrainProjectSettings>(describe_terrain_settings),
+            KnownType::with::<TerrainGeneratorDefinition>(describe_terrain_generator),
+            KnownType::with::<TerrainMutationLayer>(describe_terrain_layer),
+            KnownType::with::<TerrainMutationOp>(describe_terrain_op),
         ]
     })
 }
@@ -440,6 +448,114 @@ fn describe_terrain(chunk: &TerrainChunk) -> String {
         tile_count,
         height_count,
         chunk.mesh_entry
+    )
+}
+
+fn describe_terrain_artifact(artifact: &TerrainChunkArtifact) -> String {
+    let vertex_count = artifact.vertices.len();
+    let index_count = artifact.indices.len();
+    let triangle_count = index_count / 3;
+    let material_ids = artifact.material_ids.as_ref().map(|ids| ids.len());
+    let material_weights = artifact
+        .material_weights
+        .as_ref()
+        .map(|weights| weights.len());
+    format!(
+        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nVertices: {}\nIndices: {}\nEstimated triangles: {}\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}\nMesh entry: {}",
+        artifact.project_key,
+        artifact.chunk_coords,
+        artifact.lod,
+        artifact.bounds_min,
+        artifact.bounds_max,
+        vertex_count,
+        index_count,
+        triangle_count,
+        artifact.content_hash,
+        material_ids,
+        material_weights,
+        artifact.mesh_entry
+    )
+}
+
+fn describe_terrain_state(state: &TerrainChunkState) -> String {
+    let hashes: Vec<String> = state
+        .last_built_hashes
+        .iter()
+        .map(|hash| format!("lod{}: {:#016X}", hash.lod, hash.hash))
+        .collect();
+    format!(
+        "Project: {}\nChunk coords: {:?}\nDirty flags: {:#X}\nDirty reasons: {:?}\nGenerator version: {}\nMutation version: {}\nLast built hashes: [{}]\nDependency hashes: settings {:#016X}, generator {:#016X}, mutation {:#016X}",
+        state.project_key,
+        state.chunk_coords,
+        state.dirty_flags,
+        state.dirty_reasons,
+        state.generator_version,
+        state.mutation_version,
+        hashes.join(", "),
+        state.dependency_hashes.settings_hash,
+        state.dependency_hashes.generator_hash,
+        state.dependency_hashes.mutation_hash,
+    )
+}
+
+fn describe_terrain_settings(settings: &TerrainProjectSettings) -> String {
+    format!(
+        "Name: {}\nSeed: {}\nTile size: {:.2}\nTiles per chunk: {:?}\nWorld bounds: {:?} -> {:?}\nLOD max: {}\nLOD bands: {:?}\nGenerator graph: {}\nVertex layout: {:?}\nActive generator version: {}\nActive mutation version: {}",
+        settings.name,
+        settings.seed,
+        settings.tile_size,
+        settings.tiles_per_chunk,
+        settings.world_bounds_min,
+        settings.world_bounds_max,
+        settings.lod_policy.max_lod,
+        settings.lod_policy.distance_bands,
+        settings.generator_graph_id,
+        settings.vertex_layout,
+        settings.active_generator_version,
+        settings.active_mutation_version,
+    )
+}
+
+fn describe_terrain_generator(generator: &TerrainGeneratorDefinition) -> String {
+    format!(
+        "Version: {}\nGraph ID: {}\nAlgorithm: {}\nFrequency: {:.4}\nAmplitude: {:.2}\nBiome frequency: {:.4}\nMaterial rules: {}",
+        generator.version,
+        generator.graph_id,
+        generator.algorithm,
+        generator.frequency,
+        generator.amplitude,
+        generator.biome_frequency,
+        generator.material_rules.len(),
+    )
+}
+
+fn describe_terrain_layer(layer: &TerrainMutationLayer) -> String {
+    format!(
+        "Layer ID: {}\nName: {}\nOrder: {}\nVersion: {}\nOps: {}\nAffected chunks: {:?}",
+        layer.layer_id,
+        layer.name,
+        layer.order,
+        layer.version,
+        layer.ops.len(),
+        layer.affected_chunks,
+    )
+}
+
+fn describe_terrain_op(op: &TerrainMutationOp) -> String {
+    format!(
+        "Op ID: {}\nLayer: {}\nEnabled: {}\nOrder: {}\nKind: {:?}\nParams: {:?}\nRadius: {:.2}\nStrength: {:.2}\nFalloff: {:.2}\nEvent: {}\nTimestamp: {}\nAuthor: {:?}",
+        op.op_id,
+        op.layer_id,
+        op.enabled,
+        op.order,
+        op.kind,
+        op.params,
+        op.radius,
+        op.strength,
+        op.falloff,
+        op.event_id,
+        op.timestamp,
+        op.author,
     )
 }
 

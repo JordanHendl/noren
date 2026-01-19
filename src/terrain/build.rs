@@ -10,10 +10,10 @@ use crate::{
             TERRAIN_DIRTY_GENERATOR, TERRAIN_DIRTY_MUTATION, TERRAIN_DIRTY_SETTINGS,
             TerrainChunkArtifact, TerrainChunkDependencyHashes, TerrainChunkLodHash,
             TerrainChunkState, TerrainDirtyReason, TerrainGeneratorDefinition,
-            TerrainMutationLayer, TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams,
-            TerrainProjectSettings, TerrainVertexLayout, chunk_artifact_entry, chunk_coord_key,
-            chunk_state_entry, generator_entry, lod_key, mutation_layer_entry,
-            project_settings_entry,
+            TerrainMaterialBlendMode, TerrainMaterialRule, TerrainMutationLayer, TerrainMutationOp,
+            TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
+            TerrainVertexLayout, chunk_artifact_entry, chunk_coord_key, chunk_state_entry,
+            generator_entry, lod_key, mutation_layer_entry, project_settings_entry,
         },
     },
 };
@@ -256,6 +256,13 @@ pub fn build_terrain_chunk_with_context(
         });
     };
 
+    let (material_ids, material_weights) = assign_chunk_materials(
+        &context.settings,
+        &context.generator,
+        &relevant_layers,
+        &vertices,
+    );
+
     let artifact = TerrainChunkArtifact {
         project_key: project_key.to_string(),
         chunk_coords: request.chunk_coords,
@@ -265,8 +272,8 @@ pub fn build_terrain_chunk_with_context(
         vertex_layout: context.settings.vertex_layout.clone(),
         vertices,
         indices,
-        material_ids: None,
-        material_weights: None,
+        material_ids,
+        material_weights,
         content_hash,
         mesh_entry: "geometry/terrain_chunk".to_string(),
     };
@@ -564,6 +571,201 @@ fn extract_chunk_surface(
     }
 }
 
+#[derive(Clone, Copy)]
+struct MaterialSample {
+    ids: [u32; 4],
+    weights: [f32; 4],
+}
+
+fn assign_chunk_materials(
+    settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    mutation_layers: &[TerrainMutationLayer],
+    vertices: &[Vertex],
+) -> (Option<Vec<u32>>, Option<Vec<[f32; 4]>>) {
+    if vertices.is_empty() {
+        return (None, None);
+    }
+
+    let mut material_ids = Vec::with_capacity(vertices.len() * 4);
+    let mut material_weights = Vec::with_capacity(vertices.len());
+
+    for vertex in vertices {
+        let position = vertex.position;
+        let normal = vertex.normal;
+        let mut sample =
+            evaluate_material_rules(settings, generator, position, normal, mutation_layers);
+        normalize_material_sample(&mut sample);
+        material_ids.extend_from_slice(&sample.ids);
+        material_weights.push(sample.weights);
+    }
+
+    (Some(material_ids), Some(material_weights))
+}
+
+fn evaluate_material_rules(
+    settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    position: [f32; 3],
+    normal: [f32; 3],
+    mutation_layers: &[TerrainMutationLayer],
+) -> MaterialSample {
+    let slope = (1.0 - normal[2].abs().clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let height = position[2];
+    let biome = biome_value(settings, generator, position[0], position[1]);
+
+    let mut weighted = Vec::new();
+    for rule in &generator.material_rules {
+        let weight = rule_weight(rule, height, slope, biome);
+        if weight > 0.0 {
+            weighted.push((rule.material_id, weight));
+        }
+    }
+
+    let mut sample = MaterialSample {
+        ids: [0; 4],
+        weights: [0.0; 4],
+    };
+
+    if weighted.is_empty() {
+        sample.ids[0] = 0;
+        sample.weights[0] = 1.0;
+    } else {
+        weighted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        pack_material_weights(&mut sample, &weighted);
+    }
+
+    apply_material_paint(mutation_layers, position, &mut sample);
+    sample
+}
+
+fn rule_weight(rule: &TerrainMaterialRule, height: f32, slope: f32, biome: f32) -> f32 {
+    let height_weight = range_weight(height, rule.height_range, rule.blend);
+    let slope_weight = range_weight(slope, rule.slope_range, rule.blend);
+    let biome_weight = range_weight(biome, rule.biome_range, rule.blend);
+    let weight = height_weight.min(slope_weight).min(biome_weight);
+    (weight * rule.weight).clamp(0.0, 1.0)
+}
+
+fn range_weight(value: f32, range: [f32; 2], blend: f32) -> f32 {
+    let min = range[0].min(range[1]);
+    let max = range[0].max(range[1]);
+    if value < min || value > max {
+        return 0.0;
+    }
+    let blend = blend.clamp(0.0, 1.0);
+    let start = min + (max - min) * blend;
+    let end = max - (max - min) * blend;
+    if value >= start && value <= end {
+        return 1.0;
+    }
+    if value < start {
+        return ((value - min) / (start - min).max(0.0001)).clamp(0.0, 1.0);
+    }
+    ((max - value) / (max - end).max(0.0001)).clamp(0.0, 1.0)
+}
+
+fn pack_material_weights(sample: &mut MaterialSample, weights: &[(u32, f32)]) {
+    let mut aggregated: Vec<(u32, f32)> = Vec::new();
+    for (id, weight) in weights {
+        if let Some(entry) = aggregated.iter_mut().find(|(existing, _)| existing == id) {
+            entry.1 += *weight;
+        } else {
+            aggregated.push((*id, *weight));
+        }
+    }
+    aggregated.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for i in 0..4 {
+        if let Some((id, weight)) = aggregated.get(i) {
+            sample.ids[i] = *id;
+            sample.weights[i] = *weight;
+        } else {
+            sample.ids[i] = 0;
+            sample.weights[i] = 0.0;
+        }
+    }
+}
+
+fn apply_material_paint(
+    mutation_layers: &[TerrainMutationLayer],
+    position: [f32; 3],
+    sample: &mut MaterialSample,
+) {
+    let world_x = position[0];
+    let world_y = position[1];
+    for layer in mutation_layers {
+        for op in &layer.ops {
+            if !op.enabled || op.strength == 0.0 {
+                continue;
+            }
+            let (center, material_id, blend_mode) = match op.params {
+                TerrainMutationParams::MaterialPaint {
+                    center,
+                    material_id,
+                    blend_mode,
+                } => (center, material_id, blend_mode),
+                _ => continue,
+            };
+            let influence = radial_falloff(center, world_x, world_y, op.radius, op.falloff);
+            if influence <= 0.0 {
+                continue;
+            }
+            let mut blend = (op.strength * influence).clamp(0.0, 1.0);
+            if blend_mode == TerrainMaterialBlendMode::Overwrite {
+                blend = 1.0;
+            }
+            blend_material(sample, material_id, blend);
+        }
+    }
+}
+
+fn blend_material(sample: &mut MaterialSample, material_id: u32, blend: f32) {
+    if blend <= 0.0 {
+        return;
+    }
+    for weight in &mut sample.weights {
+        *weight *= 1.0 - blend;
+    }
+    if let Some(idx) = sample.ids.iter().position(|id| *id == material_id) {
+        sample.weights[idx] += blend;
+    } else {
+        let (min_idx, _) = sample
+            .weights
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((0, &0.0));
+        sample.ids[min_idx] = material_id;
+        sample.weights[min_idx] = blend;
+    }
+    normalize_material_sample(sample);
+}
+
+fn normalize_material_sample(sample: &mut MaterialSample) {
+    let total: f32 = sample.weights.iter().sum();
+    if total <= 0.0001 {
+        sample.weights = [0.0; 4];
+        sample.ids = [0; 4];
+        sample.ids[0] = 0;
+        sample.weights[0] = 1.0;
+        return;
+    }
+    for weight in &mut sample.weights {
+        *weight /= total;
+    }
+    let mut entries: Vec<(u32, f32)> = sample
+        .ids
+        .iter()
+        .copied()
+        .zip(sample.weights.iter().copied())
+        .collect();
+    entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (i, (id, weight)) in entries.iter().enumerate() {
+        sample.ids[i] = *id;
+        sample.weights[i] = *weight;
+    }
+}
+
 fn add_chunk_skirts(
     settings: &TerrainProjectSettings,
     field: &ChunkFieldSamples,
@@ -696,7 +898,11 @@ fn sample_height(
                 TerrainMutationParams::Capsule { start, end } => {
                     capsule_falloff(start, end, [world_x, world_y], op.radius, op.falloff)
                 }
-                TerrainMutationParams::MaterialPaint { center, .. } => {
+                TerrainMutationParams::MaterialPaint {
+                    center,
+                    material_id: _,
+                    blend_mode: _,
+                } => {
                     radial_falloff(center, world_x, world_y, op.radius, op.falloff)
                 }
             };
@@ -721,6 +927,23 @@ fn sample_height(
         }
     }
     height
+}
+
+fn biome_value(
+    settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    world_x: f32,
+    world_y: f32,
+) -> f32 {
+    let freq = generator.biome_frequency.max(0.0001);
+    let xi = (world_x * freq).floor() as i64;
+    let yi = (world_y * freq).floor() as i64;
+    let mut bytes = Vec::with_capacity(24);
+    bytes.extend_from_slice(&settings.seed.to_le_bytes());
+    bytes.extend_from_slice(&xi.to_le_bytes());
+    bytes.extend_from_slice(&yi.to_le_bytes());
+    let hash = fnv1a64(&bytes);
+    (hash as f64 / u64::MAX as f64) as f32
 }
 
 fn radial_falloff(center: [f32; 3], world_x: f32, world_y: f32, radius: f32, falloff: f32) -> f32 {
@@ -886,7 +1109,7 @@ mod tests {
     fn mutation_changes_only_dirties_affected_chunks() {
         let project_key = "sample";
         let mut rdb = RDBFile::new();
-        let mut settings = TerrainProjectSettings::default();
+        let settings = TerrainProjectSettings::default();
         let generator = TerrainGeneratorDefinition::default();
 
         let layer = TerrainMutationLayer::new("layer-a", "Layer A", 0);
@@ -1132,5 +1355,175 @@ mod tests {
             .fetch::<TerrainChunkArtifact>(&artifact_key)
             .expect("artifact");
         assert_eq!(artifact_a.content_hash, artifact_b.content_hash);
+    }
+
+    #[test]
+    fn deterministic_hash_matches_golden() {
+        let mut rdb = seed_rdb("sample");
+        let request = TerrainChunkBuildRequest {
+            chunk_coords: [0, 0],
+            lod: 0,
+        };
+        let report = build_terrain_chunks(&mut rdb, "sample", &[request]).expect("build");
+        assert_eq!(report.built_chunks, 1);
+        let coord_key = chunk_coord_key(0, 0);
+        let artifact_key = chunk_artifact_entry("sample", &coord_key, "lod0");
+        let artifact = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key)
+            .expect("artifact");
+        assert_eq!(artifact.content_hash, 0xA19A48D25039A6F8);
+    }
+
+    #[test]
+    fn material_paint_rebuilds_only_affected_chunk() {
+        let project_key = "sample";
+        let mut rdb = RDBFile::new();
+        let settings = TerrainProjectSettings::default();
+        let generator = TerrainGeneratorDefinition::default();
+
+        let mut layer = TerrainMutationLayer::new("layer-a", "Layer A", 0);
+        layer.affected_chunks = Some(vec![[0, 0]]);
+        let op = TerrainMutationOp {
+            op_id: "paint".to_string(),
+            layer_id: layer.layer_id.clone(),
+            enabled: true,
+            order: 0,
+            kind: TerrainMutationOpKind::MaterialPaint,
+            params: TerrainMutationParams::MaterialPaint {
+                center: [8.0, 8.0, 0.0],
+                material_id: 2,
+                blend_mode: crate::rdb::terrain::TerrainMaterialBlendMode::Blend,
+            },
+            radius: 6.0,
+            strength: 0.8,
+            falloff: 0.4,
+            event_id: 1,
+            timestamp: 1,
+            author: None,
+        };
+
+        rdb.add(&project_settings_entry(project_key), &settings)
+            .expect("settings");
+        rdb.add(
+            &generator_entry(project_key, settings.active_generator_version),
+            &generator,
+        )
+        .expect("generator");
+        rdb.add(
+            &mutation_layer_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+            ),
+            &layer,
+        )
+        .expect("mutation");
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                op.order,
+                op.event_id,
+            ),
+            &op,
+        )
+        .expect("mutation op");
+
+        let requests = [
+            TerrainChunkBuildRequest {
+                chunk_coords: [0, 0],
+                lod: 0,
+            },
+            TerrainChunkBuildRequest {
+                chunk_coords: [1, 0],
+                lod: 0,
+            },
+        ];
+        let report = build_terrain_chunks(&mut rdb, project_key, &requests).expect("build");
+        assert_eq!(report.built_chunks, 2);
+
+        let coord_key_00 = chunk_coord_key(0, 0);
+        let coord_key_10 = chunk_coord_key(1, 0);
+        let artifact_key_00 = chunk_artifact_entry(project_key, &coord_key_00, "lod0");
+        let artifact_key_10 = chunk_artifact_entry(project_key, &coord_key_10, "lod0");
+        let artifact_00_before = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key_00)
+            .expect("artifact");
+        let artifact_10_before = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key_10)
+            .expect("artifact");
+
+        let updated_op = TerrainMutationOp {
+            params: TerrainMutationParams::MaterialPaint {
+                center: [8.0, 8.0, 0.0],
+                material_id: 3,
+                blend_mode: crate::rdb::terrain::TerrainMaterialBlendMode::Blend,
+            },
+            event_id: 2,
+            timestamp: 2,
+            ..op
+        };
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                updated_op.order,
+                updated_op.event_id,
+            ),
+            &updated_op,
+        )
+        .expect("mutation op");
+
+        let report = build_terrain_chunks(&mut rdb, project_key, &requests).expect("build");
+        assert_eq!(report.built_chunks, 1);
+        assert_eq!(report.skipped_chunks, 1);
+
+        let artifact_00_after = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key_00)
+            .expect("artifact");
+        let artifact_10_after = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key_10)
+            .expect("artifact");
+        assert_ne!(
+            artifact_00_before.content_hash,
+            artifact_00_after.content_hash
+        );
+        assert_eq!(
+            artifact_10_before.content_hash,
+            artifact_10_after.content_hash
+        );
+    }
+
+    #[test]
+    fn cancelled_build_does_not_commit_artifacts() {
+        let mut rdb = seed_rdb("sample");
+        let context = prepare_terrain_build_context(&mut rdb, "sample").expect("context");
+        let request = TerrainChunkBuildRequest {
+            chunk_coords: [0, 0],
+            lod: 0,
+        };
+        let cancel = std::cell::Cell::new(false);
+        let outcome = build_terrain_chunk_with_context(
+            &mut rdb,
+            "sample",
+            &context,
+            request,
+            |phase| {
+                if phase == TerrainChunkBuildPhase::FieldEval {
+                    cancel.set(true);
+                }
+            },
+            || cancel.replace(false),
+        )
+        .expect("build");
+        assert_eq!(outcome.status, TerrainChunkBuildStatus::Cancelled);
+        assert!(outcome.artifact.is_none());
+        assert!(outcome.state.is_none());
+
+        let coord_key = chunk_coord_key(0, 0);
+        let artifact_key = chunk_artifact_entry("sample", &coord_key, "lod0");
+        assert!(rdb.fetch::<TerrainChunkArtifact>(&artifact_key).is_err());
     }
 }
