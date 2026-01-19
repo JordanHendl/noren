@@ -28,6 +28,7 @@ pub const TERRAIN_MUTATION_LAYER_PREFIX: &str = "terrain/mutation_layer";
 pub const TERRAIN_MUTATION_OP_PREFIX: &str = "terrain/mutation_op";
 pub const TERRAIN_CHUNK_ARTIFACT_PREFIX: &str = "terrain/chunk_artifact";
 pub const TERRAIN_CHUNK_STATE_PREFIX: &str = "terrain/chunk_state";
+const DEFAULT_TERRAIN_CHUNK_ENTRY: &str = "terrain/chunk_0_0";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum TerrainVertexLayout {
@@ -628,6 +629,7 @@ impl TerrainChunk {
 
 pub struct TerrainDB {
     data: Option<RDBView>,
+    fallback_chunk: Option<TerrainChunk>,
 }
 
 impl TerrainDB {
@@ -637,7 +639,16 @@ impl TerrainDB {
             Err(_) => None,
         };
 
-        Self { data }
+        let fallback_chunk = if data.is_none() {
+            Some(default_terrain_chunk())
+        } else {
+            None
+        };
+
+        Self {
+            data,
+            fallback_chunk,
+        }
     }
 
     pub fn fetch_chunk(&mut self, entry: DatabaseEntry<'_>) -> Result<TerrainChunk, NorenError> {
@@ -648,6 +659,11 @@ impl TerrainDB {
             }
         }
 
+        if let Some(chunk) = &self.fallback_chunk {
+            info!(resource = "terrain", entry = %entry, source = "fallback");
+            return Ok(chunk.clone());
+        }
+
         Err(NorenError::DataFailure())
     }
 
@@ -655,11 +671,38 @@ impl TerrainDB {
         self.data
             .as_ref()
             .map(|rdb| rdb.entries().into_iter().map(|meta| meta.name).collect())
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                self.fallback_chunk
+                    .as_ref()
+                    .map(|_| vec![DEFAULT_TERRAIN_CHUNK_ENTRY.to_string()])
+                    .unwrap_or_default()
+            })
     }
 
     pub fn has_data(&self) -> bool {
-        self.data.is_some()
+        self.data.is_some() || self.fallback_chunk.is_some()
+    }
+}
+
+fn default_terrain_chunk() -> TerrainChunk {
+    let tiles_per_chunk = [64, 64];
+    let tile_count = tiles_per_chunk[0] * tiles_per_chunk[1];
+    let height_count = (tiles_per_chunk[0] + 1) * (tiles_per_chunk[1] + 1);
+
+    TerrainChunk {
+        chunk_coords: [0, 0],
+        origin: [0.0, 0.0],
+        tile_size: 1.0,
+        tiles_per_chunk,
+        tiles: vec![
+            TerrainTile {
+                tile_id: 1,
+                flags: 0,
+            };
+            tile_count as usize
+        ],
+        heights: vec![0.0; height_count as usize],
+        mesh_entry: "geometry/terrain_chunk".to_string(),
     }
 }
 
@@ -727,6 +770,21 @@ mod tests {
         let mut db = TerrainDB::new(path.to_str().unwrap());
         let chunk = db.fetch_chunk("terrain/chunk_0_0")?;
         assert_eq!(chunk.mesh_entry, "geometry/terrain_chunk");
+        Ok(())
+    }
+
+    #[test]
+    fn terrain_db_falls_back_to_default() -> Result<(), NorenError> {
+        let temp = tempdir().expect("temp dir");
+        let path = temp.path().join("missing.rdb");
+
+        let mut db = TerrainDB::new(path.to_str().unwrap());
+        let chunk = db.fetch_chunk(DEFAULT_TERRAIN_CHUNK_ENTRY)?;
+
+        assert_eq!(chunk.chunk_coords, [0, 0]);
+        assert_eq!(chunk.tiles_per_chunk, [64, 64]);
+        assert!(chunk.tiles.iter().all(|tile| tile.tile_id == 1));
+        assert!(chunk.heights.iter().all(|height| *height == 0.0));
         Ok(())
     }
 
