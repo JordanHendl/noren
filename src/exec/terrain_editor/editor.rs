@@ -71,6 +71,7 @@ struct BrushSettings {
     strength: f32,
     falloff: f32,
     stamp_interval: f64,
+    show_grid: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -337,6 +338,7 @@ impl Default for TerrainEditorApp {
                 strength: 2.0,
                 falloff: 0.5,
                 stamp_interval: 0.12,
+                show_grid: true,
             },
             viewport: ViewportState::default(),
             preview: PreviewSettings {
@@ -917,6 +919,9 @@ impl TerrainEditorApp {
             let layers = project.mutation_layers.clone();
             let project_key = project.key.clone();
             let active_layer = self.active_layer;
+            if self.brush.show_grid {
+                draw_paint_grid(painter, rect, &settings);
+            }
             self.draw_paint_overlay(
                 painter,
                 rect,
@@ -1043,6 +1048,9 @@ impl TerrainEditorApp {
             ui.add(egui::DragValue::new(&mut self.brush.falloff).speed(0.05));
             ui.label("Stamp interval");
             ui.add(egui::DragValue::new(&mut self.brush.stamp_interval).speed(0.01));
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.brush.show_grid, "Show grid");
         });
 
         if let Some(project) = &self.project {
@@ -2436,6 +2444,84 @@ fn draw_dirty_overlay(
         let chunk_rect = egui::Rect::from_min_max(min_pos, max_pos);
         painter.rect_filled(chunk_rect, 0.0, tint);
         painter.rect_stroke(chunk_rect, 0.0, stroke);
+    }
+}
+
+fn draw_paint_grid(painter: &egui::Painter, rect: egui::Rect, settings: &TerrainProjectSettings) {
+    let min = settings.world_bounds_min;
+    let max = settings.world_bounds_max;
+    let range_x = max[0] - min[0];
+    let range_y = max[1] - min[1];
+    if range_x <= 0.0 || range_y <= 0.0 {
+        return;
+    }
+
+    let pixel_per_world = rect.width() / range_x.max(f32::EPSILON);
+    let mut spacing = settings.tile_size.max(0.1);
+    let min_pixels = 18.0;
+    while spacing * pixel_per_world < min_pixels {
+        spacing *= 2.0;
+        if spacing > range_x.max(range_y) {
+            break;
+        }
+    }
+
+    let grid_color = egui::Color32::from_rgba_premultiplied(90, 90, 90, 50);
+    let chunk_color = egui::Color32::from_rgba_premultiplied(140, 140, 140, 90);
+    let grid_stroke = egui::Stroke::new(1.0, grid_color);
+    let chunk_stroke = egui::Stroke::new(1.0, chunk_color);
+    let max_lines = 2048;
+
+    let mut x = (min[0] / spacing).floor() * spacing;
+    let mut drawn = 0;
+    while x <= max[0] && drawn < max_lines {
+        let start = world_to_viewport(settings, rect, [x, min[1]]);
+        let end = world_to_viewport(settings, rect, [x, max[1]]);
+        if let (Some(start), Some(end)) = (start, end) {
+            painter.line_segment([start, end], grid_stroke);
+        }
+        x += spacing;
+        drawn += 1;
+    }
+
+    let mut y = (min[1] / spacing).floor() * spacing;
+    drawn = 0;
+    while y <= max[1] && drawn < max_lines {
+        let start = world_to_viewport(settings, rect, [min[0], y]);
+        let end = world_to_viewport(settings, rect, [max[0], y]);
+        if let (Some(start), Some(end)) = (start, end) {
+            painter.line_segment([start, end], grid_stroke);
+        }
+        y += spacing;
+        drawn += 1;
+    }
+
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x > 0.0 && chunk_size_y > 0.0 {
+        let mut x = (min[0] / chunk_size_x).floor() * chunk_size_x;
+        drawn = 0;
+        while x <= max[0] && drawn < max_lines {
+            let start = world_to_viewport(settings, rect, [x, min[1]]);
+            let end = world_to_viewport(settings, rect, [x, max[1]]);
+            if let (Some(start), Some(end)) = (start, end) {
+                painter.line_segment([start, end], chunk_stroke);
+            }
+            x += chunk_size_x;
+            drawn += 1;
+        }
+
+        let mut y = (min[1] / chunk_size_y).floor() * chunk_size_y;
+        drawn = 0;
+        while y <= max[1] && drawn < max_lines {
+            let start = world_to_viewport(settings, rect, [min[0], y]);
+            let end = world_to_viewport(settings, rect, [max[0], y]);
+            if let (Some(start), Some(end)) = (start, end) {
+                painter.line_segment([start, end], chunk_stroke);
+            }
+            y += chunk_size_y;
+            drawn += 1;
+        }
     }
 }
 
