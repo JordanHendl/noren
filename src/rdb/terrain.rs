@@ -273,6 +273,70 @@ impl TerrainMutationOp {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) enum LegacyTerrainMutationParams {
+    Sphere { center: [f32; 3] },
+    Capsule { start: [f32; 3], end: [f32; 3] },
+    Smooth { center: [f32; 3] },
+    MaterialPaint { center: [f32; 3], material_id: u32 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct LegacyTerrainMutationOp {
+    pub op_id: String,
+    pub layer_id: String,
+    pub enabled: bool,
+    pub order: u32,
+    pub kind: TerrainMutationOpKind,
+    pub params: LegacyTerrainMutationParams,
+    pub radius: f32,
+    pub strength: f32,
+    pub falloff: f32,
+    pub event_id: u32,
+    pub timestamp: u64,
+    #[serde(default)]
+    pub author: Option<String>,
+}
+
+impl LegacyTerrainMutationOp {
+    pub(crate) fn upgrade(self) -> TerrainMutationOp {
+        let params = match self.params {
+            LegacyTerrainMutationParams::Sphere { center } => TerrainMutationParams::Sphere { center },
+            LegacyTerrainMutationParams::Capsule { start, end } => {
+                TerrainMutationParams::Capsule { start, end }
+            }
+            LegacyTerrainMutationParams::Smooth { center } => TerrainMutationParams::Smooth { center },
+            LegacyTerrainMutationParams::MaterialPaint { center, material_id } => {
+                TerrainMutationParams::MaterialPaint {
+                    center,
+                    material_id,
+                    blend_mode: TerrainMaterialBlendMode::Blend,
+                }
+            }
+        };
+        TerrainMutationOp {
+            op_id: self.op_id,
+            layer_id: self.layer_id,
+            enabled: self.enabled,
+            order: self.order,
+            kind: self.kind,
+            params,
+            radius: self.radius,
+            strength: self.strength,
+            falloff: self.falloff,
+            event_id: self.event_id,
+            timestamp: self.timestamp,
+            author: self.author,
+        }
+    }
+}
+
+pub(crate) fn deserialize_legacy_mutation_op(bytes: &[u8]) -> TerrainMutationOp {
+    let legacy: LegacyTerrainMutationOp =
+        bincode::deserialize(bytes).expect("deserialize legacy mutation op");
+    legacy.upgrade()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TerrainMutationLayer {
     pub layer_id: String,
@@ -604,7 +668,7 @@ mod tests {
     use super::*;
     use crate::utils::rdbfile::RDBFile;
     use tempfile::tempdir;
-    use bincode::{deserialize, serialize};
+    use bincode::serialize;
 
     fn sample_chunk() -> TerrainChunk {
         TerrainChunk {
@@ -727,31 +791,6 @@ mod tests {
 
     #[test]
     fn legacy_material_paint_ops_upgrade_with_default_blend_mode() {
-        #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-        enum LegacyTerrainMutationParams {
-            Sphere { center: [f32; 3] },
-            Capsule { start: [f32; 3], end: [f32; 3] },
-            Smooth { center: [f32; 3] },
-            MaterialPaint { center: [f32; 3], material_id: u32 },
-        }
-
-        #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-        struct LegacyTerrainMutationOp {
-            op_id: String,
-            layer_id: String,
-            enabled: bool,
-            order: u32,
-            kind: TerrainMutationOpKind,
-            params: LegacyTerrainMutationParams,
-            radius: f32,
-            strength: f32,
-            falloff: f32,
-            event_id: u32,
-            timestamp: u64,
-            #[serde(default)]
-            author: Option<String>,
-        }
-
         let legacy = LegacyTerrainMutationOp {
             op_id: "paint".to_string(),
             layer_id: "layer-1".to_string(),
@@ -771,7 +810,7 @@ mod tests {
         };
 
         let bytes = serialize(&legacy).expect("serialize");
-        let upgraded: TerrainMutationOp = deserialize(&bytes).expect("deserialize");
+        let upgraded = deserialize_legacy_mutation_op(&bytes);
         match upgraded.params {
             TerrainMutationParams::MaterialPaint { blend_mode, .. } => {
                 assert_eq!(blend_mode, TerrainMaterialBlendMode::Blend);

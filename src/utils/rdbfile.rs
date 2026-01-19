@@ -293,6 +293,27 @@ impl RDBFile {
         return Err(RdbErr::BadHeader);
     }
 
+    /// Returns the raw byte contents for a named entry.
+    pub fn entry_bytes(&self, name: &str) -> Result<&[u8], RdbErr> {
+        let name_bytes = name.as_bytes();
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| stored_name_bytes(&entry.name) == name_bytes)
+        {
+            let data_start = entry.offset as usize;
+            let data_end = data_start
+                .checked_add(entry.len as usize)
+                .ok_or(RdbErr::BadHeader)?;
+            if data_end > self.data.len() {
+                return Err(RdbErr::BadHeader);
+            }
+            return Ok(&self.data[data_start..data_end]);
+        }
+
+        Err(RdbErr::BadHeader)
+    }
+
     /// Save using MmapMut for zero-copy struct writes.
     /// (This writes header + entries only; blobs should be appended separately
     /// and their offsets/lengths filled beforehand.)

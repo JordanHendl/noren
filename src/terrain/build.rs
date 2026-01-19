@@ -13,10 +13,13 @@ use crate::{
             TerrainMaterialBlendMode, TerrainMaterialRule, TerrainMutationLayer, TerrainMutationOp,
             TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
             TerrainVertexLayout, chunk_artifact_entry, chunk_coord_key, chunk_state_entry,
-            generator_entry, lod_key, mutation_layer_entry, project_settings_entry,
+            deserialize_legacy_mutation_op, generator_entry, lod_key, mutation_layer_entry,
+            project_settings_entry,
         },
     },
 };
+
+const MUTATION_OP_BLEND_MODE_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerrainChunkBuildRequest {
@@ -361,7 +364,12 @@ fn collect_mutation_ops(
             if version > active_version {
                 continue;
             }
-            let mut op = rdb.fetch::<TerrainMutationOp>(&entry.name)?;
+            let mut op = if version < MUTATION_OP_BLEND_MODE_VERSION {
+                let bytes = rdb.entry_bytes(&entry.name)?;
+                deserialize_legacy_mutation_op(bytes)
+            } else {
+                rdb.fetch::<TerrainMutationOp>(&entry.name)?
+            };
             op.order = order;
             op.event_id = event_id;
             latest
@@ -1034,9 +1042,11 @@ fn settings_hash_input(settings: &TerrainProjectSettings) -> TerrainProjectSetti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bincode::serialize;
     use crate::rdb::terrain::{
-        TerrainMutationLayer, TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams,
-        TerrainProjectSettings, mutation_op_entry,
+        LegacyTerrainMutationOp, LegacyTerrainMutationParams, TerrainMutationLayer,
+        TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
+        mutation_op_entry,
     };
 
     fn seed_rdb(project_key: &str) -> RDBFile {
@@ -1372,6 +1382,113 @@ mod tests {
             .fetch::<TerrainChunkArtifact>(&artifact_key)
             .expect("artifact");
         assert_eq!(artifact.content_hash, 0xA19A48D25039A6F8);
+    }
+
+    #[test]
+    fn deterministic_hashes_match_golden_for_multiple_chunks() {
+        let mut rdb = seed_rdb("sample");
+        let requests = [
+            TerrainChunkBuildRequest {
+                chunk_coords: [0, 0],
+                lod: 0,
+            },
+            TerrainChunkBuildRequest {
+                chunk_coords: [1, 0],
+                lod: 0,
+            },
+        ];
+        let report = build_terrain_chunks(&mut rdb, "sample", &requests).expect("build");
+        assert_eq!(report.built_chunks, 2);
+
+        let coord_key_00 = chunk_coord_key(0, 0);
+        let coord_key_10 = chunk_coord_key(1, 0);
+        let artifact_key_00 = chunk_artifact_entry("sample", &coord_key_00, "lod0");
+        let artifact_key_10 = chunk_artifact_entry("sample", &coord_key_10, "lod0");
+        let artifact_00 = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key_00)
+            .expect("artifact");
+        let artifact_10 = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key_10)
+            .expect("artifact");
+
+        assert_eq!(artifact_00.content_hash, 0xA19A48D25039A6F8);
+        assert_eq!(artifact_10.content_hash, 0x35049E2FE4D49D0B);
+    }
+
+    #[test]
+    fn legacy_material_paint_ops_replay_with_default_blend_mode() {
+        let project_key = "legacy-sample";
+        let mut rdb = RDBFile::new();
+        let settings = TerrainProjectSettings::default();
+        let generator = TerrainGeneratorDefinition::default();
+        let layer = TerrainMutationLayer::new("layer-a", "Layer A", 0);
+
+        let legacy_op = LegacyTerrainMutationOp {
+            op_id: "paint".to_string(),
+            layer_id: layer.layer_id.clone(),
+            enabled: true,
+            order: 0,
+            kind: TerrainMutationOpKind::MaterialPaint,
+            params: LegacyTerrainMutationParams::MaterialPaint {
+                center: [8.0, 8.0, 0.0],
+                material_id: 3,
+            },
+            radius: 4.0,
+            strength: 0.8,
+            falloff: 0.5,
+            event_id: 1,
+            timestamp: 1,
+            author: None,
+        };
+
+        let bytes = serialize(&legacy_op).expect("serialize");
+        let upgraded = deserialize_legacy_mutation_op(&bytes);
+        let TerrainMutationParams::MaterialPaint { blend_mode, .. } = upgraded.params else {
+            panic!("expected material paint params");
+        };
+        assert_eq!(blend_mode, TerrainMaterialBlendMode::Blend);
+
+        rdb.add(&project_settings_entry(project_key), &settings)
+            .expect("settings");
+        rdb.add(
+            &generator_entry(project_key, settings.active_generator_version),
+            &generator,
+        )
+        .expect("generator");
+        rdb.add(
+            &mutation_layer_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+            ),
+            &layer,
+        )
+        .expect("mutation");
+        rdb.add(
+            &mutation_op_entry(
+                project_key,
+                &layer.layer_id,
+                settings.active_mutation_version,
+                upgraded.order,
+                upgraded.event_id,
+            ),
+            &upgraded,
+        )
+        .expect("mutation op");
+
+        let request = TerrainChunkBuildRequest {
+            chunk_coords: [0, 0],
+            lod: 0,
+        };
+        let report = build_terrain_chunks(&mut rdb, project_key, &[request]).expect("build");
+        assert_eq!(report.built_chunks, 1);
+
+        let coord_key = chunk_coord_key(0, 0);
+        let artifact_key = chunk_artifact_entry(project_key, &coord_key, "lod0");
+        let artifact = rdb
+            .fetch::<TerrainChunkArtifact>(&artifact_key)
+            .expect("artifact");
+        assert_eq!(artifact.content_hash, 0xCE38803613E58517);
     }
 
     #[test]
