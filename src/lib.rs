@@ -387,6 +387,32 @@ impl DB {
         self.terrain.enumerate_entries()
     }
 
+    /// Enumerates terrain chunk artifacts with parsed coordinates and LOD.
+    pub fn enumerate_terrain_chunk_artifacts(&self) -> Vec<TerrainChunkArtifactKey> {
+        self.enumerate_terrain_chunks()
+            .into_iter()
+            .filter_map(|entry| parse_chunk_artifact_entry(&entry))
+            .collect()
+    }
+
+    /// Builds chunk artifact entry names around a world position for a project/LOD.
+    pub fn terrain_chunk_entries_around(
+        &self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        center: [f32; 2],
+        radius: f32,
+        lod: u8,
+    ) -> Vec<String> {
+        chunk_coords_in_radius(settings, center, radius)
+            .into_iter()
+            .map(|coords| {
+                let coord_key = chunk_coord_key(coords[0], coords[1]);
+                chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
+            })
+            .collect()
+    }
+
     /// Enumerates logical texture definitions declared in the model layout.
     pub fn enumerate_textures(&self) -> Vec<String> {
         self.meta_layout

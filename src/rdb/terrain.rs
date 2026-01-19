@@ -468,8 +468,23 @@ pub fn chunk_coord_key(x: i32, y: i32) -> String {
     format!("{x}_{y}")
 }
 
+pub fn parse_chunk_coord_key(coord_key: &str) -> Option<(i32, i32)> {
+    let mut parts = coord_key.split('_');
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((x, y))
+}
+
 pub fn lod_key(lod: u8) -> String {
     format!("lod{lod}")
+}
+
+pub fn parse_lod_key(lod_key: &str) -> Option<u8> {
+    let lod = lod_key.strip_prefix("lod")?;
+    lod.parse().ok()
 }
 
 pub fn chunk_artifact_entry(project_key: &str, coord_key: &str, lod_key: &str) -> String {
@@ -478,6 +493,98 @@ pub fn chunk_artifact_entry(project_key: &str, coord_key: &str, lod_key: &str) -
 
 pub fn chunk_state_entry(project_key: &str, coord_key: &str) -> String {
     format!("{TERRAIN_CHUNK_STATE_PREFIX}/{project_key}/{coord_key}")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerrainChunkArtifactKey {
+    pub project_key: String,
+    pub chunk_coords: [i32; 2],
+    pub lod: u8,
+    pub entry: String,
+}
+
+pub fn parse_chunk_artifact_entry(entry: &str) -> Option<TerrainChunkArtifactKey> {
+    let prefix = format!("{TERRAIN_CHUNK_ARTIFACT_PREFIX}/");
+    let remainder = entry.strip_prefix(&prefix)?;
+    let mut parts = remainder.split('/');
+    let project_key = parts.next()?.to_string();
+    let coord_key = parts.next()?;
+    let lod_key = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let (x, y) = parse_chunk_coord_key(coord_key)?;
+    let lod = parse_lod_key(lod_key)?;
+    Some(TerrainChunkArtifactKey {
+        project_key,
+        chunk_coords: [x, y],
+        lod,
+        entry: entry.to_string(),
+    })
+}
+
+pub fn chunk_coords_for_world(
+    settings: &TerrainProjectSettings,
+    world_x: f32,
+    world_y: f32,
+) -> (i32, i32) {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let x = ((world_x - settings.world_bounds_min[0]) / chunk_size_x).floor() as i32;
+    let y = ((world_y - settings.world_bounds_min[1]) / chunk_size_y).floor() as i32;
+    (x, y)
+}
+
+pub fn chunk_coords_in_radius(
+    settings: &TerrainProjectSettings,
+    center: [f32; 2],
+    radius: f32,
+) -> Vec<[i32; 2]> {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+        return Vec::new();
+    }
+
+    let min_x = center[0] - radius;
+    let max_x = center[0] + radius;
+    let min_y = center[1] - radius;
+    let max_y = center[1] + radius;
+
+    if max_x < settings.world_bounds_min[0] || min_x > settings.world_bounds_max[0] {
+        return Vec::new();
+    }
+    if max_y < settings.world_bounds_min[1] || min_y > settings.world_bounds_max[1] {
+        return Vec::new();
+    }
+
+    let (max_chunk_x, max_chunk_y) = max_chunk_coords(settings, chunk_size_x, chunk_size_y);
+    let (min_chunk_x, min_chunk_y) = chunk_coords_for_world(settings, min_x, min_y);
+    let (max_chunk_x_raw, max_chunk_y_raw) = chunk_coords_for_world(settings, max_x, max_y);
+    let min_chunk_x = min_chunk_x.clamp(0, max_chunk_x);
+    let min_chunk_y = min_chunk_y.clamp(0, max_chunk_y);
+    let max_chunk_x = max_chunk_x_raw.clamp(0, max_chunk_x);
+    let max_chunk_y = max_chunk_y_raw.clamp(0, max_chunk_y);
+
+    let mut coords = Vec::new();
+    for chunk_x in min_chunk_x..=max_chunk_x {
+        for chunk_y in min_chunk_y..=max_chunk_y {
+            coords.push([chunk_x, chunk_y]);
+        }
+    }
+    coords
+}
+
+fn max_chunk_coords(
+    settings: &TerrainProjectSettings,
+    chunk_size_x: f32,
+    chunk_size_y: f32,
+) -> (i32, i32) {
+    let world_size_x = (settings.world_bounds_max[0] - settings.world_bounds_min[0]).max(0.0);
+    let world_size_y = (settings.world_bounds_max[1] - settings.world_bounds_min[1]).max(0.0);
+    let count_x = (world_size_x / chunk_size_x).ceil().max(1.0) as i32;
+    let count_y = (world_size_y / chunk_size_y).ceil().max(1.0) as i32;
+    (count_x.saturating_sub(1), count_y.saturating_sub(1))
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq)]
