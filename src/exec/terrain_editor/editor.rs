@@ -320,6 +320,8 @@ pub struct TerrainEditorApp {
     log: Vec<String>,
     validation: Vec<String>,
     last_error: Option<String>,
+    show_open_project_dialog: bool,
+    show_new_project_dialog: bool,
 }
 
 impl Default for TerrainEditorApp {
@@ -374,67 +376,124 @@ impl Default for TerrainEditorApp {
             log: Vec::new(),
             validation: Vec::new(),
             last_error: None,
+            show_open_project_dialog: false,
+            show_new_project_dialog: false,
         }
     }
 }
 
 impl TerrainEditorApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("RDB:");
-            ui.text_edit_singleline(&mut self.rdb_path_input);
-            if ui.button("Browse").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("RDB", &["rdb"])
-                    .pick_file()
-                {
-                    self.rdb_path_input = path.display().to_string();
-                }
-            }
-            if ui.button("Init RDB").clicked() {
-                if let Err(err) = self.init_rdb_from_input() {
-                    self.set_error(err);
-                }
-            }
-            if ui.button("Load RDB").clicked() {
-                if let Err(err) = self.load_rdb_from_input() {
-                    self.set_error(err);
-                }
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Project key:");
-            if self.project_keys.is_empty() {
-                ui.text_edit_singleline(&mut self.project_key_input);
-            } else {
-                egui::ComboBox::from_id_source("project_key_picker")
-                    .selected_text(self.project_key_input.clone())
-                    .show_ui(ui, |ui| {
-                        for key in &self.project_keys {
-                            if ui
-                                .selectable_label(&self.project_key_input == key, key)
-                                .clicked()
-                            {
-                                self.project_key_input = key.clone();
-                            }
+        egui::menu::bar(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("New RDB...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("RDB", &["rdb"])
+                        .save_file()
+                    {
+                        self.rdb_path_input = path.display().to_string();
+                        if let Err(err) = self.init_rdb_from_input() {
+                            self.set_error(err);
                         }
-                    });
-            }
-            if ui.button("Open Project").clicked() {
-                if let Err(err) = self.open_project_from_input() {
-                    self.set_error(err);
+                    }
+                    ui.close_menu();
                 }
-            }
-            if ui.button("New Project").clicked() {
-                if let Err(err) = self.create_project_from_input() {
-                    self.set_error(err);
+                if ui.button("Load RDB...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("RDB", &["rdb"])
+                        .pick_file()
+                    {
+                        self.rdb_path_input = path.display().to_string();
+                        if let Err(err) = self.load_rdb_from_input() {
+                            self.set_error(err);
+                        }
+                    }
+                    ui.close_menu();
                 }
-            }
+                ui.separator();
+                if ui.button("Open Project...").clicked() {
+                    self.show_open_project_dialog = true;
+                    ui.close_menu();
+                }
+                if ui.button("New Project...").clicked() {
+                    self.show_new_project_dialog = true;
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Save Project").clicked() {
+                    if let Err(err) = self.save_project() {
+                        self.set_error(err);
+                    }
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("Edit", |ui| {
+                ui.add_enabled(false, egui::Button::new("Undo"));
+                ui.add_enabled(false, egui::Button::new("Redo"));
+            });
         });
 
         if let Some(error) = self.last_error.take() {
             ui.colored_label(egui::Color32::RED, error);
+        }
+    }
+
+    fn project_dialogs(&mut self, ctx: &egui::Context) {
+        if self.show_open_project_dialog {
+            egui::Window::new("Open Project")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Project key:");
+                    if self.project_keys.is_empty() {
+                        ui.text_edit_singleline(&mut self.project_key_input);
+                    } else {
+                        egui::ComboBox::from_id_source("project_key_picker")
+                            .selected_text(self.project_key_input.clone())
+                            .show_ui(ui, |ui| {
+                                for key in &self.project_keys {
+                                    if ui
+                                        .selectable_label(&self.project_key_input == key, key)
+                                        .clicked()
+                                    {
+                                        self.project_key_input = key.clone();
+                                    }
+                                }
+                            });
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Open").clicked() {
+                            if let Err(err) = self.open_project_from_input() {
+                                self.set_error(err);
+                            }
+                            self.show_open_project_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_open_project_dialog = false;
+                        }
+                    });
+                });
+        }
+
+        if self.show_new_project_dialog {
+            egui::Window::new("New Project")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Project key:");
+                    ui.text_edit_singleline(&mut self.project_key_input);
+                    ui.horizontal(|ui| {
+                        if ui.button("Create").clicked() {
+                            if let Err(err) = self.create_project_from_input() {
+                                self.set_error(err);
+                            }
+                            self.show_new_project_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_new_project_dialog = false;
+                        }
+                    });
+                });
         }
     }
 
@@ -2368,6 +2427,8 @@ impl eframe::App for TerrainEditorApp {
         egui::TopBottomPanel::bottom("log_panel").show(ctx, |ui| {
             self.draw_log(ui);
         });
+
+        self.project_dialogs(ctx);
     }
 }
 
