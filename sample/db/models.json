@@ -1,23 +1,11 @@
 {
   "models": {
-<<<<<<< ours
-    "model/sphere": {
-      "name": "sphere",
+    "model/fox": {
+      "name": "fox",
       "meshes": [
-        "mesh/sphere"
+        "mesh/fox"
       ]
     },
-    "model/cone": {
-      "name": "cone",
-=======
-    "model/cylinder": {
-      "name": "cylinder",
->>>>>>> theirs
-      "meshes": [
-        "mesh/cone"
-      ]
-    },
-<<<<<<< ours
     "model/quad": {
       "name": "quad",
       "meshes": [
@@ -26,27 +14,32 @@
     },
     "model/cube": {
       "name": "cube",
-=======
+      "meshes": [
+        "mesh/cube"
+      ]
+    },
+    "model/sphere": {
+      "name": "sphere",
+      "meshes": [
+        "mesh/sphere"
+      ]
+    },
+    "model/simple_skin": {
+      "name": "simple_skin",
+      "meshes": [
+        "mesh/simple_skin"
+      ]
+    },
     "model/plane": {
       "name": "plane",
->>>>>>> theirs
       "meshes": [
         "mesh/plane"
       ]
     },
-<<<<<<< ours
-=======
     "model/cone": {
       "name": "cone",
       "meshes": [
         "mesh/cone"
-      ]
-    },
->>>>>>> theirs
-    "model/fox": {
-      "name": "fox",
-      "meshes": [
-        "mesh/fox"
       ]
     },
     "model/witch": {
@@ -72,47 +65,10 @@
         "mesh/witch/circle_004/3"
       ]
     },
-<<<<<<< ours
     "model/cylinder": {
       "name": "cylinder",
       "meshes": [
         "mesh/cylinder"
-      ]
-    },
-    "model/plane": {
-      "name": "plane",
-      "meshes": [
-        "mesh/plane"
-      ]
-    },
-    "model/simple_skin": {
-      "name": "simple_skin",
-      "meshes": [
-        "mesh/simple_skin"
-=======
-    "model/simple_skin": {
-      "name": "simple_skin",
-      "meshes": [
-        "mesh/simple_skin"
-      ]
-    },
-    "model/sphere": {
-      "name": "sphere",
-      "meshes": [
-        "mesh/sphere"
-      ]
-    },
-    "model/cube": {
-      "name": "cube",
-      "meshes": [
-        "mesh/cube"
-      ]
-    },
-    "model/quad": {
-      "name": "quad",
-      "meshes": [
-        "mesh/quad"
->>>>>>> theirs
       ]
     }
   }
