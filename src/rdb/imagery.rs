@@ -8,7 +8,11 @@ use dashi::{Context, Handle, Image};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{DataCache, RDBView, defaults::default_images, utils::NorenError};
+use crate::{
+    DataCache, RDBView,
+    defaults::{default_cubemaps, default_images},
+    utils::NorenError,
+};
 
 use super::DatabaseEntry;
 
@@ -173,6 +177,7 @@ pub struct ImageDB {
     ctx: Option<NonNull<Context>>,
     data: Option<RDBView>,
     defaults: HashMap<String, HostImage>,
+    cubemap_defaults: HashMap<String, HostCubemap>,
 }
 
 impl ImageDB {
@@ -189,6 +194,7 @@ impl ImageDB {
             cache: Default::default(),
             cubemap_cache: Default::default(),
             defaults: default_images().into_iter().collect(),
+            cubemap_defaults: default_cubemaps().into_iter().collect(),
         }
     }
 
@@ -304,6 +310,12 @@ impl ImageDB {
             }
         }
 
+        if let Some(cubemap) = self.cubemap_defaults.get(entry) {
+            tracing::info!("Fetching default {}", entry);
+            info!(resource = "cubemap", entry = %entry, source = "default");
+            return Ok(cubemap.clone());
+        }
+
         Err(NorenError::DataFailure())
     }
 
@@ -398,8 +410,11 @@ impl ImageDB {
             .unwrap_or_default();
 
         let defaults: Vec<String> = self.defaults.iter().map(|c| c.0.clone()).collect();
+        let cubemap_defaults: Vec<String> =
+            self.cubemap_defaults.iter().map(|c| c.0.clone()).collect();
 
         str.extend_from_slice(&defaults);
+        str.extend_from_slice(&cubemap_defaults);
         return str;
     }
 }
@@ -578,6 +593,19 @@ mod tests {
 
         assert_eq!(image.info.name, crate::defaults::DEFAULT_IMAGE_ENTRY);
         assert_eq!(image.data.len(), 4);
+
+        Ok(())
+    }
+
+    #[test]
+    fn default_cubemap_available_without_file() -> Result<(), NorenError> {
+        let mut db = ImageDB::new(None, "./missing-cubemap.rdb");
+
+        let cubemap = db.fetch_raw_cubemap(crate::defaults::DEFAULT_CUBEMAP_ENTRY)?;
+
+        assert_eq!(cubemap.info.name, crate::defaults::DEFAULT_CUBEMAP_ENTRY);
+        assert_eq!(cubemap.info.layers, 6);
+        assert!(!cubemap.data.is_empty());
 
         Ok(())
     }

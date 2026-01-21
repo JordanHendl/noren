@@ -2,6 +2,7 @@ use std::{f32::consts::PI, sync::OnceLock};
 
 use fontdue::{Font, FontSettings};
 use gltf::{animation::util::ReadOutputs, image::Format};
+use image::GenericImageView;
 
 use crate::{
     parsing::{
@@ -10,13 +11,14 @@ use crate::{
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
-        AnimationTargetPath, AudioClip, AudioFormat, HostFont, HostGeometry, HostImage, ImageInfo,
-        Joint, Skeleton, index_vertices, primitives::Vertex,
+        AnimationTargetPath, AudioClip, AudioFormat, HostCubemap, HostFont, HostGeometry, HostImage,
+        ImageInfo, Joint, Skeleton, index_vertices, primitives::Vertex,
     },
 };
 
 pub const DEFAULT_IMAGE_ENTRY: &str = "imagery/default";
 pub const DEFAULT_FONT_ATLAS_ENTRY: &str = "imagery/fonts/default";
+pub const DEFAULT_CUBEMAP_ENTRY: &str = "imagery/default_cubemap";
 pub const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
 pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
 pub const DEFAULT_SOUND_ENTRY: &str = "audio/beep";
@@ -209,6 +211,51 @@ pub fn default_image() -> HostImage {
     HostImage::new(info, vec![255, 255, 255, 255])
 }
 
+fn default_cubemap_face(bytes: &[u8]) -> (Vec<u8>, u32, u32) {
+    let image = image::load_from_memory(bytes).expect("load default cubemap face");
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    (rgba.into_raw(), width, height)
+}
+
+pub fn default_cubemap() -> HostCubemap {
+    let (pos_x, width, height) = default_cubemap_face(include_bytes!(
+        "../sample/sample_pre/imagery/px.png"
+    ));
+    let (neg_x, neg_width, neg_height) = default_cubemap_face(include_bytes!(
+        "../sample/sample_pre/imagery/nx.png"
+    ));
+    let (pos_y, pos_width, pos_height) = default_cubemap_face(include_bytes!(
+        "../sample/sample_pre/imagery/py.png"
+    ));
+    let (neg_y, neg_y_width, neg_y_height) = default_cubemap_face(include_bytes!(
+        "../sample/sample_pre/imagery/ny.png"
+    ));
+    let (pos_z, pos_z_width, pos_z_height) = default_cubemap_face(include_bytes!(
+        "../sample/sample_pre/imagery/pz.png"
+    ));
+    let (neg_z, neg_z_width, neg_z_height) = default_cubemap_face(include_bytes!(
+        "../sample/sample_pre/imagery/nz.png"
+    ));
+
+    assert_eq!((width, height), (neg_width, neg_height));
+    assert_eq!((width, height), (pos_width, pos_height));
+    assert_eq!((width, height), (neg_y_width, neg_y_height));
+    assert_eq!((width, height), (pos_z_width, pos_z_height));
+    assert_eq!((width, height), (neg_z_width, neg_z_height));
+
+    let info = ImageInfo {
+        name: DEFAULT_CUBEMAP_ENTRY.into(),
+        dim: [width, height, 1],
+        layers: 6,
+        format: dashi::Format::RGBA8,
+        mip_levels: 1,
+    };
+
+    HostCubemap::from_faces(info, [pos_x, neg_x, pos_y, neg_y, pos_z, neg_z])
+        .expect("build default cubemap from faces")
+}
+
 struct FontAtlasData {
     image: HostImage,
     metrics: FontMetrics,
@@ -240,6 +287,10 @@ pub fn default_images() -> Vec<(String, HostImage)> {
     images.extend(load_default_fox_images());
     images.extend(load_default_witch_images());
     images
+}
+
+pub fn default_cubemaps() -> Vec<(String, HostCubemap)> {
+    vec![(DEFAULT_CUBEMAP_ENTRY.to_string(), default_cubemap())]
 }
 
 pub fn default_sound() -> AudioClip {
