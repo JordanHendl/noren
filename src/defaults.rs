@@ -2,7 +2,6 @@ use std::{f32::consts::PI, sync::OnceLock};
 
 use fontdue::{Font, FontSettings};
 use gltf::{animation::util::ReadOutputs, image::Format};
-use image::GenericImageView;
 
 use crate::{
     parsing::{
@@ -11,8 +10,8 @@ use crate::{
     },
     rdb::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationOutput, AnimationSampler,
-        AnimationTargetPath, AudioClip, AudioFormat, HostCubemap, HostFont, HostGeometry, HostImage,
-        ImageInfo, Joint, Skeleton, index_vertices, primitives::Vertex,
+        AnimationTargetPath, AudioClip, AudioFormat, HostCubemap, HostFont, HostGeometry,
+        HostImage, ImageInfo, Joint, Skeleton, index_vertices, primitives::Vertex,
     },
 };
 
@@ -219,24 +218,18 @@ fn default_cubemap_face(bytes: &[u8]) -> (Vec<u8>, u32, u32) {
 }
 
 pub fn default_cubemap() -> HostCubemap {
-    let (pos_x, width, height) = default_cubemap_face(include_bytes!(
-        "../sample/sample_pre/imagery/px.png"
-    ));
-    let (neg_x, neg_width, neg_height) = default_cubemap_face(include_bytes!(
-        "../sample/sample_pre/imagery/nx.png"
-    ));
-    let (pos_y, pos_width, pos_height) = default_cubemap_face(include_bytes!(
-        "../sample/sample_pre/imagery/py.png"
-    ));
-    let (neg_y, neg_y_width, neg_y_height) = default_cubemap_face(include_bytes!(
-        "../sample/sample_pre/imagery/ny.png"
-    ));
-    let (pos_z, pos_z_width, pos_z_height) = default_cubemap_face(include_bytes!(
-        "../sample/sample_pre/imagery/pz.png"
-    ));
-    let (neg_z, neg_z_width, neg_z_height) = default_cubemap_face(include_bytes!(
-        "../sample/sample_pre/imagery/nz.png"
-    ));
+    let (pos_x, width, height) =
+        default_cubemap_face(include_bytes!("../sample/sample_pre/imagery/px.png"));
+    let (neg_x, neg_width, neg_height) =
+        default_cubemap_face(include_bytes!("../sample/sample_pre/imagery/nx.png"));
+    let (pos_y, pos_width, pos_height) =
+        default_cubemap_face(include_bytes!("../sample/sample_pre/imagery/py.png"));
+    let (neg_y, neg_y_width, neg_y_height) =
+        default_cubemap_face(include_bytes!("../sample/sample_pre/imagery/ny.png"));
+    let (pos_z, pos_z_width, pos_z_height) =
+        default_cubemap_face(include_bytes!("../sample/sample_pre/imagery/pz.png"));
+    let (neg_z, neg_z_width, neg_z_height) =
+        default_cubemap_face(include_bytes!("../sample/sample_pre/imagery/nz.png"));
 
     assert_eq!((width, height), (neg_width, neg_height));
     assert_eq!((width, height), (pos_width, pos_height));
@@ -267,12 +260,7 @@ fn default_font_atlas() -> &'static FontAtlasData {
     static DEFAULT_ATLAS: OnceLock<FontAtlasData> = OnceLock::new();
     DEFAULT_ATLAS.get_or_init(|| {
         let data = include_bytes!("../sample/sample_pre/fonts/DejaVuSans.ttf");
-        generate_font_atlas(
-            DEFAULT_FONT_ATLAS_ENTRY,
-            data,
-            0,
-            16.0,
-        )
+        generate_font_atlas(DEFAULT_FONT_ATLAS_ENTRY, data, 0, 16.0)
     })
 }
 

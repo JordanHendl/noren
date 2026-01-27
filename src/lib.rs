@@ -19,8 +19,7 @@ use furikake::{
         bindless_animation_tracks::ReservedBindlessAnimationTracks,
         bindless_animations::ReservedBindlessAnimations, bindless_indices::ReservedBindlessIndices,
         bindless_joints::ReservedBindlessJoints, bindless_materials::ReservedBindlessMaterials,
-        bindless_skeletons::ReservedBindlessSkeletons, bindless_textures::ReservedBindlessTextures,
-        bindless_vertices::ReservedBindlessVertices,
+        bindless_skeletons::ReservedBindlessSkeletons, bindless_vertices::ReservedBindlessVertices,
     },
     types::{
         AnimationClip as FurikakeAnimationClip, AnimationKeyframe, AnimationTrack, JointTransform,

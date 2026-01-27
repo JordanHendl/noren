@@ -527,42 +527,107 @@ fn extract_chunk_surface(
     let grid_x = *grid_x;
     let grid_y = *grid_y;
     let step = *step;
+    let origin_x = *origin_x;
+    let origin_y = *origin_y;
 
-    let mut vertices = Vec::with_capacity((grid_x * grid_y) as usize);
+    let tile_x = grid_x.saturating_sub(1);
+    let tile_y = grid_y.saturating_sub(1);
+    let mut vertices = Vec::with_capacity((tile_x * tile_y * 6) as usize);
     let mut min_bounds = [f32::MAX; 3];
     let mut max_bounds = [f32::MIN; 3];
-    for y in 0..grid_y {
-        for x in 0..grid_x {
-            let world_x = origin_x + x as f32 * step as f32 * settings.tile_size;
-            let world_y = origin_y + y as f32 * step as f32 * settings.tile_size;
-            let height = heights[(y * grid_x + x) as usize];
-            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
-            let position = [world_x, world_y, height];
-            let uv = [
-                x as f32 / (grid_x.saturating_sub(1).max(1)) as f32,
-                y as f32 / (grid_y.saturating_sub(1).max(1)) as f32,
-            ];
-            update_bounds(&mut min_bounds, &mut max_bounds, &position);
-            vertices.push(Vertex {
-                position,
-                normal,
-                tangent: [1.0, 0.0, 0.0, 1.0],
-                uv,
-                color: [1.0, 1.0, 1.0, 1.0],
-                joint_indices: [0; 4],
-                joint_weights: [0.0; 4],
-            });
-        }
-    }
+    let mut indices = Vec::with_capacity((tile_x * tile_y * 6) as usize);
+    for y in 0..tile_y {
+        for x in 0..tile_x {
+            let p00 = sample_height_vertex(
+                settings, heights, grid_x, grid_y, origin_x, origin_y, step, x, y,
+            );
+            let p10 = sample_height_vertex(
+                settings,
+                heights,
+                grid_x,
+                grid_y,
+                origin_x,
+                origin_y,
+                step,
+                x + 1,
+                y,
+            );
+            let p01 = sample_height_vertex(
+                settings,
+                heights,
+                grid_x,
+                grid_y,
+                origin_x,
+                origin_y,
+                step,
+                x,
+                y + 1,
+            );
+            let p11 = sample_height_vertex(
+                settings,
+                heights,
+                grid_x,
+                grid_y,
+                origin_x,
+                origin_y,
+                step,
+                x + 1,
+                y + 1,
+            );
 
-    let mut indices = Vec::new();
-    for y in 0..grid_y.saturating_sub(1) {
-        for x in 0..grid_x.saturating_sub(1) {
-            let i0 = (y * grid_x + x) as u32;
-            let i1 = (y * grid_x + x + 1) as u32;
-            let i2 = ((y + 1) * grid_x + x) as u32;
-            let i3 = ((y + 1) * grid_x + x + 1) as u32;
-            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
+            let n0 = triangle_normal(p00.position, p01.position, p10.position);
+            let n1 = triangle_normal(p10.position, p01.position, p11.position);
+
+            let base = vertices.len() as u32;
+            push_vertex(
+                &mut vertices,
+                &mut min_bounds,
+                &mut max_bounds,
+                p00.position,
+                n0,
+                p00.uv,
+            );
+            push_vertex(
+                &mut vertices,
+                &mut min_bounds,
+                &mut max_bounds,
+                p01.position,
+                n0,
+                p01.uv,
+            );
+            push_vertex(
+                &mut vertices,
+                &mut min_bounds,
+                &mut max_bounds,
+                p10.position,
+                n0,
+                p10.uv,
+            );
+            push_vertex(
+                &mut vertices,
+                &mut min_bounds,
+                &mut max_bounds,
+                p10.position,
+                n1,
+                p10.uv,
+            );
+            push_vertex(
+                &mut vertices,
+                &mut min_bounds,
+                &mut max_bounds,
+                p01.position,
+                n1,
+                p01.uv,
+            );
+            push_vertex(
+                &mut vertices,
+                &mut min_bounds,
+                &mut max_bounds,
+                p11.position,
+                n1,
+                p11.uv,
+            );
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 3, base + 4, base + 5]);
         }
     }
 
@@ -572,11 +637,78 @@ fn extract_chunk_surface(
         &mut vertices,
         &mut indices,
         &mut min_bounds,
+        &mut max_bounds,
     );
 
     match settings.vertex_layout {
         TerrainVertexLayout::Standard => (vertices, indices, min_bounds, max_bounds),
     }
+}
+
+#[derive(Clone, Copy)]
+struct HeightSample {
+    position: [f32; 3],
+    uv: [f32; 2],
+}
+
+fn sample_height_vertex(
+    settings: &TerrainProjectSettings,
+    heights: &[f32],
+    grid_x: u32,
+    grid_y: u32,
+    origin_x: f32,
+    origin_y: f32,
+    step: u32,
+    x: u32,
+    y: u32,
+) -> HeightSample {
+    let clamped_x = x.min(grid_x.saturating_sub(1));
+    let clamped_y = y.min(grid_y.saturating_sub(1));
+    let world_x = origin_x + clamped_x as f32 * step as f32 * settings.tile_size;
+    let world_y = origin_y + clamped_y as f32 * step as f32 * settings.tile_size;
+    let idx = (clamped_y * grid_x + clamped_x) as usize;
+    let height = heights.get(idx).copied().unwrap_or(0.0);
+    let uv = [
+        clamped_x as f32 / (grid_x.saturating_sub(1).max(1)) as f32,
+        clamped_y as f32 / (grid_y.saturating_sub(1).max(1)) as f32,
+    ];
+    HeightSample {
+        position: [world_x, world_y, height],
+        uv,
+    }
+}
+
+fn triangle_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let mut nx = ab[1] * ac[2] - ab[2] * ac[1];
+    let mut ny = ab[2] * ac[0] - ab[0] * ac[2];
+    let mut nz = ab[0] * ac[1] - ab[1] * ac[0];
+    let length = (nx * nx + ny * ny + nz * nz).sqrt().max(0.001);
+    nx /= length;
+    ny /= length;
+    nz /= length;
+    [nx, ny, nz]
+}
+
+fn push_vertex(
+    vertices: &mut Vec<Vertex>,
+    min_bounds: &mut [f32; 3],
+    max_bounds: &mut [f32; 3],
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+) {
+    update_bounds(min_bounds, max_bounds, &position);
+    vertices.push(Vertex {
+        position,
+        normal,
+        tangent: [1.0, 0.0, 0.0, 1.0],
+        uv,
+        color: [1.0, 1.0, 1.0, 1.0],
+        joint_indices: [0; 4],
+        joint_weights: [0.0; 4],
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -780,6 +912,7 @@ fn add_chunk_skirts(
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
     min_bounds: &mut [f32; 3],
+    max_bounds: &mut [f32; 3],
 ) {
     if field.grid_x < 2 || field.grid_y < 2 {
         return;
@@ -795,48 +928,120 @@ fn add_chunk_skirts(
     let grid_x = field.grid_x;
     let grid_y = field.grid_y;
 
-    let mut edge_indices = Vec::new();
-    edge_indices.extend((0..grid_x).map(|x| (x) as u32));
-    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+    let mut edge_samples = Vec::new();
+    edge_samples.extend((0..grid_x).map(|x| (x, 0)));
+    append_skirt_edge(
+        settings,
+        field,
+        vertices,
+        indices,
+        min_bounds,
+        max_bounds,
+        &edge_samples,
+        skirt_depth,
+    );
 
-    edge_indices.clear();
-    edge_indices.extend((0..grid_x).map(|x| ((grid_y - 1) * grid_x + x) as u32));
-    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+    edge_samples.clear();
+    edge_samples.extend((0..grid_x).map(|x| (x, grid_y - 1)));
+    append_skirt_edge(
+        settings,
+        field,
+        vertices,
+        indices,
+        min_bounds,
+        max_bounds,
+        &edge_samples,
+        skirt_depth,
+    );
 
-    edge_indices.clear();
-    edge_indices.extend((0..grid_y).map(|y| (y * grid_x) as u32));
-    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+    edge_samples.clear();
+    edge_samples.extend((0..grid_y).map(|y| (0, y)));
+    append_skirt_edge(
+        settings,
+        field,
+        vertices,
+        indices,
+        min_bounds,
+        max_bounds,
+        &edge_samples,
+        skirt_depth,
+    );
 
-    edge_indices.clear();
-    edge_indices.extend((0..grid_y).map(|y| (y * grid_x + (grid_x - 1)) as u32));
-    append_skirt_edge(vertices, indices, &edge_indices, skirt_depth);
+    edge_samples.clear();
+    edge_samples.extend((0..grid_y).map(|y| (grid_x - 1, y)));
+    append_skirt_edge(
+        settings,
+        field,
+        vertices,
+        indices,
+        min_bounds,
+        max_bounds,
+        &edge_samples,
+        skirt_depth,
+    );
 
     min_bounds[2] = min_bounds[2].min(skirt_z);
 }
 
 fn append_skirt_edge(
+    settings: &TerrainProjectSettings,
+    field: &ChunkFieldSamples,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
-    edge: &[u32],
+    min_bounds: &mut [f32; 3],
+    max_bounds: &mut [f32; 3],
+    edge: &[(u32, u32)],
     skirt_depth: f32,
 ) {
     if edge.len() < 2 {
         return;
     }
-    let start_index = vertices.len() as u32;
-    for &idx in edge {
-        if let Some(src) = vertices.get(idx as usize).cloned() {
-            let mut v = src;
-            v.position[2] -= skirt_depth;
-            v.normal = [0.0, 0.0, -1.0];
-            vertices.push(v);
-        }
+
+    let top_start = vertices.len() as u32;
+    for &(x, y) in edge {
+        let sample = sample_height_vertex(
+            settings,
+            &field.heights,
+            field.grid_x,
+            field.grid_y,
+            field.origin_x,
+            field.origin_y,
+            field.step,
+            x,
+            y,
+        );
+        let normal = estimate_normal(
+            field.grid_x,
+            field.grid_y,
+            x,
+            y,
+            &field.heights,
+            settings,
+            field.step,
+        );
+        push_vertex(
+            vertices,
+            min_bounds,
+            max_bounds,
+            sample.position,
+            normal,
+            sample.uv,
+        );
     }
+
+    let bottom_start = vertices.len() as u32;
+    for i in 0..edge.len() {
+        let mut v = vertices[(top_start + i as u32) as usize].clone();
+        v.position[2] -= skirt_depth;
+        v.normal = [0.0, 0.0, -1.0];
+        push_vertex(vertices, min_bounds, max_bounds, v.position, v.normal, v.uv);
+    }
+
     for i in 0..edge.len() - 1 {
-        let top0 = edge[i];
-        let top1 = edge[i + 1];
-        let skirt0 = start_index + i as u32;
-        let skirt1 = start_index + i as u32 + 1;
+        let top0 = top_start + i as u32;
+        let top1 = top_start + i as u32 + 1;
+        let skirt0 = bottom_start + i as u32;
+        let skirt1 = bottom_start + i as u32 + 1;
         indices.extend_from_slice(&[top0, top1, skirt1, top0, skirt1, skirt0]);
     }
 }
@@ -910,9 +1115,7 @@ fn sample_height(
                     center,
                     material_id: _,
                     blend_mode: _,
-                } => {
-                    radial_falloff(center, world_x, world_y, op.radius, op.falloff)
-                }
+                } => radial_falloff(center, world_x, world_y, op.radius, op.falloff),
             };
             if influence <= 0.0 {
                 continue;
@@ -1042,12 +1245,12 @@ fn settings_hash_input(settings: &TerrainProjectSettings) -> TerrainProjectSetti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bincode::serialize;
     use crate::rdb::terrain::{
         LegacyTerrainMutationOp, LegacyTerrainMutationParams, TerrainMutationLayer,
         TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
         mutation_op_entry,
     };
+    use bincode::serialize;
 
     fn seed_rdb(project_key: &str) -> RDBFile {
         let mut rdb = RDBFile::new();
