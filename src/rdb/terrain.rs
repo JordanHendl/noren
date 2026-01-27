@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tracing::info;
 
 use super::{DatabaseEntry, primitives::Vertex};
@@ -772,6 +773,42 @@ impl TerrainDB {
         }
 
         Err(NorenError::DataFailure())
+    }
+
+    pub fn fetch_chunks_around(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        center: [f32; 2],
+        radius: f32,
+        lod: u8,
+    ) -> Result<Vec<TerrainChunk>, NorenError> {
+        let entries = chunk_coords_in_radius(settings, center, radius)
+            .into_iter()
+            .map(|coords| {
+                let coord_key = chunk_coord_key(coords[0], coords[1]);
+                chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
+            })
+            .collect::<Vec<_>>();
+
+        let available = self.data.as_ref().map(|rdb| {
+            rdb.entries()
+                .into_iter()
+                .map(|meta| meta.name)
+                .collect::<HashSet<_>>()
+        });
+
+        let mut chunks = Vec::new();
+        for entry in entries {
+            if let Some(available) = &available {
+                if !available.contains(&entry) {
+                    continue;
+                }
+            }
+            chunks.push(self.fetch_chunk(entry.as_str())?);
+        }
+
+        Ok(chunks)
     }
 
     pub fn enumerate_entries(&self) -> Vec<String> {

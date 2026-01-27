@@ -415,6 +415,19 @@ impl DB {
             .collect()
     }
 
+    /// Fetches terrain chunk artifacts around a world position for a project/LOD.
+    pub fn fetch_terrain_chunks_around(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        center: [f32; 2],
+        radius: f32,
+        lod: u8,
+    ) -> Result<Vec<TerrainChunk>, NorenError> {
+        self.terrain
+            .fetch_chunks_around(settings, project_key, center, radius, lod)
+    }
+
     /// Enumerates logical texture definitions declared in the model layout.
     pub fn enumerate_textures(&self) -> Vec<String> {
         self.meta_layout
