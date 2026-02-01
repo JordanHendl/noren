@@ -856,6 +856,7 @@ mod tests {
     use crate::utils::rdbfile::RDBFile;
     use tempfile::tempdir;
     use bincode::serialize;
+    use crate::utils::rdbfile::RDBView;
 
     fn sample_chunk() -> TerrainChunk {
         TerrainChunk {
@@ -883,6 +884,143 @@ mod tests {
             ],
             heights: vec![0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 4.0],
             mesh_entry: "geometry/terrain_chunk".to_string(),
+        }
+    }
+
+    fn sample_settings(project_key: &str) -> TerrainProjectSettings {
+        let mut settings = TerrainProjectSettings::default();
+        settings.name = format!("Terrain Project {project_key}");
+        settings.seed = 9001;
+        settings.tile_size = 2.5;
+        settings.tiles_per_chunk = [8, 12];
+        settings.world_bounds_min = [-128.0, -64.0, -32.0];
+        settings.world_bounds_max = [512.0, 256.0, 128.0];
+        settings.lod_policy = TerrainLodPolicy {
+            max_lod: 2,
+            distance_bands: vec![128.0, 384.0, 768.0],
+        };
+        settings.generator_graph_id = "graph-main".to_string();
+        settings.vertex_layout = TerrainVertexLayout::Standard;
+        settings.active_generator_version = 3;
+        settings.active_mutation_version = 7;
+        settings
+    }
+
+    fn sample_generator(version: u32) -> TerrainGeneratorDefinition {
+        TerrainGeneratorDefinition {
+            version,
+            graph_id: "graph-main".to_string(),
+            algorithm: "fbm".to_string(),
+            frequency: 0.05,
+            amplitude: 32.0,
+            biome_frequency: 0.01,
+            material_rules: vec![
+                TerrainMaterialRule {
+                    material_id: 10,
+                    height_range: [-50.0, 25.0],
+                    slope_range: [0.0, 0.4],
+                    biome_range: [0.1, 0.9],
+                    blend: 0.25,
+                    weight: 0.8,
+                },
+                TerrainMaterialRule {
+                    material_id: 20,
+                    height_range: [20.0, 120.0],
+                    slope_range: [0.2, 0.8],
+                    biome_range: [0.0, 1.0],
+                    blend: 0.3,
+                    weight: 1.2,
+                },
+            ],
+        }
+    }
+
+    fn sample_layer(layer_id: &str, version: u32) -> TerrainMutationLayer {
+        let mut layer = TerrainMutationLayer::new(layer_id, "Base Layer", 0);
+        layer.version = version;
+        layer.affected_chunks = Some(vec![[0, 0], [1, 2]]);
+        let mut op1 = TerrainMutationOp::new_sphere(
+            "raise",
+            layer_id,
+            TerrainMutationOpKind::SphereAdd,
+            [2.0, 3.0, 0.0],
+        );
+        op1.order = 0;
+        op1.event_id = 10;
+        op1.timestamp = 100;
+        op1.strength = 1.5;
+        let mut op2 = TerrainMutationOp::new_sphere(
+            "paint",
+            layer_id,
+            TerrainMutationOpKind::MaterialPaint,
+            [4.0, 5.0, 0.0],
+        );
+        op2.order = 1;
+        op2.event_id = 11;
+        op2.timestamp = 120;
+        op2.params = TerrainMutationParams::MaterialPaint {
+            center: [4.0, 5.0, 0.0],
+            material_id: 42,
+            blend_mode: TerrainMaterialBlendMode::Overwrite,
+        };
+        layer.ops.push(op1);
+        layer.ops.push(op2);
+        layer
+    }
+
+    fn sample_artifact(project_key: &str) -> TerrainChunkArtifact {
+        TerrainChunkArtifact {
+            project_key: project_key.to_string(),
+            chunk_coords: [1, 2],
+            lod: 1,
+            bounds_min: [0.0, 0.0, -12.0],
+            bounds_max: [32.0, 48.0, 64.0],
+            vertex_layout: TerrainVertexLayout::Standard,
+            vertices: vec![
+                Vertex {
+                    position: [0.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    joint_indices: [0, 0, 0, 0],
+                    joint_weights: [0.0, 0.0, 0.0, 0.0],
+                },
+                Vertex {
+                    position: [1.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
+                    uv: [1.0, 0.0],
+                    color: [0.8, 0.9, 1.0, 1.0],
+                    joint_indices: [0, 0, 0, 0],
+                    joint_weights: [0.0, 0.0, 0.0, 0.0],
+                },
+            ],
+            indices: vec![0, 1, 0],
+            material_ids: Some(vec![10, 20]),
+            material_weights: Some(vec![[0.7, 0.3, 0.0, 0.0], [0.4, 0.6, 0.0, 0.0]]),
+            content_hash: 0xDEADBEEF,
+            mesh_entry: "geometry/terrain_chunk_lod1".to_string(),
+        }
+    }
+
+    fn sample_state(project_key: &str) -> TerrainChunkState {
+        TerrainChunkState {
+            project_key: project_key.to_string(),
+            chunk_coords: [1, 2],
+            dirty_flags: TERRAIN_DIRTY_SETTINGS | TERRAIN_DIRTY_MUTATION,
+            dirty_reasons: vec![TerrainDirtyReason::SettingsChanged, TerrainDirtyReason::MutationChanged],
+            generator_version: 3,
+            mutation_version: 7,
+            last_built_hashes: vec![
+                TerrainChunkLodHash { lod: 0, hash: 111 },
+                TerrainChunkLodHash { lod: 1, hash: 222 },
+            ],
+            dependency_hashes: TerrainChunkDependencyHashes {
+                settings_hash: 1234,
+                generator_hash: 2345,
+                mutation_hash: 3456,
+            },
         }
     }
 
@@ -1019,5 +1157,89 @@ mod tests {
             }
             _ => panic!("expected MaterialPaint params"),
         }
+    }
+
+    #[test]
+    fn terrain_project_round_trip_saves_and_loads_data() -> Result<(), NorenError> {
+        let temp = tempdir().expect("temp dir");
+        let path = temp.path().join("terrain.rdb");
+        let project_key = "project-alpha";
+        let mut file = RDBFile::new();
+
+        let settings = sample_settings(project_key);
+        let generator = sample_generator(settings.active_generator_version);
+        let layer = sample_layer("layer-main", settings.active_mutation_version);
+        let artifact = sample_artifact(project_key);
+        let state = sample_state(project_key);
+
+        file.add(&project_settings_entry(project_key), &settings)?;
+        file.add(
+            &generator_entry(project_key, settings.active_generator_version),
+            &generator,
+        )?;
+        file.add(
+            &mutation_layer_entry(project_key, &layer.layer_id, layer.version),
+            &layer,
+        )?;
+        for op in &layer.ops {
+            file.add(
+                &mutation_op_entry(
+                    project_key,
+                    &layer.layer_id,
+                    layer.version,
+                    op.order,
+                    op.event_id,
+                ),
+                op,
+            )?;
+        }
+        let coord_key = chunk_coord_key(artifact.chunk_coords[0], artifact.chunk_coords[1]);
+        let lod_key = lod_key(artifact.lod);
+        file.add(
+            &chunk_artifact_entry(project_key, &coord_key, &lod_key),
+            &artifact,
+        )?;
+        file.add(&chunk_state_entry(project_key, &coord_key), &state)?;
+        file.save(&path)?;
+
+        let mut view = RDBView::load(&path)?;
+        let settings_back: TerrainProjectSettings =
+            view.fetch(&project_settings_entry(project_key))?;
+        let generator_back: TerrainGeneratorDefinition =
+            view.fetch(&generator_entry(project_key, settings.active_generator_version))?;
+        let layer_back: TerrainMutationLayer =
+            view.fetch(&mutation_layer_entry(project_key, &layer.layer_id, layer.version))?;
+        let op_back: TerrainMutationOp = view.fetch(&mutation_op_entry(
+            project_key,
+            &layer.layer_id,
+            layer.version,
+            layer.ops[1].order,
+            layer.ops[1].event_id,
+        ))?;
+        let artifact_back: TerrainChunkArtifact =
+            view.fetch(&chunk_artifact_entry(project_key, &coord_key, &lod_key))?;
+        let state_back: TerrainChunkState =
+            view.fetch(&chunk_state_entry(project_key, &coord_key))?;
+
+        assert_eq!(settings_back, settings);
+        assert_eq!(generator_back, generator);
+        assert_eq!(layer_back, layer);
+        assert_eq!(op_back, layer.ops[1]);
+        assert_eq!(artifact_back, artifact);
+        assert_eq!(state_back, state);
+        Ok(())
+    }
+
+    #[test]
+    fn chunk_artifact_entry_parses_round_trip() {
+        let project_key = "sample";
+        let coord_key = chunk_coord_key(-2, 5);
+        let lod_key = lod_key(3);
+        let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key);
+        let parsed = parse_chunk_artifact_entry(&entry).expect("parse entry");
+        assert_eq!(parsed.project_key, project_key);
+        assert_eq!(parsed.chunk_coords, [-2, 5]);
+        assert_eq!(parsed.lod, 3);
+        assert_eq!(parsed.entry, entry);
     }
 }
