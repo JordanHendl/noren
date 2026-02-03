@@ -6,12 +6,6 @@ use std::{
     str::FromStr,
 };
 
-use bento::{
-    BentoError, Compiler as BentoCompiler, OptimizationLevel, Request as BentoRequest, ShaderLang,
-};
-use fontdue::{Font, FontSettings};
-use gltf::{animation::util::ReadOutputs, image::Format};
-use image::DynamicImage;
 use crate::{
     DatabaseLayoutFile, NorenError, RDBEntryMeta, RDBFile, RdbErr,
     defaults::{
@@ -29,13 +23,20 @@ use crate::{
         HostGeometry, HostImage, ImageInfo, Joint, ShaderModule, Skeleton, index_vertices,
         primitives::Vertex,
         terrain::{
-            TERRAIN_MUTATION_LAYER_PREFIX, TERRAIN_MUTATION_OP_PREFIX, TerrainGeneratorDefinition,
-            TerrainMutationLayer, TerrainMutationOp, TerrainProjectSettings, generator_entry,
-            mutation_layer_entry, mutation_op_entry, project_settings_entry,
+            TERRAIN_MUTATION_LAYER_PREFIX, TERRAIN_MUTATION_OP_PREFIX, TerrainChunk,
+            TerrainGeneratorDefinition, TerrainMutationLayer, TerrainMutationOp,
+            TerrainProjectSettings, TerrainTile, generator_entry, mutation_layer_entry,
+            mutation_op_entry, project_settings_entry,
         },
     },
     validate_database_layout,
 };
+use bento::{
+    BentoError, Compiler as BentoCompiler, OptimizationLevel, Request as BentoRequest, ShaderLang,
+};
+use fontdue::{Font, FontSettings};
+use gltf::{animation::util::ReadOutputs, image::Format};
+use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default)]
@@ -126,14 +127,9 @@ pub fn run_cli() -> Result<(), ()> {
     };
 
     let result = match cli.command {
-        Command::Build { append, spec } => build_from_path(
-            &spec,
-            BuildOptions {
-                append,
-                ..options
-            },
-            &logger,
-        ),
+        Command::Build { append, spec } => {
+            build_from_path(&spec, BuildOptions { append, ..options }, &logger)
+        }
         Command::Validate(args) => run_validation(&args, &logger),
         Command::AppendGeometry(args) => append_geometry(&args, &logger, cli.write_binaries),
         Command::AppendSkeleton(args) => append_skeleton(&args, &logger, cli.write_binaries),
@@ -148,6 +144,9 @@ pub fn run_cli() -> Result<(), ()> {
             TerrainCommand::Export(args) => export_terrain_project(&args, &logger),
             TerrainCommand::Import(args) => {
                 import_terrain_project(&args, &logger, cli.write_binaries)
+            }
+            TerrainCommand::Heightmap(args) => {
+                import_terrain_heightmap(&args, &logger, cli.write_binaries)
             }
         },
     };
@@ -265,7 +264,7 @@ fn parse_append_command(mut args: impl Iterator<Item = String>) -> Result<Comman
 
 fn parse_terrain_command(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(kind) = args.next() else {
-        return Err("terrain requires a subcommand (init, export, import)".into());
+        return Err("terrain requires a subcommand (init, export, import, heightmap)".into());
     };
 
     match kind.as_str() {
@@ -276,6 +275,8 @@ fn parse_terrain_command(mut args: impl Iterator<Item = String>) -> Result<Comma
         "import" => {
             parse_terrain_import(args).map(|args| Command::Terrain(TerrainCommand::Import(args)))
         }
+        "heightmap" => parse_terrain_heightmap(args)
+            .map(|args| Command::Terrain(TerrainCommand::Heightmap(args))),
         other => Err(format!("unknown terrain subcommand: {other}")),
     }
 }
@@ -684,7 +685,9 @@ fn parse_terrain_init(mut args: impl Iterator<Item = String>) -> Result<TerrainI
     })
 }
 
-fn parse_terrain_export(mut args: impl Iterator<Item = String>) -> Result<TerrainExportArgs, String> {
+fn parse_terrain_export(
+    mut args: impl Iterator<Item = String>,
+) -> Result<TerrainExportArgs, String> {
     let mut rdb: Option<PathBuf> = None;
     let mut project_key: Option<String> = None;
     let mut output: Option<PathBuf> = None;
@@ -711,7 +714,9 @@ fn parse_terrain_export(mut args: impl Iterator<Item = String>) -> Result<Terrai
     })
 }
 
-fn parse_terrain_import(mut args: impl Iterator<Item = String>) -> Result<TerrainImportArgs, String> {
+fn parse_terrain_import(
+    mut args: impl Iterator<Item = String>,
+) -> Result<TerrainImportArgs, String> {
     let mut rdb: Option<PathBuf> = None;
     let mut input: Option<PathBuf> = None;
     let mut project_key: Option<String> = None;
@@ -735,6 +740,68 @@ fn parse_terrain_import(mut args: impl Iterator<Item = String>) -> Result<Terrai
         rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
         input: input.ok_or_else(|| "--input is required".to_string())?,
         project_key,
+    })
+}
+
+fn parse_terrain_heightmap(
+    mut args: impl Iterator<Item = String>,
+) -> Result<TerrainHeightmapArgs, String> {
+    let mut rdb = None;
+    let mut heightmap = None;
+    let mut project_key = None;
+    let mut name = None;
+    let mut tile_size = 1.0f32;
+    let mut tiles_per_chunk = 32u32;
+    let mut height_min = 0.0f32;
+    let mut height_max = 256.0f32;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rdb" => {
+                rdb = Some(PathBuf::from(next_value("--rdb", &mut args)?));
+            }
+            "--heightmap" => {
+                heightmap = Some(PathBuf::from(next_value("--heightmap", &mut args)?));
+            }
+            "--project" => {
+                project_key = Some(next_value("--project", &mut args)?);
+            }
+            "--name" => {
+                name = Some(next_value("--name", &mut args)?);
+            }
+            "--tile-size" => {
+                tile_size = next_value("--tile-size", &mut args)?
+                    .parse()
+                    .map_err(|_| "--tile-size must be a number".to_string())?;
+            }
+            "--tiles-per-chunk" => {
+                tiles_per_chunk = next_value("--tiles-per-chunk", &mut args)?
+                    .parse()
+                    .map_err(|_| "--tiles-per-chunk must be an integer".to_string())?;
+            }
+            "--height-min" => {
+                height_min = next_value("--height-min", &mut args)?
+                    .parse()
+                    .map_err(|_| "--height-min must be a number".to_string())?;
+            }
+            "--height-max" => {
+                height_max = next_value("--height-max", &mut args)?
+                    .parse()
+                    .map_err(|_| "--height-max must be a number".to_string())?;
+            }
+            other => return Err(format!("unexpected argument to terrain heightmap: {other}")),
+        }
+    }
+
+    Ok(TerrainHeightmapArgs {
+        rdb: rdb.ok_or_else(|| "--rdb is required".to_string())?,
+        heightmap: heightmap.ok_or_else(|| "--heightmap is required".to_string())?,
+        project_key: project_key.ok_or_else(|| "--project is required".to_string())?,
+        name,
+        tile_size,
+        tiles_per_chunk,
+        height_min,
+        height_max,
     })
 }
 
@@ -763,6 +830,7 @@ enum TerrainCommand {
     Init(TerrainInitArgs),
     Export(TerrainExportArgs),
     Import(TerrainImportArgs),
+    Heightmap(TerrainHeightmapArgs),
 }
 
 #[derive(Debug)]
@@ -839,6 +907,18 @@ struct TerrainImportArgs {
     rdb: PathBuf,
     input: PathBuf,
     project_key: Option<String>,
+}
+
+#[derive(Debug)]
+struct TerrainHeightmapArgs {
+    rdb: PathBuf,
+    heightmap: PathBuf,
+    project_key: String,
+    name: Option<String>,
+    tile_size: f32,
+    tiles_per_chunk: u32,
+    height_min: f32,
+    height_max: f32,
 }
 
 pub fn build_from_path(
@@ -2079,7 +2159,8 @@ fn init_terrain_project(
     let layer = TerrainMutationLayer::new("layer-1", "Layer 1", 0);
     settings.active_mutation_version = layer.version;
 
-    rdb.add(&settings_key, &settings).map_err(BuildError::from)?;
+    rdb.add(&settings_key, &settings)
+        .map_err(BuildError::from)?;
     rdb.add(
         &generator_entry(&args.project_key, generator.version),
         &generator,
@@ -2202,6 +2283,144 @@ fn import_terrain_project(
     Ok(())
 }
 
+fn import_terrain_heightmap(
+    args: &TerrainHeightmapArgs,
+    logger: &Logger,
+    write_binaries: bool,
+) -> Result<(), BuildError> {
+    if let Some(parent) = args.rdb.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rdb = if write_binaries {
+        load_rdb(&args.rdb, true)?
+    } else {
+        RDBFile::new()
+    };
+
+    if args.tiles_per_chunk == 0 {
+        return Err(BuildError::message(
+            "--tiles-per-chunk must be greater than 0",
+        ));
+    }
+    if args.tile_size <= 0.0 {
+        return Err(BuildError::message("--tile-size must be greater than 0"));
+    }
+    if args.height_max <= args.height_min {
+        return Err(BuildError::message(
+            "--height-max must be greater than --height-min",
+        ));
+    }
+
+    let settings_key = project_settings_entry(&args.project_key);
+    if rdb.entries().iter().any(|entry| entry.name == settings_key) {
+        return Err(BuildError::message(format!(
+            "terrain project '{}' already exists",
+            args.project_key
+        )));
+    }
+
+    let heightmap = image::open(&args.heightmap)?;
+    let heightmap = heightmap.to_luma16();
+    let (width, height) = heightmap.dimensions();
+    if width < 2 || height < 2 {
+        return Err(BuildError::message("heightmap must be at least 2x2 pixels"));
+    }
+
+    let tiles_per_chunk = args.tiles_per_chunk;
+    let tiles_x = width.saturating_sub(1);
+    let tiles_y = height.saturating_sub(1);
+    let chunk_count_x = (tiles_x + tiles_per_chunk - 1) / tiles_per_chunk;
+    let chunk_count_y = (tiles_y + tiles_per_chunk - 1) / tiles_per_chunk;
+
+    let mut settings = TerrainProjectSettings::default();
+    settings.name = args
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("{} Heightmap", args.project_key));
+    settings.tile_size = args.tile_size;
+    settings.tiles_per_chunk = [tiles_per_chunk, tiles_per_chunk];
+    settings.world_bounds_min = [0.0, 0.0, args.height_min];
+    settings.world_bounds_max = [
+        tiles_x as f32 * args.tile_size,
+        tiles_y as f32 * args.tile_size,
+        args.height_max,
+    ];
+
+    let generator = TerrainGeneratorDefinition::default();
+    settings.active_generator_version = generator.version;
+
+    let layer = TerrainMutationLayer::new("layer-1", "Layer 1", 0);
+    settings.active_mutation_version = layer.version;
+
+    rdb.add(&settings_key, &settings)
+        .map_err(BuildError::from)?;
+    rdb.add(
+        &generator_entry(&args.project_key, generator.version),
+        &generator,
+    )
+    .map_err(BuildError::from)?;
+    rdb.add(
+        &mutation_layer_entry(&args.project_key, &layer.layer_id, layer.version),
+        &layer,
+    )
+    .map_err(BuildError::from)?;
+
+    let chunk_sample_width = tiles_per_chunk + 1;
+    let chunk_sample_len = (chunk_sample_width * chunk_sample_width) as usize;
+    let tile_len = (tiles_per_chunk * tiles_per_chunk) as usize;
+    let height_scale = args.height_max - args.height_min;
+
+    logger.log(format!(
+        "terrain: heightmap {} ({}x{}), chunks {}x{}",
+        args.heightmap.display(),
+        width,
+        height,
+        chunk_count_x,
+        chunk_count_y
+    ));
+
+    for chunk_y in 0..chunk_count_y {
+        for chunk_x in 0..chunk_count_x {
+            let origin = [
+                chunk_x as f32 * tiles_per_chunk as f32 * args.tile_size,
+                chunk_y as f32 * tiles_per_chunk as f32 * args.tile_size,
+            ];
+            let tiles = vec![TerrainTile::default(); tile_len];
+            let mut heights = Vec::with_capacity(chunk_sample_len);
+            for sample_y in 0..=tiles_per_chunk {
+                let global_y = (chunk_y * tiles_per_chunk + sample_y).min(height - 1);
+                for sample_x in 0..=tiles_per_chunk {
+                    let global_x = (chunk_x * tiles_per_chunk + sample_x).min(width - 1);
+                    let value = heightmap.get_pixel(global_x, global_y).0[0];
+                    let normalized = value as f32 / u16::MAX as f32;
+                    heights.push(args.height_min + normalized * height_scale);
+                }
+            }
+
+            let chunk = TerrainChunk {
+                chunk_coords: [chunk_x as i32, chunk_y as i32],
+                origin,
+                tile_size: args.tile_size,
+                tiles_per_chunk: [tiles_per_chunk, tiles_per_chunk],
+                tiles,
+                heights,
+                mesh_entry: "geometry/terrain_chunk".to_string(),
+            };
+            let entry = format!("terrain/chunk_{chunk_x}_{chunk_y}");
+            rdb.add(&entry, &chunk).map_err(BuildError::from)?;
+        }
+    }
+
+    if write_binaries {
+        logger.log(format!("terrain: writing {}", args.rdb.display()));
+        rdb.save(&args.rdb).map_err(BuildError::from)?;
+    } else {
+        logger.log("terrain: skipping binary output (--layouts-only)");
+    }
+    Ok(())
+}
+
 fn collect_terrain_layers(
     entries: &[RDBEntryMeta],
     rdb: &mut RDBFile,
@@ -2225,15 +2444,20 @@ fn collect_terrain_layers(
     let mut layers = Vec::new();
     for (layer_id, version) in layer_versions {
         let entry = mutation_layer_entry(project_key, &layer_id, version);
-        let mut layer = rdb.fetch::<TerrainMutationLayer>(&entry).map_err(BuildError::from)?;
-        let op_events =
-            collect_terrain_ops(entries, rdb, project_key, &layer_id, active_version)?;
+        let mut layer = rdb
+            .fetch::<TerrainMutationLayer>(&entry)
+            .map_err(BuildError::from)?;
+        let op_events = collect_terrain_ops(entries, rdb, project_key, &layer_id, active_version)?;
         if !op_events.is_empty() {
             layer.ops = op_events;
         }
         layers.push(layer);
     }
-    layers.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.layer_id.cmp(&b.layer_id)));
+    layers.sort_by(|a, b| {
+        a.order
+            .cmp(&b.order)
+            .then_with(|| a.layer_id.cmp(&b.layer_id))
+    });
     Ok(layers)
 }
 
@@ -2251,7 +2475,9 @@ fn collect_terrain_ops(
             if version > active_version {
                 continue;
             }
-            let mut op = rdb.fetch::<TerrainMutationOp>(&entry.name).map_err(BuildError::from)?;
+            let mut op = rdb
+                .fetch::<TerrainMutationOp>(&entry.name)
+                .map_err(BuildError::from)?;
             op.order = order;
             op.event_id = event_id;
             latest
@@ -2847,11 +3073,10 @@ fn print_usage(program: &str) {
     eprintln!(
         "  {program} terrain init --rdb <terrain.rdb> --project <key> [--name <name>] [--seed <seed>]"
     );
+    eprintln!("  {program} terrain export --rdb <terrain.rdb> --project <key> --out <file>");
+    eprintln!("  {program} terrain import --rdb <terrain.rdb> --input <file> [--project <key>]");
     eprintln!(
-        "  {program} terrain export --rdb <terrain.rdb> --project <key> --out <file>"
-    );
-    eprintln!(
-        "  {program} terrain import --rdb <terrain.rdb> --input <file> [--project <key>]"
+        "  {program} terrain heightmap --rdb <terrain.rdb> --project <key> --heightmap <file> [--name <name>] [--tile-size <size>] [--tiles-per-chunk <count>] [--height-min <value>] [--height-max <value>]"
     );
     eprintln!("");
     eprintln!("Options:");
