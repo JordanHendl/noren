@@ -536,6 +536,26 @@ pub fn chunk_coords_for_world(
     (x, y)
 }
 
+/// Returns the chunk grid id for the given world-space coordinate if it lies within bounds.
+pub fn chunk_id_at(
+    settings: &TerrainProjectSettings,
+    coord: [f32; 2],
+) -> Option<[i32; 2]> {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+        return None;
+    }
+
+    let (max_chunk_x, max_chunk_y) = max_chunk_coords(settings, chunk_size_x, chunk_size_y);
+    let (chunk_x, chunk_y) = chunk_coords_for_world(settings, coord[0], coord[1]);
+    if chunk_x < 0 || chunk_y < 0 || chunk_x > max_chunk_x || chunk_y > max_chunk_y {
+        return None;
+    }
+
+    Some([chunk_x, chunk_y])
+}
+
 pub fn chunk_coords_in_radius(
     settings: &TerrainProjectSettings,
     center: [f32; 2],
@@ -811,6 +831,15 @@ impl TerrainDB {
         Ok(chunks)
     }
 
+    /// Returns the chunk grid id at a given world-space coordinate.
+    pub fn chunk_id_at(
+        &self,
+        settings: &TerrainProjectSettings,
+        coord: [f32; 2],
+    ) -> Option<[i32; 2]> {
+        chunk_id_at(settings, coord)
+    }
+
     pub fn enumerate_entries(&self) -> Vec<String> {
         self.data
             .as_ref()
@@ -1068,6 +1097,22 @@ mod tests {
         assert!(chunk.tiles.iter().all(|tile| tile.tile_id == 1));
         assert!(chunk.heights.iter().all(|height| *height == 0.0));
         Ok(())
+    }
+
+    #[test]
+    fn terrain_chunk_id_at_bounds() {
+        let mut settings = TerrainProjectSettings::default();
+        settings.tile_size = 1.0;
+        settings.tiles_per_chunk = [10, 10];
+        settings.world_bounds_min = [0.0, 0.0, 0.0];
+        settings.world_bounds_max = [100.0, 100.0, 0.0];
+
+        assert_eq!(chunk_id_at(&settings, [0.0, 0.0]), Some([0, 0]));
+        assert_eq!(chunk_id_at(&settings, [9.9, 0.0]), Some([0, 0]));
+        assert_eq!(chunk_id_at(&settings, [10.0, 0.0]), Some([1, 0]));
+        assert_eq!(chunk_id_at(&settings, [99.9, 99.9]), Some([9, 9]));
+        assert_eq!(chunk_id_at(&settings, [100.0, 0.0]), None);
+        assert_eq!(chunk_id_at(&settings, [-1.0, 0.0]), None);
     }
 
     #[test]

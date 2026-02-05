@@ -415,6 +415,15 @@ impl DB {
             .collect()
     }
 
+    /// Returns the chunk grid id at a given world-space coordinate.
+    pub fn terrain_chunk_id_at(
+        &self,
+        settings: &TerrainProjectSettings,
+        coord: [f32; 2],
+    ) -> Option<[i32; 2]> {
+        self.terrain.chunk_id_at(settings, coord)
+    }
+
     /// Fetches terrain chunk artifacts around a world position for a project/LOD.
     pub fn fetch_terrain_chunks_around(
         &mut self,

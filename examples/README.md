@@ -9,4 +9,4 @@ Available examples:
 - `pipeline_layouts`: builds the default render graph (requesting the `shader/default` graphics shader) and prints the bind group and bind table layout handles that accompany the graphics pipeline so you know exactly which layouts to feed into your bind builders before issuing draw calls.
 - `material_render`: pulls a material by database key (defaults to `material/quad`) and renders the bundled quad geometry using its shader pipeline.
 - `skeleton_animation_load`: opens the sample database and prints metadata for the bundled skeleton and animation clip so you can verify the runtime can read skinned assets.
-
+- `terrain_heightmap`: stitches together the sample terrain chunks and renders the full terrain mesh using dashi.
