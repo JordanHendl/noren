@@ -754,6 +754,8 @@ fn parse_terrain_heightmap(
     let mut name = None;
     let mut tile_size = 1.0f32;
     let mut tiles_per_chunk = 32u32;
+    let mut max_lod = 0u8;
+    let mut detail = 1u32;
     let mut height_min = 0.0f32;
     let mut height_max = 256.0f32;
 
@@ -781,6 +783,16 @@ fn parse_terrain_heightmap(
                     .parse()
                     .map_err(|_| "--tiles-per-chunk must be an integer".to_string())?;
             }
+            "--max-lod" => {
+                max_lod = next_value("--max-lod", &mut args)?
+                    .parse()
+                    .map_err(|_| "--max-lod must be an integer".to_string())?;
+            }
+            "--detail" => {
+                detail = next_value("--detail", &mut args)?
+                    .parse()
+                    .map_err(|_| "--detail must be an integer".to_string())?;
+            }
             "--height-min" => {
                 height_min = next_value("--height-min", &mut args)?
                     .parse()
@@ -802,6 +814,8 @@ fn parse_terrain_heightmap(
         name,
         tile_size,
         tiles_per_chunk,
+        max_lod,
+        detail,
         height_min,
         height_max,
     })
@@ -919,6 +933,8 @@ struct TerrainHeightmapArgs {
     name: Option<String>,
     tile_size: f32,
     tiles_per_chunk: u32,
+    max_lod: u8,
+    detail: u32,
     height_min: f32,
     height_max: f32,
 }
@@ -2305,6 +2321,9 @@ fn import_terrain_heightmap(
             "--tiles-per-chunk must be greater than 0",
         ));
     }
+    if args.detail == 0 {
+        return Err(BuildError::message("--detail must be greater than 0"));
+    }
     if args.tile_size <= 0.0 {
         return Err(BuildError::message("--tile-size must be greater than 0"));
     }
@@ -2330,8 +2349,8 @@ fn import_terrain_heightmap(
     }
 
     let tiles_per_chunk = args.tiles_per_chunk;
-    let tiles_x = width.saturating_sub(1);
-    let tiles_y = height.saturating_sub(1);
+    let tiles_x = width.saturating_sub(1).div_ceil(args.detail);
+    let tiles_y = height.saturating_sub(1).div_ceil(args.detail);
     let chunk_count_x = (tiles_x + tiles_per_chunk - 1) / tiles_per_chunk;
     let chunk_count_y = (tiles_y + tiles_per_chunk - 1) / tiles_per_chunk;
 
@@ -2348,6 +2367,7 @@ fn import_terrain_heightmap(
         tiles_y as f32 * args.tile_size,
         args.height_max,
     ];
+    settings.lod_policy.max_lod = args.max_lod;
 
     let generator = TerrainGeneratorDefinition::default();
     settings.active_generator_version = generator.version;
@@ -2374,10 +2394,11 @@ fn import_terrain_heightmap(
     let height_scale = args.height_max - args.height_min;
 
     logger.log(format!(
-        "terrain: heightmap {} ({}x{}), chunks {}x{}",
+        "terrain: heightmap {} ({}x{}), detail {} px/tile, chunks {}x{}",
         args.heightmap.display(),
         width,
         height,
+        args.detail,
         chunk_count_x,
         chunk_count_y
     ));
@@ -2391,15 +2412,23 @@ fn import_terrain_heightmap(
             let tiles = vec![TerrainTile::default(); tile_len];
             let mut heights = Vec::with_capacity(chunk_sample_len);
             for sample_y in 0..=tiles_per_chunk {
-                let global_y = (chunk_y * tiles_per_chunk + sample_y).min(height - 1);
+                let tile_y = chunk_y * tiles_per_chunk + sample_y;
+                let global_y = (tile_y * args.detail).min(height - 1);
                 for sample_x in 0..=tiles_per_chunk {
-                    let global_x = (chunk_x * tiles_per_chunk + sample_x).min(width - 1);
+                    let tile_x = chunk_x * tiles_per_chunk + sample_x;
+                    let global_x = (tile_x * args.detail).min(width - 1);
                     let value = heightmap.get_pixel(global_x, global_y).0[0];
                     let normalized = value as f32 / u16::MAX as f32;
                     heights.push(args.height_min + normalized * height_scale);
                 }
             }
 
+            let valid_tiles_x = tiles_x
+                .saturating_sub(chunk_x * tiles_per_chunk)
+                .min(tiles_per_chunk);
+            let valid_tiles_y = tiles_y
+                .saturating_sub(chunk_y * tiles_per_chunk)
+                .min(tiles_per_chunk);
             let chunk = TerrainChunk {
                 chunk_coords: [chunk_x as i32, chunk_y as i32],
                 origin,
@@ -2413,11 +2442,20 @@ fn import_terrain_heightmap(
             rdb.add(&entry, &chunk).map_err(BuildError::from)?;
 
             let coord_key = chunk_coord_key(chunk_x as i32, chunk_y as i32);
-            let artifact = build_heightmap_chunk_artifact(&settings, &args.project_key, &chunk);
-            let artifact_entry =
-                chunk_artifact_entry(&args.project_key, &coord_key, &lod_key(0));
-            rdb.add(&artifact_entry, &artifact)
-                .map_err(BuildError::from)?;
+            let valid_tiles = [valid_tiles_x, valid_tiles_y];
+            for lod in 0..=settings.lod_policy.max_lod {
+                let artifact = build_heightmap_chunk_artifact(
+                    &settings,
+                    &args.project_key,
+                    &chunk,
+                    lod,
+                    valid_tiles,
+                );
+                let artifact_entry =
+                    chunk_artifact_entry(&args.project_key, &coord_key, &lod_key(lod));
+                rdb.add(&artifact_entry, &artifact)
+                    .map_err(BuildError::from)?;
+            }
         }
     }
 
@@ -3085,7 +3123,7 @@ fn print_usage(program: &str) {
     eprintln!("  {program} terrain export --rdb <terrain.rdb> --project <key> --out <file>");
     eprintln!("  {program} terrain import --rdb <terrain.rdb> --input <file> [--project <key>]");
     eprintln!(
-        "  {program} terrain heightmap --rdb <terrain.rdb> --project <key> --heightmap <file> [--name <name>] [--tile-size <size>] [--tiles-per-chunk <count>] [--height-min <value>] [--height-max <value>]"
+        "  {program} terrain heightmap --rdb <terrain.rdb> --project <key> --heightmap <file> [--name <name>] [--tile-size <size>] [--tiles-per-chunk <count>] [--detail <pixels>] [--max-lod <index>] [--height-min <value>] [--height-max <value>]"
     );
     eprintln!("");
     eprintln!("Options:");

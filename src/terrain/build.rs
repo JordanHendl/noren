@@ -109,6 +109,8 @@ struct HeightmapChunkHashInput<'a> {
     chunk_coords: [i32; 2],
     tiles_per_chunk: [u32; 2],
     tile_size: f32,
+    lod: u8,
+    valid_tiles: [u32; 2],
     heights: &'a [f32],
 }
 
@@ -660,16 +662,32 @@ pub fn build_heightmap_chunk_artifact(
     settings: &TerrainProjectSettings,
     project_key: &str,
     chunk: &TerrainChunk,
+    lod: u8,
+    valid_tiles: [u32; 2],
 ) -> TerrainChunkArtifact {
-    let grid_x = chunk.tiles_per_chunk[0].saturating_add(1);
-    let grid_y = chunk.tiles_per_chunk[1].saturating_add(1);
+    let step = 1_u32.checked_shl(lod as u32).unwrap_or(1).max(1);
+    let valid_tiles_x = valid_tiles[0] / step;
+    let valid_tiles_y = valid_tiles[1] / step;
+    let grid_x = valid_tiles_x.saturating_add(1);
+    let grid_y = valid_tiles_y.saturating_add(1);
+    let full_grid_x = chunk.tiles_per_chunk[0].saturating_add(1);
+    let full_grid_y = chunk.tiles_per_chunk[1].saturating_add(1);
+    let mut heights = Vec::with_capacity((grid_x * grid_y) as usize);
+    for y in 0..grid_y {
+        let sample_y = (y * step).min(full_grid_y.saturating_sub(1));
+        for x in 0..grid_x {
+            let sample_x = (x * step).min(full_grid_x.saturating_sub(1));
+            let idx = (sample_y * full_grid_x + sample_x) as usize;
+            heights.push(chunk.heights.get(idx).copied().unwrap_or_default());
+        }
+    }
     let field = ChunkFieldSamples {
         grid_x,
         grid_y,
-        step: 1,
+        step,
         origin_x: chunk.origin[0],
         origin_y: chunk.origin[1],
-        heights: chunk.heights.clone(),
+        heights,
     };
 
     let (vertices, indices, bounds_min, bounds_max) = extract_heightmap_surface(settings, &field);
@@ -678,13 +696,15 @@ pub fn build_heightmap_chunk_artifact(
         chunk_coords: chunk.chunk_coords,
         tiles_per_chunk: chunk.tiles_per_chunk,
         tile_size: chunk.tile_size,
-        heights: &chunk.heights,
+        lod,
+        valid_tiles: [valid_tiles_x, valid_tiles_y],
+        heights: &field.heights,
     });
 
     TerrainChunkArtifact {
         project_key: project_key.to_string(),
         chunk_coords: chunk.chunk_coords,
-        lod: 0,
+        lod,
         bounds_min,
         bounds_max,
         vertex_layout: settings.vertex_layout.clone(),

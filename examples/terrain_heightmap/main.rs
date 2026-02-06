@@ -6,6 +6,7 @@
 use std::error::Error;
 
 use bytemuck::{Pod, Zeroable};
+use dashi::builders::{BindTableBuilder, BindTableLayoutBuilder};
 use dashi::driver::command::{BeginDrawing, BlitImage, DrawIndexed};
 use dashi::*;
 use inline_spirv::inline_spirv;
@@ -33,6 +34,12 @@ struct TerrainVertex {
     position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct CameraUniform {
+    view: [[f32; 4]; 4],
 }
 
 fn main() {
@@ -81,8 +88,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("no terrain chunk artifacts found in sample database".into());
     }
 
-    let (base_vertices, indices) = build_terrain_mesh(&artifacts, &settings);
-    let mut vertices = base_vertices.clone();
+    let (vertices, indices) = build_terrain_mesh(&artifacts, &settings);
     let vertex_bytes = bytemuck::cast_slice(&vertices);
     let index_bytes = bytemuck::cast_slice(&indices);
 
@@ -114,6 +120,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     })?;
     let fb_view = ImageView { img: fb, ..Default::default() };
 
+    let camera_layout = BindTableLayoutBuilder::new("terrain_camera_layout")
+        .shader(ShaderInfo {
+            shader_type: ShaderType::Vertex,
+            variables: &[BindTableVariable {
+                var_type: BindTableVariableType::Uniform,
+                binding: 0,
+                count: 1,
+            }],
+        })
+        .build(&mut ctx)?;
+
     let pipeline_layout = ctx.make_graphics_pipeline_layout(&GraphicsPipelineLayoutInfo {
         vertex_info: VertexDescriptionInfo {
             entries: &[
@@ -136,7 +153,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             stride: std::mem::size_of::<TerrainVertex>(),
             rate: VertexRate::Vertex,
         },
-        bt_layouts: [None, None, None, None],
+        bt_layouts: [Some(camera_layout), None, None, None],
         shaders: &[
             PipelineShaderInfo {
                 stage: ShaderType::Vertex,
@@ -146,12 +163,15 @@ fn run() -> Result<(), Box<dyn Error>> {
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec3 in_color;
+layout(set = 0, binding = 0) uniform Camera {
+    mat4 view;
+} camera;
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_color;
 void main() {
     v_normal = in_normal;
     v_color = in_color;
-    gl_Position = vec4(in_pos, 1.0);
+    gl_Position = camera.view * vec4(in_pos, 1.0);
 }
 "#,
                     vert
@@ -235,6 +255,29 @@ void main() {
     let mut zoom_offset = [0.0f32, 0.0f32];
     let mut cursor_pos = [WIDTH as f32 * 0.5, HEIGHT as f32 * 0.5];
 
+    let camera_uniform = CameraUniform {
+        view: make_view_matrix(zoom, zoom_offset),
+    };
+    let camera_buffer = ctx.make_buffer(&BufferInfo {
+        debug_name: "terrain_camera_uniform",
+        byte_size: std::mem::size_of::<CameraUniform>() as u32,
+        visibility: MemoryVisibility::CpuAndGpu,
+        usage: BufferUsage::UNIFORM,
+        initial_data: Some(bytemuck::bytes_of(&camera_uniform)),
+    })?;
+    let camera_binding = [IndexedResource {
+        resource: ShaderResource::Buffer(BufferView {
+            handle: camera_buffer,
+            offset: 0,
+            size: std::mem::size_of::<CameraUniform>() as u64,
+        }),
+        slot: 0,
+    }];
+    let camera_table = BindTableBuilder::new("terrain_camera_table")
+        .layout(camera_layout)
+        .binding(0, &camera_binding)
+        .build(&mut ctx)?;
+
     loop {
         let mut should_exit = false;
         let mut zoom_delta = 0.0f32;
@@ -292,8 +335,10 @@ void main() {
                 cursor_ndc[1] / new_zoom - world[1],
             ];
             zoom = new_zoom;
-            apply_zoom_to_vertices(&base_vertices, &mut vertices, zoom, zoom_offset);
-            write_vertex_buffer(&mut ctx, vertex_buffer, &vertices)?;
+            let camera_uniform = CameraUniform {
+                view: make_view_matrix(zoom, zoom_offset),
+            };
+            write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
         }
 
         let (img, sem, _idx, _good) = ctx.acquire_new_image(&mut display)?;
@@ -335,7 +380,7 @@ void main() {
             let draw = draw.draw_indexed(&DrawIndexed {
                 vertices: vertex_buffer,
                 indices: index_buffer,
-                bind_tables: Default::default(),
+                bind_tables: [Some(camera_table), None, None, None],
                 dynamic_buffers: Default::default(),
                 instance_count: 1,
                 first_instance: 0,
@@ -448,28 +493,21 @@ fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
     [x, y, z]
 }
 
-fn apply_zoom_to_vertices(
-    base_vertices: &[TerrainVertex],
-    vertices: &mut [TerrainVertex],
-    zoom: f32,
-    offset: [f32; 2],
-) {
-    for (dst, src) in vertices.iter_mut().zip(base_vertices.iter()) {
-        dst.position = [
-            (src.position[0] + offset[0]) * zoom,
-            (src.position[1] + offset[1]) * zoom,
-            src.position[2],
-        ];
-        dst.color = src.color;
-    }
+fn make_view_matrix(zoom: f32, offset: [f32; 2]) -> [[f32; 4]; 4] {
+    [
+        [zoom, 0.0, 0.0, 0.0],
+        [0.0, zoom, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [zoom * offset[0], zoom * offset[1], 0.0, 1.0],
+    ]
 }
 
-fn write_vertex_buffer(
+fn write_camera_buffer(
     ctx: &mut Context,
     buffer: Handle<Buffer>,
-    vertices: &[TerrainVertex],
+    uniform: &CameraUniform,
 ) -> Result<(), Box<dyn Error>> {
-    let bytes = bytemuck::cast_slice(vertices);
+    let bytes = bytemuck::bytes_of(uniform);
     let mut view = BufferView::new(buffer);
     view.offset = 0;
     view.size = bytes.len() as u64;
@@ -479,7 +517,7 @@ fn write_vertex_buffer(
         .map_err(|err| Box::new(err) as Box<dyn Error>)?;
 
     if mapped.len() < bytes.len() {
-        return Err("mapped buffer too small for vertex upload".into());
+        return Err("mapped buffer too small for camera upload".into());
     }
 
     mapped[..bytes.len()].copy_from_slice(bytes);
