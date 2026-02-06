@@ -415,6 +415,23 @@ impl DB {
             .collect()
     }
 
+    /// Builds chunk artifact entry names within a frustum for a project/LOD.
+    pub fn terrain_chunk_entries_in_frustum(
+        &self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        frustum: &TerrainFrustum,
+        lod: u8,
+    ) -> Vec<String> {
+        chunk_coords_in_frustum(settings, frustum)
+            .into_iter()
+            .map(|coords| {
+                let coord_key = chunk_coord_key(coords[0], coords[1]);
+                chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
+            })
+            .collect()
+    }
+
     /// Returns the chunk grid id at a given world-space coordinate.
     pub fn terrain_chunk_id_at(
         &self,
@@ -435,6 +452,18 @@ impl DB {
     ) -> Result<Vec<TerrainChunk>, NorenError> {
         self.terrain
             .fetch_chunks_around(settings, project_key, center, radius, lod)
+    }
+
+    /// Fetches terrain chunk artifacts within a frustum for a project/LOD.
+    pub fn fetch_terrain_chunks_in_frustum(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        frustum: &TerrainFrustum,
+        lod: u8,
+    ) -> Result<Vec<TerrainChunk>, NorenError> {
+        self.terrain
+            .fetch_chunks_in_frustum(settings, project_key, frustum, lod)
     }
 
     /// Enumerates logical texture definitions declared in the model layout.

@@ -524,6 +524,9 @@ pub fn parse_chunk_artifact_entry(entry: &str) -> Option<TerrainChunkArtifactKey
     })
 }
 
+/// World-space frustum corners projected onto the terrain plane.
+pub type TerrainFrustum = [[f32; 2]; 4];
+
 pub fn chunk_coords_for_world(
     settings: &TerrainProjectSettings,
     world_x: f32,
@@ -571,6 +574,43 @@ pub fn chunk_coords_in_radius(
     let max_x = center[0] + radius;
     let min_y = center[1] - radius;
     let max_y = center[1] + radius;
+
+    chunk_coords_in_bounds(settings, [min_x, min_y], [max_x, max_y], chunk_size_x, chunk_size_y)
+}
+
+pub fn chunk_coords_in_frustum(
+    settings: &TerrainProjectSettings,
+    frustum: &TerrainFrustum,
+) -> Vec<[i32; 2]> {
+    let mut min = frustum[0];
+    let mut max = frustum[0];
+    for corner in frustum.iter().skip(1) {
+        min[0] = min[0].min(corner[0]);
+        min[1] = min[1].min(corner[1]);
+        max[0] = max[0].max(corner[0]);
+        max[1] = max[1].max(corner[1]);
+    }
+
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+        return Vec::new();
+    }
+
+    chunk_coords_in_bounds(settings, min, max, chunk_size_x, chunk_size_y)
+}
+
+fn chunk_coords_in_bounds(
+    settings: &TerrainProjectSettings,
+    min: [f32; 2],
+    max: [f32; 2],
+    chunk_size_x: f32,
+    chunk_size_y: f32,
+) -> Vec<[i32; 2]> {
+    let min_x = min[0].min(max[0]);
+    let max_x = min[0].max(max[0]);
+    let min_y = min[1].min(max[1]);
+    let max_y = min[1].max(max[1]);
 
     if max_x < settings.world_bounds_min[0] || min_x > settings.world_bounds_max[0] {
         return Vec::new();
@@ -826,6 +866,41 @@ impl TerrainDB {
         lod: u8,
     ) -> Result<Vec<TerrainChunk>, NorenError> {
         let entries = chunk_coords_in_radius(settings, center, radius)
+            .into_iter()
+            .map(|coords| {
+                let coord_key = chunk_coord_key(coords[0], coords[1]);
+                chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
+            })
+            .collect::<Vec<_>>();
+
+        let available = self.data.as_ref().map(|rdb| {
+            rdb.entries()
+                .into_iter()
+                .map(|meta| meta.name)
+                .collect::<HashSet<_>>()
+        });
+
+        let mut chunks = Vec::new();
+        for entry in entries {
+            if let Some(available) = &available {
+                if !available.contains(&entry) {
+                    continue;
+                }
+            }
+            chunks.push(self.fetch_chunk(entry.as_str())?);
+        }
+
+        Ok(chunks)
+    }
+
+    pub fn fetch_chunks_in_frustum(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        frustum: &TerrainFrustum,
+        lod: u8,
+    ) -> Result<Vec<TerrainChunk>, NorenError> {
+        let entries = chunk_coords_in_frustum(settings, frustum)
             .into_iter()
             .map(|coords| {
                 let coord_key = chunk_coord_key(coords[0], coords[1]);
