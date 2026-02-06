@@ -779,6 +779,28 @@ impl TerrainDB {
         }
     }
 
+    pub fn fetch_project_settings(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<TerrainProjectSettings, NorenError> {
+        let Some(rdb) = &mut self.data else {
+            return Err(NorenError::DataFailure());
+        };
+        rdb.fetch::<TerrainProjectSettings>(entry)
+            .map_err(NorenError::from)
+    }
+
+    pub fn fetch_chunk_artifact(
+        &mut self,
+        entry: DatabaseEntry<'_>,
+    ) -> Result<TerrainChunkArtifact, NorenError> {
+        let Some(rdb) = &mut self.data else {
+            return Err(NorenError::DataFailure());
+        };
+        rdb.fetch::<TerrainChunkArtifact>(entry)
+            .map_err(NorenError::from)
+    }
+
     pub fn fetch_chunk(&mut self, entry: DatabaseEntry<'_>) -> Result<TerrainChunk, NorenError> {
         if let Some(rdb) = &mut self.data {
             if let Ok(chunk) = rdb.fetch::<TerrainChunk>(entry) {

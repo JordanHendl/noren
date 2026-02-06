@@ -10,8 +10,8 @@ use dashi::driver::command::{BeginDrawing, BlitImage, DrawIndexed};
 use dashi::*;
 use inline_spirv::inline_spirv;
 use noren::{
-    RDBView, RdbErr,
     rdb::terrain::{TerrainChunkArtifact, TerrainProjectSettings, parse_chunk_artifact_entry},
+    NorenError,
 };
 use winit::event::{
     ElementState,
@@ -35,17 +35,6 @@ struct TerrainVertex {
     color: [f32; 3],
 }
 
-#[derive(Debug)]
-struct RdbViewError(String);
-
-impl std::fmt::Display for RdbViewError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Error for RdbViewError {}
-
 fn main() {
     if let Err(err) = run() {
         eprintln!("error: {err}");
@@ -56,28 +45,35 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let mut ctx = common::init_context()?;
 
-    let terrain_path = common::sample_db_path().join("terrain.rdb");
-    let mut view = load_rdb_view(&terrain_path)?;
-    let entries = view.entries();
-
-    let (settings_entry, project_key) = find_project_settings(&entries)?
-        .ok_or("missing terrain project settings entry")?;
-    let settings: TerrainProjectSettings = view
-        .fetch(&settings_entry)
-        .map_err(|err| rdb_view_error(err))?;
+    let mut db = common::open_sample_db(&mut ctx)?;
+    let entries = db.terrain().enumerate_entries();
+    let project_key = "iceland";
+    let settings_entry = project_settings_entry(project_key);
+    if !entries.iter().any(|entry| entry == &settings_entry) {
+        return Err(format!(
+            "missing terrain project settings entry: {settings_entry}"
+        )
+        .into());
+    }
+    let settings: TerrainProjectSettings = db
+        .terrain_mut()
+        .fetch_project_settings(&settings_entry)
+        .map_err(|err| terrain_db_error(err))?;
 
     let mut artifacts = Vec::new();
 
     for entry in &entries {
-        let Some(key) = parse_chunk_artifact_entry(&entry.name) else {
+        let Some(key) = parse_chunk_artifact_entry(entry) else {
             continue;
         };
         if key.project_key != project_key || key.lod != 0 {
             continue;
         }
 
-        let artifact: TerrainChunkArtifact =
-            view.fetch(&entry.name).map_err(|err| rdb_view_error(err))?;
+        let artifact: TerrainChunkArtifact = db
+            .terrain_mut()
+            .fetch_chunk_artifact(entry)
+            .map_err(|err| terrain_db_error(err))?;
         artifacts.push(artifact);
     }
 
@@ -371,12 +367,8 @@ void main() {
     Ok(())
 }
 
-fn load_rdb_view(path: &std::path::Path) -> Result<RDBView, Box<dyn Error>> {
-    RDBView::load(path).map_err(rdb_view_error)
-}
-
-fn rdb_view_error(err: RdbErr) -> Box<dyn Error> {
-    Box::new(RdbViewError(err.to_string()))
+fn terrain_db_error(err: NorenError) -> Box<dyn Error> {
+    Box::new(err)
 }
 
 fn build_terrain_mesh(
@@ -497,16 +489,6 @@ fn write_vertex_buffer(
     Ok(())
 }
 
-fn find_project_settings(
-    entries: &[noren::RDBEntryMeta],
-) -> Result<Option<(String, String)>, Box<dyn Error>> {
-    for entry in entries {
-        if let Some(rest) = entry.name.strip_prefix("terrain/project/") {
-            if let Some(project_key) = rest.strip_suffix("/settings") {
-                return Ok(Some((entry.name.clone(), project_key.to_string())));
-            }
-        }
-    }
-
-    Ok(None)
+fn project_settings_entry(project_key: &str) -> String {
+    format!("terrain/project/{project_key}/settings")
 }
