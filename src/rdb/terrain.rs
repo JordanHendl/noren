@@ -527,6 +527,46 @@ pub fn parse_chunk_artifact_entry(entry: &str) -> Option<TerrainChunkArtifactKey
 /// World-space frustum corners projected onto the terrain plane.
 pub type TerrainFrustum = [[f32; 2]; 4];
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainCameraInfo {
+    pub frustum: TerrainFrustum,
+    pub position: [f32; 3],
+    pub curve: f32,
+    pub falloff: f32,
+    pub max_dist: f32,
+}
+
+impl TerrainCameraInfo {
+    pub fn lod_for_distance(
+        &self,
+        settings: &TerrainProjectSettings,
+        distance: f32,
+    ) -> u8 {
+        let max_lod = settings.lod_policy.max_lod;
+        if max_lod == 0 {
+            return 0;
+        }
+
+        let max_dist = self.max_dist.max(0.0);
+        if max_dist <= 0.0 {
+            return 0;
+        }
+
+        let mut normalized = (distance / max_dist).clamp(0.0, 1.0);
+        let curve = if self.curve <= 0.0 { 1.0 } else { self.curve };
+        normalized = normalized.powf(curve);
+
+        let falloff = self.falloff.clamp(0.0, 1.0);
+        if falloff > 0.0 {
+            let smooth = normalized * normalized * (3.0 - 2.0 * normalized);
+            normalized = normalized * (1.0 - falloff) + smooth * falloff;
+        }
+
+        let lod = (normalized * max_lod as f32).floor() as u8;
+        lod.min(max_lod)
+    }
+}
+
 pub fn chunk_coords_for_world(
     settings: &TerrainProjectSettings,
     world_x: f32,
@@ -646,6 +686,22 @@ fn max_chunk_coords(
     let count_x = (world_size_x / chunk_size_x).ceil().max(1.0) as i32;
     let count_y = (world_size_y / chunk_size_y).ceil().max(1.0) as i32;
     (count_x.saturating_sub(1), count_y.saturating_sub(1))
+}
+
+fn chunk_center_world(
+    settings: &TerrainProjectSettings,
+    chunk_coords: [i32; 2],
+) -> [f32; 3] {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let origin_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
+    let origin_y = settings.world_bounds_min[1] + chunk_coords[1] as f32 * chunk_size_y;
+    let center_z = (settings.world_bounds_min[2] + settings.world_bounds_max[2]) * 0.5;
+    [
+        origin_x + chunk_size_x * 0.5,
+        origin_y + chunk_size_y * 0.5,
+        center_z,
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -905,6 +961,55 @@ impl TerrainDB {
             .map(|coords| {
                 let coord_key = chunk_coord_key(coords[0], coords[1]);
                 chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
+            })
+            .collect::<Vec<_>>();
+
+        let available = self.data.as_ref().map(|rdb| {
+            rdb.entries()
+                .into_iter()
+                .map(|meta| meta.name)
+                .collect::<HashSet<_>>()
+        });
+
+        let mut chunks = Vec::new();
+        for entry in entries {
+            if let Some(available) = &available {
+                if !available.contains(&entry) {
+                    continue;
+                }
+            }
+            chunks.push(self.fetch_chunk(entry.as_str())?);
+        }
+
+        Ok(chunks)
+    }
+
+    pub fn fetch_chunks_for_camera(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        camera: &TerrainCameraInfo,
+    ) -> Result<Vec<TerrainChunk>, NorenError> {
+        let max_dist = camera.max_dist.max(0.0);
+        if max_dist <= 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let entries = chunk_coords_in_frustum(settings, &camera.frustum)
+            .into_iter()
+            .filter_map(|coords| {
+                let center = chunk_center_world(settings, coords);
+                let dx = center[0] - camera.position[0];
+                let dy = center[1] - camera.position[1];
+                let dz = center[2] - camera.position[2];
+                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+                if distance > max_dist {
+                    return None;
+                }
+
+                let lod = camera.lod_for_distance(settings, distance);
+                let coord_key = chunk_coord_key(coords[0], coords[1]);
+                Some(chunk_artifact_entry(project_key, &coord_key, &lod_key(lod)))
             })
             .collect::<Vec<_>>();
 

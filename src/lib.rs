@@ -466,6 +466,17 @@ impl DB {
             .fetch_chunks_in_frustum(settings, project_key, frustum, lod)
     }
 
+    /// Fetches terrain chunk artifacts within a frustum with auto-selected LODs.
+    pub fn fetch_terrain_chunks_for_camera(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        camera: &TerrainCameraInfo,
+    ) -> Result<Vec<TerrainChunk>, NorenError> {
+        self.terrain
+            .fetch_chunks_for_camera(settings, project_key, camera)
+    }
+
     /// Enumerates logical texture definitions declared in the model layout.
     pub fn enumerate_textures(&self) -> Vec<String> {
         self.meta_layout
