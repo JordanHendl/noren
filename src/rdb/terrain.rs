@@ -547,6 +547,16 @@ impl TerrainCameraInfo {
             return 0;
         }
 
+        if !settings.lod_policy.distance_bands.is_empty() {
+            let mut lod = 0_u8;
+            for (idx, band) in settings.lod_policy.distance_bands.iter().enumerate() {
+                if distance > *band {
+                    lod = lod.saturating_add(1).max((idx + 1) as u8);
+                }
+            }
+            return lod.min(max_lod);
+        }
+
         let max_dist = self.max_dist.max(0.0);
         if max_dist <= 0.0 {
             return 0;
