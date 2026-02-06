@@ -53,6 +53,7 @@ struct CameraUniform {
     projection: [[f32; 4]; 4],
 }
 
+#[derive(Clone, Copy)]
 struct TerrainChunkDraw {
     vertex_buffer: Handle<Buffer>,
     index_buffer: Handle<Buffer>,
@@ -318,16 +319,22 @@ void main() {
         .build(&mut ctx)?;
 
     let mut chunk_draws = Vec::new();
+    let mut chunk_cache = std::collections::HashMap::new();
     let mut camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
-    refresh_visible_chunks(
-        &mut ctx,
-        &mut db,
+    let mut visible_entries = compute_visible_entries(
         project_key,
         &entry_set,
         &camera_info,
-        &normalization,
         &settings,
-        &mut chunk_draws,
+    );
+    let mut visible_set: std::collections::HashSet<String> =
+        visible_entries.iter().cloned().collect();
+    chunk_draws = build_chunk_draws_from_entries(
+        &mut ctx,
+        &mut db,
+        &visible_entries,
+        &mut chunk_cache,
+        &normalization,
     )?;
 
     loop {
@@ -393,16 +400,25 @@ void main() {
             };
             write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
             camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
-            refresh_visible_chunks(
-                &mut ctx,
-                &mut db,
+            let next_visible_entries = compute_visible_entries(
                 project_key,
                 &entry_set,
                 &camera_info,
-                &normalization,
                 &settings,
-                &mut chunk_draws,
-            )?;
+            );
+            let next_visible_set: std::collections::HashSet<String> =
+                next_visible_entries.iter().cloned().collect();
+            if next_visible_set != visible_set {
+                visible_set = next_visible_set;
+                visible_entries = next_visible_entries;
+                chunk_draws = build_chunk_draws_from_entries(
+                    &mut ctx,
+                    &mut db,
+                    &visible_entries,
+                    &mut chunk_cache,
+                    &normalization,
+                )?;
+            }
         }
 
         let (img, sem, _idx, _good) = ctx.acquire_new_image(&mut display)?;
@@ -523,41 +539,35 @@ fn build_terrain_normalization(
     }
 }
 
-fn build_chunk_draws(
+fn build_chunk_draw(
     ctx: &mut Context,
-    artifacts: &[TerrainChunkArtifact],
+    artifact: &TerrainChunkArtifact,
     normalization: &TerrainNormalization,
-) -> Result<Vec<TerrainChunkDraw>, Box<dyn Error>> {
-    let mut draws = Vec::new();
+) -> Result<TerrainChunkDraw, Box<dyn Error>> {
+    let vertices = build_chunk_vertices(artifact, normalization);
+    let vertex_bytes = bytemuck::cast_slice(&vertices);
+    let vertex_buffer = ctx.make_buffer(&BufferInfo {
+        debug_name: "terrain_chunk_vertices",
+        byte_size: vertex_bytes.len() as u32,
+        visibility: MemoryVisibility::CpuAndGpu,
+        usage: BufferUsage::VERTEX,
+        initial_data: Some(vertex_bytes),
+    })?;
 
-    for artifact in artifacts {
-        let vertices = build_chunk_vertices(artifact, normalization);
-        let vertex_bytes = bytemuck::cast_slice(&vertices);
-        let vertex_buffer = ctx.make_buffer(&BufferInfo {
-            debug_name: "terrain_chunk_vertices",
-            byte_size: vertex_bytes.len() as u32,
-            visibility: MemoryVisibility::CpuAndGpu,
-            usage: BufferUsage::VERTEX,
-            initial_data: Some(vertex_bytes),
-        })?;
+    let index_bytes = bytemuck::cast_slice(artifact.indices.as_slice());
+    let index_buffer = ctx.make_buffer(&BufferInfo {
+        debug_name: "terrain_chunk_indices",
+        byte_size: index_bytes.len() as u32,
+        visibility: MemoryVisibility::Gpu,
+        usage: BufferUsage::INDEX,
+        initial_data: Some(index_bytes),
+    })?;
 
-        let index_bytes = bytemuck::cast_slice(artifact.indices.as_slice());
-        let index_buffer = ctx.make_buffer(&BufferInfo {
-            debug_name: "terrain_chunk_indices",
-            byte_size: index_bytes.len() as u32,
-            visibility: MemoryVisibility::Gpu,
-            usage: BufferUsage::INDEX,
-            initial_data: Some(index_bytes),
-        })?;
-
-        draws.push(TerrainChunkDraw {
-            vertex_buffer,
-            index_buffer,
-            index_count: artifact.indices.len() as u32,
-        });
-    }
-
-    Ok(draws)
+    Ok(TerrainChunkDraw {
+        vertex_buffer,
+        index_buffer,
+        index_count: artifact.indices.len() as u32,
+    })
 }
 
 fn build_chunk_vertices(
@@ -710,17 +720,13 @@ fn chunk_center_world(settings: &TerrainProjectSettings, chunk_coords: [i32; 2])
     ]
 }
 
-fn refresh_visible_chunks(
-    ctx: &mut Context,
-    db: &mut noren::DB,
+fn compute_visible_entries(
     project_key: &str,
     entries: &std::collections::HashSet<String>,
     camera: &TerrainCameraInfo,
-    normalization: &TerrainNormalization,
     settings: &TerrainProjectSettings,
-    chunk_draws: &mut Vec<TerrainChunkDraw>,
-) -> Result<(), Box<dyn Error>> {
-    let mut artifacts = Vec::new();
+) -> Vec<String> {
+    let mut visible = Vec::new();
     for coords in chunk_coords_in_frustum(settings, &camera.frustum) {
         let center = chunk_center_world(settings, coords);
         let dx = center[0] - camera.position[0];
@@ -737,15 +743,35 @@ fn refresh_visible_chunks(
         if !entries.contains(&entry) {
             continue;
         }
-        let artifact: TerrainChunkArtifact = db
-            .terrain_mut()
-            .fetch_chunk_artifact(&entry)
-            .map_err(|err| terrain_db_error(err))?;
-        artifacts.push(artifact);
+        visible.push(entry);
     }
 
-    *chunk_draws = build_chunk_draws(ctx, &artifacts, normalization)?;
-    Ok(())
+    visible
+}
+
+fn build_chunk_draws_from_entries(
+    ctx: &mut Context,
+    db: &mut noren::DB,
+    entries: &[String],
+    cache: &mut std::collections::HashMap<String, TerrainChunkDraw>,
+    normalization: &TerrainNormalization,
+) -> Result<Vec<TerrainChunkDraw>, Box<dyn Error>> {
+    let mut draws = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if let Some(cached) = cache.get(entry) {
+            draws.push(*cached);
+            continue;
+        }
+
+        let artifact: TerrainChunkArtifact = db
+            .terrain_mut()
+            .fetch_chunk_artifact(entry)
+            .map_err(|err| terrain_db_error(err))?;
+        let draw = build_chunk_draw(ctx, &artifact, normalization)?;
+        cache.insert(entry.clone(), draw);
+        draws.push(draw);
+    }
+    Ok(draws)
 }
 fn write_camera_buffer(
     ctx: &mut Context,
