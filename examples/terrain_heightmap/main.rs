@@ -11,9 +11,16 @@ use dashi::*;
 use inline_spirv::inline_spirv;
 use noren::{
     RDBView, RdbErr,
-    rdb::terrain::{TerrainChunk, TerrainProjectSettings, parse_chunk_coord_key},
+    rdb::terrain::{TerrainChunkArtifact, TerrainProjectSettings, parse_chunk_artifact_entry},
 };
-use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
+use winit::event::{
+    ElementState,
+    Event,
+    KeyboardInput,
+    MouseScrollDelta,
+    VirtualKeyCode,
+    WindowEvent,
+};
 use winit::event_loop::ControlFlow;
 use winit::platform::run_return::EventLoopExtRunReturn;
 
@@ -24,6 +31,7 @@ mod common;
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct TerrainVertex {
     position: [f32; 3],
+    normal: [f32; 3],
     color: [f32; 3],
 }
 
@@ -58,39 +66,34 @@ fn run() -> Result<(), Box<dyn Error>> {
         .fetch(&settings_entry)
         .map_err(|err| rdb_view_error(err))?;
 
-    let mut chunks = Vec::new();
-    let mut min_height = f32::INFINITY;
-    let mut max_height = f32::NEG_INFINITY;
+    let mut artifacts = Vec::new();
 
     for entry in &entries {
-        let Some(coord_key) = entry.name.strip_prefix("terrain/chunk_") else {
+        let Some(key) = parse_chunk_artifact_entry(&entry.name) else {
             continue;
         };
-        if parse_chunk_coord_key(coord_key).is_none() {
+        if key.project_key != project_key || key.lod != 0 {
             continue;
         }
 
-        let chunk: TerrainChunk = view.fetch(&entry.name).map_err(|err| rdb_view_error(err))?;
-        for height in &chunk.heights {
-            min_height = min_height.min(*height);
-            max_height = max_height.max(*height);
-        }
-        chunks.push(chunk);
+        let artifact: TerrainChunkArtifact =
+            view.fetch(&entry.name).map_err(|err| rdb_view_error(err))?;
+        artifacts.push(artifact);
     }
 
-    if chunks.is_empty() {
-        return Err("no terrain chunks found in sample database".into());
+    if artifacts.is_empty() {
+        return Err("no terrain chunk artifacts found in sample database".into());
     }
 
-    let (vertices, indices) = build_terrain_mesh(&chunks, &settings, min_height, max_height);
-
+    let (base_vertices, indices) = build_terrain_mesh(&artifacts, &settings);
+    let mut vertices = base_vertices.clone();
     let vertex_bytes = bytemuck::cast_slice(&vertices);
     let index_bytes = bytemuck::cast_slice(&indices);
 
     let vertex_buffer = ctx.make_buffer(&BufferInfo {
         debug_name: "terrain_vertices",
         byte_size: vertex_bytes.len() as u32,
-        visibility: MemoryVisibility::Gpu,
+        visibility: MemoryVisibility::CpuAndGpu,
         usage: BufferUsage::VERTEX,
         initial_data: Some(vertex_bytes),
     })?;
@@ -128,6 +131,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                     location: 1,
                     offset: 12,
                 },
+                VertexEntryInfo {
+                    format: ShaderPrimitiveType::Vec3,
+                    location: 2,
+                    offset: 24,
+                },
             ],
             stride: std::mem::size_of::<TerrainVertex>(),
             rate: VertexRate::Vertex,
@@ -140,9 +148,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                     r#"
 #version 450
 layout(location = 0) in vec3 in_pos;
-layout(location = 1) in vec3 in_color;
-layout(location = 0) out vec3 v_color;
+layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec3 in_color;
+layout(location = 0) out vec3 v_normal;
+layout(location = 1) out vec3 v_color;
 void main() {
+    v_normal = in_normal;
     v_color = in_color;
     gl_Position = vec4(in_pos, 1.0);
 }
@@ -156,9 +167,15 @@ void main() {
                 spirv: inline_spirv!(
                     r#"
 #version 450
-layout(location = 0) in vec3 v_color;
+layout(location = 0) in vec3 v_normal;
+layout(location = 1) in vec3 v_color;
 layout(location = 0) out vec4 out_color;
-void main() { out_color = vec4(v_color, 1.0); }
+void main() {
+    vec3 normal = normalize(v_normal);
+    vec3 light = normalize(vec3(0.4, 0.6, 1.0));
+    float shade = max(dot(normal, light), 0.1);
+    out_color = vec4(v_color * shade, 1.0);
+}
 "#,
                     frag
                 ),
@@ -218,8 +235,13 @@ void main() { out_color = vec4(v_color, 1.0); }
     })?;
     let render_sems = ctx.make_semaphores(3)?;
 
+    let mut zoom = 1.0f32;
+    let mut zoom_offset = [0.0f32, 0.0f32];
+    let mut cursor_pos = [WIDTH as f32 * 0.5, HEIGHT as f32 * 0.5];
+
     loop {
         let mut should_exit = false;
+        let mut zoom_delta = 0.0f32;
         {
             let event_loop = display.winit_event_loop();
             event_loop.run_return(|event, _target, control_flow| {
@@ -236,6 +258,17 @@ void main() { out_color = vec4(v_color, 1.0); }
                                 },
                             ..
                         } => should_exit = true,
+                        WindowEvent::CursorMoved { position, .. } => {
+                            cursor_pos = [position.x as f32, position.y as f32];
+                        }
+                        WindowEvent::MouseWheel { delta, .. } => {
+                            zoom_delta = match delta {
+                                MouseScrollDelta::LineDelta(_, y) => zoom_delta + y,
+                                MouseScrollDelta::PixelDelta(pos) => {
+                                    zoom_delta + (pos.y as f32 / 100.0)
+                                }
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -244,6 +277,27 @@ void main() { out_color = vec4(v_color, 1.0); }
 
         if should_exit {
             break;
+        }
+
+        if zoom_delta.abs() > f32::EPSILON {
+            let old_zoom = zoom;
+            let zoom_step = (1.0 + zoom_delta * 0.1).clamp(0.1, 4.0);
+            let new_zoom = (zoom * zoom_step).clamp(0.2, 6.0);
+            let cursor_ndc = [
+                (cursor_pos[0] / WIDTH as f32) * 2.0 - 1.0,
+                1.0 - (cursor_pos[1] / HEIGHT as f32) * 2.0,
+            ];
+            let world = [
+                cursor_ndc[0] / old_zoom - zoom_offset[0],
+                cursor_ndc[1] / old_zoom - zoom_offset[1],
+            ];
+            zoom_offset = [
+                cursor_ndc[0] / new_zoom - world[0],
+                cursor_ndc[1] / new_zoom - world[1],
+            ];
+            zoom = new_zoom;
+            apply_zoom_to_vertices(&base_vertices, &mut vertices, zoom, zoom_offset);
+            write_vertex_buffer(&mut ctx, vertex_buffer, &vertices)?;
         }
 
         let (img, sem, _idx, _good) = ctx.acquire_new_image(&mut display)?;
@@ -326,60 +380,121 @@ fn rdb_view_error(err: RdbErr) -> Box<dyn Error> {
 }
 
 fn build_terrain_mesh(
-    chunks: &[TerrainChunk],
+    artifacts: &[TerrainChunkArtifact],
     settings: &TerrainProjectSettings,
-    min_height: f32,
-    max_height: f32,
 ) -> (Vec<TerrainVertex>, Vec<u32>) {
     let world_min = settings.world_bounds_min;
     let world_max = settings.world_bounds_max;
     let world_size_x = (world_max[0] - world_min[0]).max(1.0);
     let world_size_y = (world_max[1] - world_min[1]).max(1.0);
+    let mut min_height = f32::INFINITY;
+    let mut max_height = f32::NEG_INFINITY;
+    for artifact in artifacts {
+        for vertex in &artifact.vertices {
+            min_height = min_height.min(vertex.position[2]);
+            max_height = max_height.max(vertex.position[2]);
+        }
+    }
     let height_range = (max_height - min_height).max(1.0);
+    let norm_scale_x = 2.0 / world_size_x;
+    let norm_scale_y = 2.0 / world_size_y;
+    let norm_scale_z = 2.0 / height_range;
+    let inv_scale_x = 1.0 / norm_scale_x.max(0.001);
+    let inv_scale_y = 1.0 / norm_scale_y.max(0.001);
+    let inv_scale_z = 1.0 / norm_scale_z.max(0.001);
 
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    for chunk in chunks {
-        let grid_width = chunk.tiles_per_chunk[0];
-        let grid_height = chunk.tiles_per_chunk[1];
+    for artifact in artifacts {
         let base_index = vertices.len() as u32;
+        for vertex in &artifact.vertices {
+            let world_x = vertex.position[0];
+            let world_y = vertex.position[1];
+            let height = vertex.position[2];
+            let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
+            let norm_y = ((world_y - world_min[1]) / world_size_y) * 2.0 - 1.0;
+            let norm_z = ((height - min_height) / height_range) * 2.0 - 1.0;
+            let normal = normalize_vec3([
+                vertex.normal[0] * inv_scale_x,
+                vertex.normal[1] * inv_scale_y,
+                vertex.normal[2] * inv_scale_z,
+            ]);
+            let t = ((height - min_height) / height_range).clamp(0.0, 1.0);
+            let color = [
+                0.1 + 0.4 * t,
+                0.3 + 0.5 * t,
+                0.2 + 0.2 * t,
+            ];
 
-        for sample_y in 0..=grid_height {
-            for sample_x in 0..=grid_width {
-                let height = chunk.height_sample(sample_x, sample_y).unwrap_or(0.0);
-                let world_x = chunk.origin[0] + sample_x as f32 * chunk.tile_size;
-                let world_y = chunk.origin[1] + sample_y as f32 * chunk.tile_size;
-                let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
-                let norm_y = ((world_y - world_min[1]) / world_size_y) * 2.0 - 1.0;
-                let norm_z = ((height - min_height) / height_range) * 2.0 - 1.0;
-                let t = ((height - min_height) / height_range).clamp(0.0, 1.0);
-                let color = [
-                    0.1 + 0.4 * t,
-                    0.3 + 0.5 * t,
-                    0.2 + 0.2 * t,
-                ];
-
-                vertices.push(TerrainVertex {
-                    position: [norm_x, norm_y, norm_z],
-                    color,
-                });
-            }
+            vertices.push(TerrainVertex {
+                position: [norm_x, norm_y, norm_z],
+                normal,
+                color,
+            });
         }
 
-        let row_stride = grid_width + 1;
-        for y in 0..grid_height {
-            for x in 0..grid_width {
-                let i0 = base_index + y * row_stride + x;
-                let i1 = i0 + 1;
-                let i2 = i0 + row_stride;
-                let i3 = i2 + 1;
-                indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
-            }
-        }
+        indices.extend(
+            artifact
+                .indices
+                .iter()
+                .map(|index| base_index + *index),
+        );
     }
 
     (vertices, indices)
+}
+
+fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
+    let mut x = value[0];
+    let mut y = value[1];
+    let mut z = value[2];
+    let length = (x * x + y * y + z * z).sqrt().max(0.001);
+    x /= length;
+    y /= length;
+    z /= length;
+    [x, y, z]
+}
+
+fn apply_zoom_to_vertices(
+    base_vertices: &[TerrainVertex],
+    vertices: &mut [TerrainVertex],
+    zoom: f32,
+    offset: [f32; 2],
+) {
+    for (dst, src) in vertices.iter_mut().zip(base_vertices.iter()) {
+        dst.position = [
+            (src.position[0] + offset[0]) * zoom,
+            (src.position[1] + offset[1]) * zoom,
+            src.position[2],
+        ];
+        dst.color = src.color;
+    }
+}
+
+fn write_vertex_buffer(
+    ctx: &mut Context,
+    buffer: Handle<Buffer>,
+    vertices: &[TerrainVertex],
+) -> Result<(), Box<dyn Error>> {
+    let bytes = bytemuck::cast_slice(vertices);
+    let mut view = BufferView::new(buffer);
+    view.offset = 0;
+    view.size = bytes.len() as u64;
+
+    let mapped = ctx
+        .map_buffer_mut::<u8>(view)
+        .map_err(|err| Box::new(err) as Box<dyn Error>)?;
+
+    if mapped.len() < bytes.len() {
+        return Err("mapped buffer too small for vertex upload".into());
+    }
+
+    mapped[..bytes.len()].copy_from_slice(bytes);
+    ctx.flush_buffer(BufferView::new(buffer))
+        .and_then(|_| ctx.unmap_buffer(buffer))
+        .map_err(|err| Box::new(err) as Box<dyn Error>)?;
+    Ok(())
 }
 
 fn find_project_settings(

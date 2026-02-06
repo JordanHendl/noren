@@ -25,10 +25,12 @@ use crate::{
         terrain::{
             TERRAIN_MUTATION_LAYER_PREFIX, TERRAIN_MUTATION_OP_PREFIX, TerrainChunk,
             TerrainGeneratorDefinition, TerrainMutationLayer, TerrainMutationOp,
-            TerrainProjectSettings, TerrainTile, generator_entry, mutation_layer_entry,
-            mutation_op_entry, project_settings_entry,
+            TerrainProjectSettings, TerrainTile, chunk_artifact_entry, chunk_coord_key,
+            generator_entry, lod_key, mutation_layer_entry, mutation_op_entry,
+            project_settings_entry,
         },
     },
+    terrain::build_heightmap_chunk_artifact,
     validate_database_layout,
 };
 use bento::{
@@ -2409,6 +2411,13 @@ fn import_terrain_heightmap(
             };
             let entry = format!("terrain/chunk_{chunk_x}_{chunk_y}");
             rdb.add(&entry, &chunk).map_err(BuildError::from)?;
+
+            let coord_key = chunk_coord_key(chunk_x as i32, chunk_y as i32);
+            let artifact = build_heightmap_chunk_artifact(&settings, &args.project_key, &chunk);
+            let artifact_entry =
+                chunk_artifact_entry(&args.project_key, &coord_key, &lod_key(0));
+            rdb.add(&artifact_entry, &artifact)
+                .map_err(BuildError::from)?;
         }
     }
 
