@@ -40,6 +40,28 @@ struct TerrainVertex {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CameraUniform {
     view: [[f32; 4]; 4],
+    projection: [[f32; 4]; 4],
+}
+
+struct TerrainTileDraw {
+    index_buffer: Handle<Buffer>,
+    index_count: u32,
+}
+
+struct TerrainChunkDraw {
+    vertex_buffer: Handle<Buffer>,
+    skirt_draw: Option<TerrainTileDraw>,
+}
+
+struct TerrainNormalization {
+    world_min: [f32; 3],
+    world_size_x: f32,
+    world_size_y: f32,
+    min_height: f32,
+    height_range: f32,
+    inv_scale_x: f32,
+    inv_scale_y: f32,
+    inv_scale_z: f32,
 }
 
 fn main() {
@@ -88,24 +110,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("no terrain chunk artifacts found in sample database".into());
     }
 
-    let (vertices, indices) = build_terrain_mesh(&artifacts, &settings);
-    let vertex_bytes = bytemuck::cast_slice(&vertices);
-    let index_bytes = bytemuck::cast_slice(&indices);
-
-    let vertex_buffer = ctx.make_buffer(&BufferInfo {
-        debug_name: "terrain_vertices",
-        byte_size: vertex_bytes.len() as u32,
-        visibility: MemoryVisibility::CpuAndGpu,
-        usage: BufferUsage::VERTEX,
-        initial_data: Some(vertex_bytes),
-    })?;
-    let index_buffer = ctx.make_buffer(&BufferInfo {
-        debug_name: "terrain_indices",
-        byte_size: index_bytes.len() as u32,
-        visibility: MemoryVisibility::Gpu,
-        usage: BufferUsage::INDEX,
-        initial_data: Some(index_bytes),
-    })?;
+    let normalization = build_terrain_normalization(&artifacts, &settings);
+    let tile_draws = build_tile_draws(&mut ctx, settings.tiles_per_chunk)?;
+    let chunk_draws = build_chunk_draws(&mut ctx, &artifacts, &normalization, &settings)?;
 
     const WIDTH: u32 = 1280;
     const HEIGHT: u32 = 720;
@@ -119,6 +126,20 @@ fn run() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     })?;
     let fb_view = ImageView { img: fb, ..Default::default() };
+
+    let depth_image = ctx.make_image(&ImageInfo {
+        debug_name: "terrain_depth_buffer",
+        dim: [WIDTH, HEIGHT, 1],
+        format: Format::D24S8,
+        mip_levels: 1,
+        initial_data: None,
+        ..Default::default()
+    })?;
+    let depth_view = ImageView {
+        img: depth_image,
+        aspect: AspectMask::DepthStencil,
+        ..Default::default()
+    };
 
     let camera_layout = BindTableLayoutBuilder::new("terrain_camera_layout")
         .shader(ShaderInfo {
@@ -165,13 +186,14 @@ layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec3 in_color;
 layout(set = 0, binding = 0) uniform Camera {
     mat4 view;
+    mat4 projection;
 } camera;
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_color;
 void main() {
     v_normal = in_normal;
     v_color = in_color;
-    gl_Position = camera.view * vec4(in_pos, 1.0);
+    gl_Position = camera.projection * camera.view * vec4(in_pos, 1.0);
 }
 "#,
                     vert
@@ -198,10 +220,20 @@ void main() {
                 specialization: &[],
             },
         ],
-        details: Default::default(),
+        details: GraphicsPipelineDetails {
+            depth_test: Some(DepthInfo {
+                should_test: true,
+                should_write: true,
+            }),
+            ..Default::default()
+        },
         debug_name: "terrain_pipeline_layout",
     })?;
 
+    let depth_attachment = AttachmentDescription {
+        format: Format::D24S8,
+        ..Default::default()
+    };
     let render_pass = ctx.make_render_pass(&RenderPassInfo {
         viewport: Viewport {
             area: FRect2D {
@@ -218,7 +250,7 @@ void main() {
         },
         subpasses: &[SubpassDescription {
             color_attachments: &[AttachmentDescription::default()],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(&depth_attachment),
             subpass_dependencies: &[],
         }],
         debug_name: "terrain_render_pass",
@@ -254,9 +286,11 @@ void main() {
     let mut zoom = 1.0f32;
     let mut zoom_offset = [0.0f32, 0.0f32];
     let mut cursor_pos = [WIDTH as f32 * 0.5, HEIGHT as f32 * 0.5];
+    let projection = make_projection_matrix(-10000.0, 10000.0);
 
     let camera_uniform = CameraUniform {
         view: make_view_matrix(zoom, zoom_offset),
+        projection,
     };
     let camera_buffer = ctx.make_buffer(&BufferInfo {
         debug_name: "terrain_camera_uniform",
@@ -337,6 +371,7 @@ void main() {
             zoom = new_zoom;
             let camera_uniform = CameraUniform {
                 view: make_view_matrix(zoom, zoom_offset),
+                projection,
             };
             write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
         }
@@ -363,7 +398,7 @@ void main() {
                 render_pass,
                 pipeline: graphics_pipeline,
                 color_attachments: [Some(fb_view), None, None, None, None, None, None, None],
-                depth_attachment: None,
+                depth_attachment: Some(depth_view),
                 clear_values: [
                     Some(ClearValue::Color([0.07, 0.1, 0.12, 1.0])),
                     None,
@@ -374,18 +409,38 @@ void main() {
                     None,
                     None,
                 ],
+                depth_clear: Some(ClearValue::DepthStencil {
+                    depth: 1.0,
+                    stencil: 0,
+                }),
                 ..Default::default()
             });
 
-            let draw = draw.draw_indexed(&DrawIndexed {
-                vertices: vertex_buffer,
-                indices: index_buffer,
-                bind_tables: [Some(camera_table), None, None, None],
-                dynamic_buffers: Default::default(),
-                instance_count: 1,
-                first_instance: 0,
-                index_count: indices.len() as u32,
-            });
+            let mut draw = draw;
+            for chunk in &chunk_draws {
+                for tile_draw in &tile_draws {
+                    draw = draw.draw_indexed(&DrawIndexed {
+                        vertices: chunk.vertex_buffer,
+                        indices: tile_draw.index_buffer,
+                        bind_tables: [Some(camera_table), None, None, None],
+                        dynamic_buffers: Default::default(),
+                        instance_count: 1,
+                        first_instance: 0,
+                        index_count: tile_draw.index_count,
+                    });
+                }
+                if let Some(skirt_draw) = &chunk.skirt_draw {
+                    draw = draw.draw_indexed(&DrawIndexed {
+                        vertices: chunk.vertex_buffer,
+                        indices: skirt_draw.index_buffer,
+                        bind_tables: [Some(camera_table), None, None, None],
+                        dynamic_buffers: Default::default(),
+                        instance_count: 1,
+                        first_instance: 0,
+                        index_count: skirt_draw.index_count,
+                    });
+                }
+            }
 
             let stream = draw
                 .stop_drawing()
@@ -416,10 +471,10 @@ fn terrain_db_error(err: NorenError) -> Box<dyn Error> {
     Box::new(err)
 }
 
-fn build_terrain_mesh(
+fn build_terrain_normalization(
     artifacts: &[TerrainChunkArtifact],
     settings: &TerrainProjectSettings,
-) -> (Vec<TerrainVertex>, Vec<u32>) {
+) -> TerrainNormalization {
     let world_min = settings.world_bounds_min;
     let world_max = settings.world_bounds_max;
     let world_size_x = (world_max[0] - world_min[0]).max(1.0);
@@ -440,46 +495,139 @@ fn build_terrain_mesh(
     let inv_scale_y = 1.0 / norm_scale_y.max(0.001);
     let inv_scale_z = 1.0 / norm_scale_z.max(0.001);
 
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    TerrainNormalization {
+        world_min,
+        world_size_x,
+        world_size_y,
+        min_height,
+        height_range,
+        inv_scale_x,
+        inv_scale_y,
+        inv_scale_z,
+    }
+}
 
-    for artifact in artifacts {
-        let base_index = vertices.len() as u32;
-        for vertex in &artifact.vertices {
-            let world_x = vertex.position[0];
-            let world_y = vertex.position[1];
-            let height = vertex.position[2];
-            let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
-            let norm_y = ((world_y - world_min[1]) / world_size_y) * 2.0 - 1.0;
-            let norm_z = ((height - min_height) / height_range) * 2.0 - 1.0;
-            let normal = normalize_vec3([
-                vertex.normal[0] * inv_scale_x,
-                vertex.normal[1] * inv_scale_y,
-                vertex.normal[2] * inv_scale_z,
-            ]);
-            let t = ((height - min_height) / height_range).clamp(0.0, 1.0);
-            let color = [
-                0.1 + 0.4 * t,
-                0.3 + 0.5 * t,
-                0.2 + 0.2 * t,
+fn build_tile_draws(
+    ctx: &mut Context,
+    tiles_per_chunk: [u32; 2],
+) -> Result<Vec<TerrainTileDraw>, Box<dyn Error>> {
+    let grid_x = tiles_per_chunk[0] + 1;
+    let mut tile_draws = Vec::new();
+    for y in 0..tiles_per_chunk[1] {
+        for x in 0..tiles_per_chunk[0] {
+            let base = y * grid_x + x;
+            let indices = [
+                base,
+                base + grid_x,
+                base + 1,
+                base + 1,
+                base + grid_x,
+                base + grid_x + 1,
             ];
-
-            vertices.push(TerrainVertex {
-                position: [norm_x, norm_y, norm_z],
-                normal,
-                color,
+            let index_bytes = bytemuck::cast_slice(&indices);
+            let index_buffer = ctx.make_buffer(&BufferInfo {
+                debug_name: "terrain_tile_indices",
+                byte_size: index_bytes.len() as u32,
+                visibility: MemoryVisibility::Gpu,
+                usage: BufferUsage::INDEX,
+                initial_data: Some(index_bytes),
+            })?;
+            tile_draws.push(TerrainTileDraw {
+                index_buffer,
+                index_count: indices.len() as u32,
             });
         }
-
-        indices.extend(
-            artifact
-                .indices
-                .iter()
-                .map(|index| base_index + *index),
-        );
     }
 
-    (vertices, indices)
+    Ok(tile_draws)
+}
+
+fn build_chunk_draws(
+    ctx: &mut Context,
+    artifacts: &[TerrainChunkArtifact],
+    normalization: &TerrainNormalization,
+    settings: &TerrainProjectSettings,
+) -> Result<Vec<TerrainChunkDraw>, Box<dyn Error>> {
+    let mut draws = Vec::new();
+    let tile_index_count = (settings.tiles_per_chunk[0] * settings.tiles_per_chunk[1] * 6) as usize;
+
+    for artifact in artifacts {
+        let vertices = build_chunk_vertices(artifact, normalization);
+        let vertex_bytes = bytemuck::cast_slice(&vertices);
+        let vertex_buffer = ctx.make_buffer(&BufferInfo {
+            debug_name: "terrain_chunk_vertices",
+            byte_size: vertex_bytes.len() as u32,
+            visibility: MemoryVisibility::CpuAndGpu,
+            usage: BufferUsage::VERTEX,
+            initial_data: Some(vertex_bytes),
+        })?;
+
+        let skirt_draw = if artifact.indices.len() > tile_index_count {
+            let skirt_indices = &artifact.indices[tile_index_count..];
+            let skirt_bytes = bytemuck::cast_slice(skirt_indices);
+            let skirt_buffer = ctx.make_buffer(&BufferInfo {
+                debug_name: "terrain_chunk_skirt_indices",
+                byte_size: skirt_bytes.len() as u32,
+                visibility: MemoryVisibility::Gpu,
+                usage: BufferUsage::INDEX,
+                initial_data: Some(skirt_bytes),
+            })?;
+            Some(TerrainTileDraw {
+                index_buffer: skirt_buffer,
+                index_count: skirt_indices.len() as u32,
+            })
+        } else {
+            None
+        };
+
+        draws.push(TerrainChunkDraw {
+            vertex_buffer,
+            skirt_draw,
+        });
+    }
+
+    Ok(draws)
+}
+
+fn build_chunk_vertices(
+    artifact: &TerrainChunkArtifact,
+    normalization: &TerrainNormalization,
+) -> Vec<TerrainVertex> {
+    let TerrainNormalization {
+        world_min,
+        world_size_x,
+        world_size_y,
+        min_height,
+        height_range,
+        inv_scale_x,
+        inv_scale_y,
+        inv_scale_z,
+    } = *normalization;
+
+    let mut vertices = Vec::with_capacity(artifact.vertices.len());
+    for vertex in &artifact.vertices {
+        let world_x = vertex.position[0];
+        let world_y = vertex.position[1];
+        let height = vertex.position[2];
+        let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
+        let norm_y = ((world_y - world_min[1]) / world_size_y) * 2.0 - 1.0;
+        let norm_z = ((height - min_height) / height_range) * 2.0 - 1.0;
+        let normal = normalize_vec3([
+            vertex.normal[0] * inv_scale_x,
+            vertex.normal[1] * inv_scale_y,
+            vertex.normal[2] * inv_scale_z,
+        ]);
+        let t = ((height - min_height) / height_range).clamp(0.0, 1.0);
+        let color = [0.1 + 0.4 * t, 0.3 + 0.5 * t, 0.2 + 0.2 * t];
+
+        vertices.push(TerrainVertex {
+            position: [norm_x, norm_y, norm_z],
+            normal,
+            color,
+        });
+    }
+
+    vertices
 }
 
 fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
@@ -502,6 +650,27 @@ fn make_view_matrix(zoom: f32, offset: [f32; 2]) -> [[f32; 4]; 4] {
     ]
 }
 
+fn make_projection_matrix(near_plane: f32, far_plane: f32) -> [[f32; 4]; 4] {
+    let left = -1.0;
+    let right = 1.0;
+    let bottom = -1.0;
+    let top = 1.0;
+    let rl = (right - left);
+    let tb = (top - bottom);
+    let fn_plane = (far_plane - near_plane);
+
+    [
+        [2.0 / rl, 0.0, 0.0, 0.0],
+        [0.0, 2.0 / tb, 0.0, 0.0],
+        [0.0, 0.0, 1.0 / fn_plane, 0.0],
+        [
+            -(right + left) / rl,
+            -(top + bottom) / tb,
+            -near_plane / fn_plane,
+            1.0,
+        ],
+    ]
+}
 fn write_camera_buffer(
     ctx: &mut Context,
     buffer: Handle<Buffer>,
