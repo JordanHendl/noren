@@ -11,7 +11,17 @@ use dashi::driver::command::{BeginDrawing, BlitImage, DrawIndexed};
 use dashi::*;
 use inline_spirv::inline_spirv;
 use noren::{
-    rdb::terrain::{TerrainChunkArtifact, TerrainProjectSettings, parse_chunk_artifact_entry},
+    rdb::terrain::{
+        TerrainCameraInfo,
+        TerrainChunkArtifact,
+        TerrainFrustum,
+        TerrainProjectSettings,
+        chunk_artifact_entry,
+        chunk_coord_key,
+        chunk_coords_in_frustum,
+        lod_key,
+        parse_chunk_artifact_entry,
+    },
     NorenError,
 };
 use winit::event::{
@@ -43,14 +53,10 @@ struct CameraUniform {
     projection: [[f32; 4]; 4],
 }
 
-struct TerrainTileDraw {
-    index_buffer: Handle<Buffer>,
-    index_count: u32,
-}
-
 struct TerrainChunkDraw {
     vertex_buffer: Handle<Buffer>,
-    skirt_draw: Option<TerrainTileDraw>,
+    index_buffer: Handle<Buffer>,
+    index_count: u32,
 }
 
 struct TerrainNormalization {
@@ -111,8 +117,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     let normalization = build_terrain_normalization(&artifacts, &settings);
-    let tile_draws = build_tile_draws(&mut ctx, settings.tiles_per_chunk)?;
-    let chunk_draws = build_chunk_draws(&mut ctx, &artifacts, &normalization, &settings)?;
+    let entry_set: std::collections::HashSet<_> = entries.into_iter().collect();
 
     const WIDTH: u32 = 1280;
     const HEIGHT: u32 = 720;
@@ -312,6 +317,19 @@ void main() {
         .binding(0, &camera_binding)
         .build(&mut ctx)?;
 
+    let mut chunk_draws = Vec::new();
+    let mut camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
+    refresh_visible_chunks(
+        &mut ctx,
+        &mut db,
+        project_key,
+        &entry_set,
+        &camera_info,
+        &normalization,
+        &settings,
+        &mut chunk_draws,
+    )?;
+
     loop {
         let mut should_exit = false;
         let mut zoom_delta = 0.0f32;
@@ -374,6 +392,17 @@ void main() {
                 projection,
             };
             write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
+            camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
+            refresh_visible_chunks(
+                &mut ctx,
+                &mut db,
+                project_key,
+                &entry_set,
+                &camera_info,
+                &normalization,
+                &settings,
+                &mut chunk_draws,
+            )?;
         }
 
         let (img, sem, _idx, _good) = ctx.acquire_new_image(&mut display)?;
@@ -418,28 +447,15 @@ void main() {
 
             let mut draw = draw;
             for chunk in &chunk_draws {
-                for tile_draw in &tile_draws {
-                    draw = draw.draw_indexed(&DrawIndexed {
-                        vertices: chunk.vertex_buffer,
-                        indices: tile_draw.index_buffer,
-                        bind_tables: [Some(camera_table), None, None, None],
-                        dynamic_buffers: Default::default(),
-                        instance_count: 1,
-                        first_instance: 0,
-                        index_count: tile_draw.index_count,
-                    });
-                }
-                if let Some(skirt_draw) = &chunk.skirt_draw {
-                    draw = draw.draw_indexed(&DrawIndexed {
-                        vertices: chunk.vertex_buffer,
-                        indices: skirt_draw.index_buffer,
-                        bind_tables: [Some(camera_table), None, None, None],
-                        dynamic_buffers: Default::default(),
-                        instance_count: 1,
-                        first_instance: 0,
-                        index_count: skirt_draw.index_count,
-                    });
-                }
+                draw = draw.draw_indexed(&DrawIndexed {
+                    vertices: chunk.vertex_buffer,
+                    indices: chunk.index_buffer,
+                    bind_tables: [Some(camera_table), None, None, None],
+                    dynamic_buffers: Default::default(),
+                    instance_count: 1,
+                    first_instance: 0,
+                    index_count: chunk.index_count,
+                });
             }
 
             let stream = draw
@@ -507,49 +523,12 @@ fn build_terrain_normalization(
     }
 }
 
-fn build_tile_draws(
-    ctx: &mut Context,
-    tiles_per_chunk: [u32; 2],
-) -> Result<Vec<TerrainTileDraw>, Box<dyn Error>> {
-    let grid_x = tiles_per_chunk[0] + 1;
-    let mut tile_draws = Vec::new();
-    for y in 0..tiles_per_chunk[1] {
-        for x in 0..tiles_per_chunk[0] {
-            let base = y * grid_x + x;
-            let indices = [
-                base,
-                base + grid_x,
-                base + 1,
-                base + 1,
-                base + grid_x,
-                base + grid_x + 1,
-            ];
-            let index_bytes = bytemuck::cast_slice(&indices);
-            let index_buffer = ctx.make_buffer(&BufferInfo {
-                debug_name: "terrain_tile_indices",
-                byte_size: index_bytes.len() as u32,
-                visibility: MemoryVisibility::Gpu,
-                usage: BufferUsage::INDEX,
-                initial_data: Some(index_bytes),
-            })?;
-            tile_draws.push(TerrainTileDraw {
-                index_buffer,
-                index_count: indices.len() as u32,
-            });
-        }
-    }
-
-    Ok(tile_draws)
-}
-
 fn build_chunk_draws(
     ctx: &mut Context,
     artifacts: &[TerrainChunkArtifact],
     normalization: &TerrainNormalization,
-    settings: &TerrainProjectSettings,
 ) -> Result<Vec<TerrainChunkDraw>, Box<dyn Error>> {
     let mut draws = Vec::new();
-    let tile_index_count = (settings.tiles_per_chunk[0] * settings.tiles_per_chunk[1] * 6) as usize;
 
     for artifact in artifacts {
         let vertices = build_chunk_vertices(artifact, normalization);
@@ -562,27 +541,19 @@ fn build_chunk_draws(
             initial_data: Some(vertex_bytes),
         })?;
 
-        let skirt_draw = if artifact.indices.len() > tile_index_count {
-            let skirt_indices = &artifact.indices[tile_index_count..];
-            let skirt_bytes = bytemuck::cast_slice(skirt_indices);
-            let skirt_buffer = ctx.make_buffer(&BufferInfo {
-                debug_name: "terrain_chunk_skirt_indices",
-                byte_size: skirt_bytes.len() as u32,
-                visibility: MemoryVisibility::Gpu,
-                usage: BufferUsage::INDEX,
-                initial_data: Some(skirt_bytes),
-            })?;
-            Some(TerrainTileDraw {
-                index_buffer: skirt_buffer,
-                index_count: skirt_indices.len() as u32,
-            })
-        } else {
-            None
-        };
+        let index_bytes = bytemuck::cast_slice(artifact.indices.as_slice());
+        let index_buffer = ctx.make_buffer(&BufferInfo {
+            debug_name: "terrain_chunk_indices",
+            byte_size: index_bytes.len() as u32,
+            visibility: MemoryVisibility::Gpu,
+            usage: BufferUsage::INDEX,
+            initial_data: Some(index_bytes),
+        })?;
 
         draws.push(TerrainChunkDraw {
             vertex_buffer,
-            skirt_draw,
+            index_buffer,
+            index_count: artifact.indices.len() as u32,
         });
     }
 
@@ -670,6 +641,111 @@ fn make_projection_matrix(near_plane: f32, far_plane: f32) -> [[f32; 4]; 4] {
             1.0,
         ],
     ]
+}
+
+fn build_camera_info(
+    zoom: f32,
+    offset: [f32; 2],
+    settings: &TerrainProjectSettings,
+    normalization: &TerrainNormalization,
+) -> TerrainCameraInfo {
+    let frustum = build_camera_frustum(zoom, offset, normalization);
+    let center_xy = camera_world_point([0.0, 0.0], zoom, offset, normalization);
+    let center_z = (settings.world_bounds_min[2] + settings.world_bounds_max[2]) * 0.5;
+    let position = [center_xy[0], center_xy[1], center_z];
+    let max_dist = frustum
+        .iter()
+        .map(|corner| {
+            let dx = corner[0] - position[0];
+            let dy = corner[1] - position[1];
+            (dx * dx + dy * dy).sqrt()
+        })
+        .fold(0.0, f32::max);
+
+    TerrainCameraInfo {
+        frustum,
+        position,
+        curve: 1.0,
+        falloff: 0.35,
+        max_dist: max_dist.max(1.0),
+    }
+}
+
+fn build_camera_frustum(
+    zoom: f32,
+    offset: [f32; 2],
+    normalization: &TerrainNormalization,
+) -> TerrainFrustum {
+    [
+        camera_world_point([-1.0, -1.0], zoom, offset, normalization),
+        camera_world_point([1.0, -1.0], zoom, offset, normalization),
+        camera_world_point([1.0, 1.0], zoom, offset, normalization),
+        camera_world_point([-1.0, 1.0], zoom, offset, normalization),
+    ]
+}
+
+fn camera_world_point(
+    ndc: [f32; 2],
+    zoom: f32,
+    offset: [f32; 2],
+    normalization: &TerrainNormalization,
+) -> [f32; 2] {
+    let norm_x = ndc[0] / zoom - offset[0];
+    let norm_y = ndc[1] / zoom - offset[1];
+    let world_x = (norm_x + 1.0) * 0.5 * normalization.world_size_x + normalization.world_min[0];
+    let world_y = (norm_y + 1.0) * 0.5 * normalization.world_size_y + normalization.world_min[1];
+    [world_x, world_y]
+}
+
+fn chunk_center_world(settings: &TerrainProjectSettings, chunk_coords: [i32; 2]) -> [f32; 3] {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let origin_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
+    let origin_y = settings.world_bounds_min[1] + chunk_coords[1] as f32 * chunk_size_y;
+    let center_z = (settings.world_bounds_min[2] + settings.world_bounds_max[2]) * 0.5;
+    [
+        origin_x + chunk_size_x * 0.5,
+        origin_y + chunk_size_y * 0.5,
+        center_z,
+    ]
+}
+
+fn refresh_visible_chunks(
+    ctx: &mut Context,
+    db: &mut noren::DB,
+    project_key: &str,
+    entries: &std::collections::HashSet<String>,
+    camera: &TerrainCameraInfo,
+    normalization: &TerrainNormalization,
+    settings: &TerrainProjectSettings,
+    chunk_draws: &mut Vec<TerrainChunkDraw>,
+) -> Result<(), Box<dyn Error>> {
+    let mut artifacts = Vec::new();
+    for coords in chunk_coords_in_frustum(settings, &camera.frustum) {
+        let center = chunk_center_world(settings, coords);
+        let dx = center[0] - camera.position[0];
+        let dy = center[1] - camera.position[1];
+        let dz = center[2] - camera.position[2];
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        if distance > camera.max_dist {
+            continue;
+        }
+
+        let lod = camera.lod_for_distance(settings, distance);
+        let coord_key = chunk_coord_key(coords[0], coords[1]);
+        let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key(lod));
+        if !entries.contains(&entry) {
+            continue;
+        }
+        let artifact: TerrainChunkArtifact = db
+            .terrain_mut()
+            .fetch_chunk_artifact(&entry)
+            .map_err(|err| terrain_db_error(err))?;
+        artifacts.push(artifact);
+    }
+
+    *chunk_draws = build_chunk_draws(ctx, &artifacts, normalization)?;
+    Ok(())
 }
 fn write_camera_buffer(
     ctx: &mut Context,

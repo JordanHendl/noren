@@ -1033,6 +1033,55 @@ impl TerrainDB {
         Ok(chunks)
     }
 
+    /// Fetches the sampled height at a world-space coordinate.
+    pub fn fetch_height_at(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        coord: [f32; 2],
+    ) -> Option<f32> {
+        let chunk_coords = self.chunk_id_at(settings, coord)?;
+        let coord_key = chunk_coord_key(chunk_coords[0], chunk_coords[1]);
+        let artifact_entry = chunk_artifact_entry(project_key, &coord_key, &lod_key(0));
+        if let Ok(artifact) = self.fetch_chunk_artifact(artifact_entry.as_str()) {
+            if let Some(height) = height_from_artifact(settings, &artifact, coord[0], coord[1]) {
+                return Some(height);
+            }
+        }
+
+        let chunk_entry = format!("terrain/chunk_{}_{}", chunk_coords[0], chunk_coords[1]);
+        if let Ok(chunk) = self.fetch_chunk(chunk_entry.as_str()) {
+            return chunk.height_at_world(coord[0], coord[1]);
+        }
+
+        None
+    }
+
+    /// Fetches the slope (0-1) at a world-space coordinate.
+    pub fn fetch_slope_at(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        coord: [f32; 2],
+    ) -> Option<f32> {
+        let step = settings.tile_size.max(0.001);
+        let left = self.fetch_height_at(settings, project_key, [coord[0] - step, coord[1]])?;
+        let right = self.fetch_height_at(settings, project_key, [coord[0] + step, coord[1]])?;
+        let down = self.fetch_height_at(settings, project_key, [coord[0], coord[1] - step])?;
+        let up = self.fetch_height_at(settings, project_key, [coord[0], coord[1] + step])?;
+
+        let dzdx = (right - left) / (2.0 * step);
+        let dzdy = (up - down) / (2.0 * step);
+        let mut nx = -dzdx;
+        let mut ny = -dzdy;
+        let mut nz = 1.0;
+        let length = (nx * nx + ny * ny + nz * nz).sqrt().max(0.001);
+        nx /= length;
+        ny /= length;
+        nz /= length;
+        Some((1.0 - nz.abs().clamp(0.0, 1.0)).clamp(0.0, 1.0))
+    }
+
     /// Returns the chunk grid id at a given world-space coordinate.
     pub fn chunk_id_at(
         &self,
@@ -1057,6 +1106,46 @@ impl TerrainDB {
     pub fn has_data(&self) -> bool {
         self.data.is_some() || self.fallback_chunk.is_some()
     }
+}
+
+fn height_from_artifact(
+    settings: &TerrainProjectSettings,
+    artifact: &TerrainChunkArtifact,
+    world_x: f32,
+    world_y: f32,
+) -> Option<f32> {
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let origin_x = settings.world_bounds_min[0] + artifact.chunk_coords[0] as f32 * chunk_size_x;
+    let origin_y = settings.world_bounds_min[1] + artifact.chunk_coords[1] as f32 * chunk_size_y;
+    let local_x = (world_x - origin_x) / settings.tile_size;
+    let local_y = (world_y - origin_y) / settings.tile_size;
+
+    if local_x < 0.0 || local_y < 0.0 {
+        return None;
+    }
+    let grid_x = settings.tiles_per_chunk[0].saturating_add(1);
+    let grid_y = settings.tiles_per_chunk[1].saturating_add(1);
+    let max_x = grid_x.saturating_sub(1) as f32;
+    let max_y = grid_y.saturating_sub(1) as f32;
+    if local_x > max_x || local_y > max_y {
+        return None;
+    }
+
+    let x0 = local_x.floor() as u32;
+    let y0 = local_y.floor() as u32;
+    let x1 = (x0 + 1).min(grid_x - 1);
+    let y1 = (y0 + 1).min(grid_y - 1);
+    let idx = |x: u32, y: u32| -> usize { (y * grid_x + x) as usize };
+    let h00 = artifact.vertices.get(idx(x0, y0))?.position[2];
+    let h10 = artifact.vertices.get(idx(x1, y0))?.position[2];
+    let h01 = artifact.vertices.get(idx(x0, y1))?.position[2];
+    let h11 = artifact.vertices.get(idx(x1, y1))?.position[2];
+    let tx = local_x - x0 as f32;
+    let ty = local_y - y0 as f32;
+    let hx0 = h00 + (h10 - h00) * tx;
+    let hx1 = h01 + (h11 - h01) * tx;
+    Some(hx0 + (hx1 - hx0) * ty)
 }
 
 fn default_terrain_chunk() -> TerrainChunk {
@@ -1298,6 +1387,51 @@ mod tests {
         assert_eq!(chunk.tiles_per_chunk, [64, 64]);
         assert!(chunk.tiles.iter().all(|tile| tile.tile_id == 1));
         assert!(chunk.heights.iter().all(|height| *height == 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn terrain_db_fetches_height_samples() -> Result<(), NorenError> {
+        let temp = tempdir().expect("temp dir");
+        let path = temp.path().join("terrain.rdb");
+        let mut file = RDBFile::new();
+        file.add("terrain/chunk_0_0", &sample_chunk())?;
+        file.save(&path)?;
+
+        let mut settings = TerrainProjectSettings::default();
+        settings.tile_size = 1.0;
+        settings.tiles_per_chunk = [2, 2];
+        settings.world_bounds_min = [0.0, 0.0, 0.0];
+        settings.world_bounds_max = [2.0, 2.0, 0.0];
+
+        let mut db = TerrainDB::new(path.to_str().unwrap());
+        let height = db
+            .fetch_height_at(&settings, "sample", [0.5, 0.5])
+            .expect("height sample");
+        assert!((height - 1.0).abs() < 0.0001);
+        Ok(())
+    }
+
+    #[test]
+    fn terrain_db_fetches_slope_samples() -> Result<(), NorenError> {
+        let temp = tempdir().expect("temp dir");
+        let path = temp.path().join("terrain.rdb");
+        let mut file = RDBFile::new();
+        file.add("terrain/chunk_0_0", &sample_chunk())?;
+        file.save(&path)?;
+
+        let mut settings = TerrainProjectSettings::default();
+        settings.tile_size = 1.0;
+        settings.tiles_per_chunk = [2, 2];
+        settings.world_bounds_min = [0.0, 0.0, 0.0];
+        settings.world_bounds_max = [2.0, 2.0, 0.0];
+
+        let mut db = TerrainDB::new(path.to_str().unwrap());
+        let slope = db
+            .fetch_slope_at(&settings, "sample", [1.0, 1.0])
+            .expect("slope sample");
+        let expected = 1.0 - (1.0 / 3.0_f32.sqrt());
+        assert!((slope - expected).abs() < 0.0001);
         Ok(())
     }
 

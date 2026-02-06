@@ -477,6 +477,26 @@ impl DB {
             .fetch_chunks_for_camera(settings, project_key, camera)
     }
 
+    /// Fetches the sampled terrain height at a world-space coordinate.
+    pub fn fetch_terrain_height_at(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        coord: [f32; 2],
+    ) -> Option<f32> {
+        self.terrain.fetch_height_at(settings, project_key, coord)
+    }
+
+    /// Fetches the sampled terrain slope (0-1) at a world-space coordinate.
+    pub fn fetch_terrain_slope_at(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        coord: [f32; 2],
+    ) -> Option<f32> {
+        self.terrain.fetch_slope_at(settings, project_key, coord)
+    }
+
     /// Enumerates logical texture definitions declared in the model layout.
     pub fn enumerate_textures(&self) -> Vec<String> {
         self.meta_layout
