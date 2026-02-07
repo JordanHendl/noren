@@ -449,7 +449,7 @@ impl DB {
         center: [f32; 2],
         radius: f32,
         lod: u8,
-    ) -> Result<Vec<TerrainChunk>, NorenError> {
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         self.terrain
             .fetch_chunks_around(settings, project_key, center, radius, lod)
     }
@@ -461,7 +461,7 @@ impl DB {
         project_key: &str,
         frustum: &TerrainFrustum,
         lod: u8,
-    ) -> Result<Vec<TerrainChunk>, NorenError> {
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         self.terrain
             .fetch_chunks_in_frustum(settings, project_key, frustum, lod)
     }

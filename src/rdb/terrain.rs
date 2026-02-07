@@ -419,6 +419,9 @@ pub struct TerrainChunkArtifact {
     pub normals: Vec<[f32; 3]>,
     #[serde(default)]
     pub hole_masks: Vec<u8>,
+    /// Packed blend texture (RGBA) derived from material weights.
+    #[serde(default)]
+    pub material_blend_texture: Vec<[u8; 4]>,
     #[serde(default)]
     pub material_ids: Option<Vec<[u32; 4]>>,
     #[serde(default)]
@@ -854,8 +857,6 @@ pub struct TerrainChunk {
     pub bounds_min: [f32; 3],
     /// World-space bounds maximum (x, y, z) for the chunk.
     pub bounds_max: [f32; 3],
-    /// Geometry entry name for the chunk mesh.
-    pub mesh_entry: String,
 }
 
 impl TerrainChunk {
@@ -1124,7 +1125,7 @@ impl TerrainDB {
         center: [f32; 2],
         radius: f32,
         lod: u8,
-    ) -> Result<Vec<TerrainChunk>, NorenError> {
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         let entries = chunk_coords_in_radius(settings, center, radius)
             .into_iter()
             .map(|coords| {
@@ -1147,7 +1148,7 @@ impl TerrainDB {
                     continue;
                 }
             }
-            chunks.push(self.fetch_chunk(entry.as_str())?);
+            chunks.push(self.fetch_chunk_artifact(entry.as_str())?);
         }
 
         Ok(chunks)
@@ -1159,7 +1160,7 @@ impl TerrainDB {
         project_key: &str,
         frustum: &TerrainFrustum,
         lod: u8,
-    ) -> Result<Vec<TerrainChunk>, NorenError> {
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         let entries = chunk_coords_in_frustum(settings, frustum)
             .into_iter()
             .map(|coords| {
@@ -1182,7 +1183,7 @@ impl TerrainDB {
                     continue;
                 }
             }
-            chunks.push(self.fetch_chunk(entry.as_str())?);
+            chunks.push(self.fetch_chunk_artifact(entry.as_str())?);
         }
 
         Ok(chunks)
@@ -1421,7 +1422,6 @@ fn default_terrain_chunk() -> TerrainChunk {
         heights: vec![0.0; height_count as usize],
         bounds_min: [0.0, min_height, 0.0],
         bounds_max: [chunk_size_x, max_height, chunk_size_z],
-        mesh_entry: "mesh/terrain_chunk".to_string(),
     }
 }
 
@@ -1460,7 +1460,6 @@ mod tests {
             heights: vec![0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 4.0],
             bounds_min: [0.0, 0.0, 0.0],
             bounds_max: [2.0, 4.0, 2.0],
-            mesh_entry: "mesh/terrain_chunk".to_string(),
         }
     }
 
@@ -1562,6 +1561,12 @@ mod tests {
                 [0.0, 1.0, 0.0],
             ],
             hole_masks: vec![0, 0, 0, 0],
+            material_blend_texture: vec![
+                [178, 76, 0, 0],
+                [153, 102, 0, 0],
+                [128, 128, 0, 0],
+                [102, 153, 0, 0],
+            ],
             material_ids: Some(vec![
                 [10, 20, 0, 0],
                 [10, 20, 0, 0],
@@ -1628,7 +1633,7 @@ mod tests {
 
         let mut db = TerrainDB::new(path.to_str().unwrap());
         let chunk = db.fetch_chunk("terrain/chunk_0_0")?;
-        assert_eq!(chunk.mesh_entry, "mesh/terrain_chunk");
+        assert_eq!(chunk.chunk_coords, [0, 0]);
         Ok(())
     }
 

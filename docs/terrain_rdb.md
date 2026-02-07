@@ -43,7 +43,7 @@ All terrain entries share the prefix `terrain/` with the following keys:
 | Generator definition (versioned) | `terrain/generator/{project_key}/v{version}` |
 | Mutation layer (versioned) | `terrain/mutation_layer/{project_key}/{layer_id}/v{version}` |
 | Mutation op (append-only) | `terrain/mutation_op/{project_key}/{layer_id}/v{version}/o{order}/e{event}` |
-| Chunk artifact | `terrain/chunk_artifact/{project_key}/{chunk_coord}/{lod_key}` |
+| Chunk heightmap artifact | `terrain/chunk_artifact/{project_key}/{chunk_coord}/{lod_key}` |
 | Chunk state | `terrain/chunk_state/{project_key}/{chunk_coord}` |
 | Raw chunk samples | `terrain/chunk_{x}_{y}` |
 
@@ -101,20 +101,23 @@ support change tracking. Fields include:
 - `timestamp`: event timestamp
 - `author`: optional author string
 
-### Chunk artifact (`TerrainChunkArtifact`)
+### Chunk heightmap artifact (`TerrainChunkArtifact`)
 
-Mesh data generated for a specific project chunk and LOD.
+Heightmap tiles and metadata for a specific project chunk and LOD. These
+artifacts intentionally avoid geometry and instead store map data suitable for
+generating meshes or textures at runtime.
 
 - `project_key`, `chunk_coords` (`[i32; 2]`), `lod`
-- `bounds_min`, `bounds_max`: world-space bounds for the mesh
-- `vertex_layout`: currently `Standard`
-- `vertices`: list of `Vertex` records (position, normal, tangent, UV, color,
-  joint indices, joint weights)
-- `indices`: triangle index buffer (`u32`)
-- `material_ids`: optional material id per vertex
-- `material_weights`: optional material weight per vertex (`[f32; 4]`)
+- `bounds_min`, `bounds_max`: world-space bounds for the chunk
+- `grid_size`: heightmap grid dimensions (width, height)
+- `sample_spacing`: world-space spacing between height samples
+- `heights`: heightmap samples in row-major order
+- `normals`: normal map samples matching the heightmap grid
+- `hole_masks`: hole mask samples (0 = filled, non-zero = hole)
+- `material_blend_texture`: packed RGBA blend texture derived from material weights
+- `material_ids`: optional per-sample material id quartet
+- `material_weights`: optional per-sample material weight quartet
 - `content_hash`: content checksum for dependency tracking
-- `mesh_entry`: optional mesh entry name for downstream asset lookup
 
 ### Chunk state (`TerrainChunkState`)
 
@@ -130,11 +133,12 @@ Tracks build metadata and dependencies for a chunk.
 
 ### Raw chunk samples (`TerrainChunk`)
 
-Legacy/raw chunk data stored as `terrain/chunk_{x}_{y}`.
+Legacy/raw chunk heightmaps stored as `terrain/chunk_{x}_{y}`. These entries
+store height samples and metadata only, with no geometry references.
 
 - `chunk_coords`: chunk-space `[i32; 2]`
 - `origin`: world-space origin `[f32; 2]` (x/z)
 - `tile_size`, `tiles_per_chunk`
 - `tiles`: `TerrainTile` array (tile id + flags), row-major
 - `heights`: height samples stored in a `(width + 1) x (height + 1)` grid
-- `mesh_entry`: mesh entry name for rendering
+- `bounds_min`, `bounds_max`: world-space bounding boxes for the chunk

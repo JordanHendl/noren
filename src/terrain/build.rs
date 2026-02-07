@@ -266,6 +266,7 @@ pub fn build_terrain_chunk_with_context(
         heights,
         normals,
         hole_masks,
+        material_blend_texture,
         material_ids,
         material_weights,
         bounds_min,
@@ -290,6 +291,7 @@ pub fn build_terrain_chunk_with_context(
         heights,
         normals,
         hole_masks,
+        material_blend_texture,
         material_ids,
         material_weights,
         content_hash,
@@ -472,6 +474,7 @@ fn generate_chunk_maps_phased(
     Vec<f32>,
     Vec<[f32; 3]>,
     Vec<u8>,
+    Vec<[u8; 4]>,
     Option<Vec<[u32; 4]>>,
     Option<Vec<[f32; 4]>>,
     [f32; 3],
@@ -487,6 +490,7 @@ fn generate_chunk_maps_phased(
     let (
         mut normals,
         mut hole_masks,
+        mut material_blend_texture,
         mut material_ids,
         mut material_weights,
         bounds_min,
@@ -499,6 +503,7 @@ fn generate_chunk_maps_phased(
     phase_callback(TerrainChunkBuildPhase::Optimize);
     normals.shrink_to_fit();
     hole_masks.shrink_to_fit();
+    material_blend_texture.shrink_to_fit();
     if let Some(ids) = &mut material_ids {
         ids.shrink_to_fit();
     }
@@ -516,6 +521,7 @@ fn generate_chunk_maps_phased(
         field.heights,
         normals,
         hole_masks,
+        material_blend_texture,
         material_ids,
         material_weights,
         bounds_min,
@@ -569,6 +575,7 @@ fn build_chunk_maps(
 ) -> (
     Vec<[f32; 3]>,
     Vec<u8>,
+    Vec<[u8; 4]>,
     Option<Vec<[u32; 4]>>,
     Option<Vec<[f32; 4]>>,
     [f32; 3],
@@ -630,9 +637,12 @@ fn build_chunk_maps(
         max_bounds = [0.0; 3];
     }
 
+    let material_blend_texture = pack_blend_texture(&material_weights);
+
     (
         normals,
         hole_masks,
+        material_blend_texture,
         Some(material_ids),
         Some(material_weights),
         min_bounds,
@@ -674,7 +684,7 @@ pub fn build_heightmap_chunk_artifact(
         heights,
     };
 
-    let (normals, hole_masks, material_ids, material_weights, bounds_min, bounds_max) =
+    let (normals, hole_masks, material_blend_texture, material_ids, material_weights, bounds_min, bounds_max) =
         build_chunk_maps(settings, generator, mutation_layers, &field);
     let sample_spacing = settings.tile_size * step as f32;
     let content_hash = hash_serialize(&HeightmapChunkHashInput {
@@ -700,10 +710,29 @@ pub fn build_heightmap_chunk_artifact(
         heights: field.heights,
         normals,
         hole_masks,
+        material_blend_texture,
         material_ids,
         material_weights,
         content_hash,
     }
+}
+
+fn pack_blend_texture(weights: &[[f32; 4]]) -> Vec<[u8; 4]> {
+    weights
+        .iter()
+        .map(|weight| {
+            let pack = |value: f32| -> u8 {
+                let clamped = value.clamp(0.0, 1.0);
+                (clamped * 255.0).round().clamp(0.0, 255.0) as u8
+            };
+            [
+                pack(weight[0]),
+                pack(weight[1]),
+                pack(weight[2]),
+                pack(weight[3]),
+            ]
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]

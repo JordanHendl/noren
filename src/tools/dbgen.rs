@@ -2519,7 +2519,6 @@ fn import_terrain_heightmap(
                 heights,
                 bounds_min,
                 bounds_max,
-                mesh_entry: "mesh/terrain_chunk".to_string(),
             };
             let entry = format!("terrain/chunk_{chunk_x}_{chunk_y}");
             rdb.add(&entry, &chunk).map_err(BuildError::from)?;

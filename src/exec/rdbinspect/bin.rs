@@ -440,7 +440,7 @@ fn describe_terrain(chunk: &TerrainChunk) -> String {
     let tile_count = chunk.tiles.len();
     let height_count = chunk.heights.len();
     format!(
-        "Chunk coords: {:?}\nOrigin: {:?}\nTile size: {:.2}\nTiles: {:?} ({} entries)\nHeights: {} samples\nBounds: {:?} -> {:?}\nMesh entry: {}",
+        "Chunk coords: {:?}\nOrigin: {:?}\nTile size: {:.2}\nTiles: {:?} ({} entries)\nHeights: {} samples\nBounds: {:?} -> {:?}",
         chunk.chunk_coords,
         chunk.origin,
         chunk.tile_size,
@@ -448,8 +448,7 @@ fn describe_terrain(chunk: &TerrainChunk) -> String {
         tile_count,
         height_count,
         chunk.bounds_min,
-        chunk.bounds_max,
-        chunk.mesh_entry
+        chunk.bounds_max
     )
 }
 
@@ -461,7 +460,7 @@ fn describe_terrain_artifact(artifact: &TerrainChunkArtifact) -> String {
         .as_ref()
         .map(|weights| weights.len());
     format!(
-        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nGrid: {:?}\nSample spacing: {:.3}\nHeights: {}\nNormals: {}\nHoles: {}\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}",
+        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nGrid: {:?}\nSample spacing: {:.3}\nHeights: {}\nNormals: {}\nHoles: {}\nBlend texture: {}\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}",
         artifact.project_key,
         artifact.chunk_coords,
         artifact.lod,
@@ -472,6 +471,7 @@ fn describe_terrain_artifact(artifact: &TerrainChunkArtifact) -> String {
         sample_count,
         artifact.normals.len(),
         artifact.hole_masks.len(),
+        artifact.material_blend_texture.len(),
         artifact.content_hash,
         material_ids,
         material_weights,
