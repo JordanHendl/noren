@@ -920,7 +920,8 @@ impl TerrainDB {
             info!(resource = "terrain", entry = %entry, source = "fallback");
             return Ok(chunk.clone());
         }
-
+        
+        tracing::error!("Failed to fetch terrain chunk {} from RDB or fallback", entry);
         Err(NorenError::DataFailure())
     }
 
