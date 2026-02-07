@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
-    io::BufReader,
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -92,6 +92,60 @@ impl Logger {
             eprintln!("{}", message.as_ref());
         }
     }
+}
+
+struct ProgressBar {
+    label: String,
+    total: usize,
+    width: usize,
+    last_len: usize,
+}
+
+impl ProgressBar {
+    fn new(label: impl Into<String>, total: usize) -> Self {
+        Self {
+            label: label.into(),
+            total,
+            width: 30,
+            last_len: 0,
+        }
+    }
+
+    fn render(&mut self, current: usize) {
+        let total = self.total.max(1);
+        let current = current.min(total);
+        let ratio = current as f32 / total as f32;
+        let filled = (ratio * self.width as f32).round() as usize;
+        let filled = filled.min(self.width);
+        let empty = self.width - filled;
+        let percent = (ratio * 100.0).round() as u32;
+        let bar = format!(
+            "[{}{}]",
+            "#".repeat(filled),
+            "-".repeat(empty)
+        );
+        let message = format!(
+            "{} {} {:>3}% ({}/{})",
+            self.label, bar, percent, current, total
+        );
+        let padding = if message.len() < self.last_len {
+            " ".repeat(self.last_len - message.len())
+        } else {
+            String::new()
+        };
+        self.last_len = message.len();
+        eprint!("\r{message}{padding}");
+        let _ = std::io::stderr().flush();
+    }
+
+    fn finish(&mut self) {
+        self.render(self.total);
+        eprintln!();
+    }
+}
+
+fn print_stage(message: impl AsRef<str>) {
+    eprintln!("terrain: {}", message.as_ref());
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2145,6 +2199,7 @@ fn init_terrain_project(
     logger: &Logger,
     write_binaries: bool,
 ) -> Result<(), BuildError> {
+    print_stage("stage 1/3 - preparing project settings");
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2171,6 +2226,7 @@ fn init_terrain_project(
         settings.seed = seed;
     }
 
+    print_stage("stage 2/3 - writing project entries");
     let generator = TerrainGeneratorDefinition::default();
     settings.active_generator_version = generator.version;
 
@@ -2191,9 +2247,11 @@ fn init_terrain_project(
     .map_err(BuildError::from)?;
 
     if write_binaries {
+        print_stage("stage 3/3 - writing output");
         logger.log(format!("terrain: writing {}", args.rdb.display()));
         rdb.save(&args.rdb).map_err(BuildError::from)?;
     } else {
+        print_stage("stage 3/3 - skipping binary output (--layouts-only)");
         logger.log("terrain: skipping binary output (--layouts-only)");
     }
     Ok(())
@@ -2244,6 +2302,7 @@ fn import_terrain_project(
     logger: &Logger,
     write_binaries: bool,
 ) -> Result<(), BuildError> {
+    print_stage("stage 1/3 - reading project file");
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2261,6 +2320,7 @@ fn import_terrain_project(
         payload.project_key = project_key.clone();
     }
 
+    print_stage("stage 2/3 - writing project entries");
     rdb.add(
         &project_settings_entry(&payload.project_key),
         &payload.settings,
@@ -2293,9 +2353,11 @@ fn import_terrain_project(
     }
 
     if write_binaries {
+        print_stage("stage 3/3 - writing output");
         logger.log(format!("terrain: writing {}", args.rdb.display()));
         rdb.save(&args.rdb).map_err(BuildError::from)?;
     } else {
+        print_stage("stage 3/3 - skipping binary output (--layouts-only)");
         logger.log("terrain: skipping binary output (--layouts-only)");
     }
     Ok(())
@@ -2306,6 +2368,7 @@ fn import_terrain_heightmap(
     logger: &Logger,
     write_binaries: bool,
 ) -> Result<(), BuildError> {
+    print_stage("stage 1/3 - loading heightmap");
     if let Some(parent) = args.rdb.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2361,11 +2424,11 @@ fn import_terrain_heightmap(
         .unwrap_or_else(|| format!("{} Heightmap", args.project_key));
     settings.tile_size = args.tile_size;
     settings.tiles_per_chunk = [tiles_per_chunk, tiles_per_chunk];
-    settings.world_bounds_min = [0.0, 0.0, args.height_min];
+    settings.world_bounds_min = [0.0, args.height_min, 0.0];
     settings.world_bounds_max = [
         tiles_x as f32 * args.tile_size,
-        tiles_y as f32 * args.tile_size,
         args.height_max,
+        tiles_y as f32 * args.tile_size,
     ];
     settings.lod_policy.max_lod = args.max_lod;
 
@@ -2375,6 +2438,7 @@ fn import_terrain_heightmap(
     let layer = TerrainMutationLayer::new("layer-1", "Layer 1", 0);
     settings.active_mutation_version = layer.version;
 
+    print_stage("stage 2/3 - generating terrain chunks");
     rdb.add(&settings_key, &settings)
         .map_err(BuildError::from)?;
     rdb.add(
@@ -2402,6 +2466,10 @@ fn import_terrain_heightmap(
         chunk_count_x,
         chunk_count_y
     ));
+
+    let total_chunks = (chunk_count_x * chunk_count_y) as usize;
+    let mut progress = ProgressBar::new("terrain: chunks", total_chunks);
+    let mut processed_chunks = 0usize;
 
     for chunk_y in 0..chunk_count_y {
         for chunk_x in 0..chunk_count_x {
@@ -2456,13 +2524,21 @@ fn import_terrain_heightmap(
                 rdb.add(&artifact_entry, &artifact)
                     .map_err(BuildError::from)?;
             }
+
+            processed_chunks += 1;
+            progress.render(processed_chunks);
         }
+    }
+    if total_chunks > 0 {
+        progress.finish();
     }
 
     if write_binaries {
+        print_stage("stage 3/3 - writing output");
         logger.log(format!("terrain: writing {}", args.rdb.display()));
         rdb.save(&args.rdb).map_err(BuildError::from)?;
     } else {
+        print_stage("stage 3/3 - skipping binary output (--layouts-only)");
         logger.log("terrain: skipping binary output (--layouts-only)");
     }
     Ok(())
