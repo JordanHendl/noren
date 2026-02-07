@@ -592,31 +592,22 @@ fn terrain_camera_info_from_furikake(
     const DEFAULT_CURVE: f32 = 1.0;
     const DEFAULT_FALLOFF: f32 = 0.35;
 
-    let frustum = terrain_frustum_from_furikake(settings, camera);
+    let (frustum, max_dist) = terrain_frustum_from_furikake(settings, camera);
     let position = camera.position();
-    let max_dist = frustum
-        .iter()
-        .map(|corner| {
-            let dx = corner[0] - position.x;
-            let dz = corner[1] - position.z;
-            (dx * dx + dz * dz).sqrt()
-        })
-        .fold(0.0, f32::max)
-        .max(1.0);
 
     TerrainCameraInfo {
         frustum,
         position: [position.x, position.y, position.z],
         curve: DEFAULT_CURVE,
         falloff: DEFAULT_FALLOFF,
-        max_dist,
+        max_dist: max_dist.max(1.0),
     }
 }
 
 fn terrain_frustum_from_furikake(
     settings: &TerrainProjectSettings,
     camera: &FurikakeCamera,
-) -> TerrainFrustum {
+) -> (TerrainFrustum, f32) {
     let view = camera.view_matrix();
     let clip_to_world = (camera.projection * view).inverse();
     let position = camera.position();
@@ -631,6 +622,7 @@ fn terrain_frustum_from_furikake(
     ];
 
     let mut frustum = [[0.0; 2]; 4];
+    let mut max_dist: f32 = 0.0;
     for (idx, ndc) in corners.iter().enumerate() {
         let clip = Vec4::new(ndc[0], ndc[1], 1.0, 1.0);
         let world_h = clip_to_world * clip;
@@ -646,10 +638,12 @@ fn terrain_frustum_from_furikake(
                 position + dir * fallback_dist
             }
         };
+        let delta = point - position;
+        max_dist = max_dist.max(delta.length());
         frustum[idx] = [point.x, point.z];
     }
 
-    frustum
+    (frustum, max_dist)
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
