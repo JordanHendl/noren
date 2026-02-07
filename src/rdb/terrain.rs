@@ -876,6 +876,7 @@ impl TerrainDB {
         let fallback_chunk = if data.is_none() {
             Some(default_terrain_chunk())
         } else {
+            tracing::info!("Loaded TerrainRDB at {}!", module_path);
             None
         };
 
