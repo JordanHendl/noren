@@ -997,7 +997,73 @@ impl TerrainDB {
         let fallback_chunk = if data.is_none() {
             Some(default_terrain_chunk())
         } else {
-            tracing::info!("Loaded TerrainRDB at {}!", module_path);
+            if let Some(rdb) = data.as_ref() {
+                let entries = rdb.entries();
+                let mut projects = HashSet::new();
+                let mut project_settings = 0;
+                let mut generators = 0;
+                let mut mutation_layers = 0;
+                let mut mutation_ops = 0;
+                let mut chunk_artifacts = 0;
+                let mut chunk_states = 0;
+
+                for entry in &entries {
+                    if let Some(rest) = entry.name.strip_prefix(TERRAIN_PROJECT_PREFIX) {
+                        if let Some(rest) = rest.strip_prefix('/') {
+                            if let Some(project_key) = rest.split('/').next() {
+                                if !project_key.is_empty() {
+                                    projects.insert(project_key.to_string());
+                                }
+                            }
+                        }
+                        project_settings += 1;
+                    }
+                    if entry.name.starts_with(&format!("{}/", TERRAIN_GENERATOR_PREFIX)) {
+                        generators += 1;
+                    }
+                    if entry
+                        .name
+                        .starts_with(&format!("{}/", TERRAIN_MUTATION_LAYER_PREFIX))
+                    {
+                        mutation_layers += 1;
+                    }
+                    if entry
+                        .name
+                        .starts_with(&format!("{}/", TERRAIN_MUTATION_OP_PREFIX))
+                    {
+                        mutation_ops += 1;
+                    }
+                    if entry
+                        .name
+                        .starts_with(&format!("{}/", TERRAIN_CHUNK_ARTIFACT_PREFIX))
+                    {
+                        chunk_artifacts += 1;
+                    }
+                    if entry
+                        .name
+                        .starts_with(&format!("{}/", TERRAIN_CHUNK_STATE_PREFIX))
+                    {
+                        chunk_states += 1;
+                    }
+                }
+
+                let mut project_keys = projects.into_iter().collect::<Vec<_>>();
+                project_keys.sort();
+                tracing::info!(
+                    resource = "terrain",
+                    path = module_path,
+                    entries = entries.len(),
+                    projects = project_keys.len(),
+                    project_settings,
+                    generators,
+                    mutation_layers,
+                    mutation_ops,
+                    chunk_artifacts,
+                    chunk_states,
+                    project_keys = ?project_keys,
+                    "Loaded terrain database."
+                );
+            }
             None
         };
 
