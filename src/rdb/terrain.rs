@@ -1,3 +1,5 @@
+use dashi::Handle;
+use furikake::types::Camera as FurikakeCamera;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::info;
@@ -29,6 +31,7 @@ pub const TERRAIN_MUTATION_LAYER_PREFIX: &str = "terrain/mutation_layer";
 pub const TERRAIN_MUTATION_OP_PREFIX: &str = "terrain/mutation_op";
 pub const TERRAIN_CHUNK_ARTIFACT_PREFIX: &str = "terrain/chunk_artifact";
 pub const TERRAIN_CHUNK_STATE_PREFIX: &str = "terrain/chunk_state";
+pub const FURIKAKE_STATE_ENTRY: &str = "furikake/state";
 const DEFAULT_TERRAIN_CHUNK_ENTRY: &str = "terrain/chunk_0_0";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -577,6 +580,52 @@ impl TerrainCameraInfo {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct FurikakeCameraHandle {
+    pub slot: u16,
+    pub generation: u16,
+}
+
+impl From<Handle<FurikakeCamera>> for FurikakeCameraHandle {
+    fn from(value: Handle<FurikakeCamera>) -> Self {
+        Self {
+            slot: value.slot,
+            generation: value.generation,
+        }
+    }
+}
+
+impl From<FurikakeCameraHandle> for Handle<FurikakeCamera> {
+    fn from(value: FurikakeCameraHandle) -> Self {
+        Handle::new(value.slot, value.generation)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FurikakeCameraState {
+    pub handle: FurikakeCameraHandle,
+    pub info: TerrainCameraInfo,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct FurikakeStateSnapshot {
+    #[serde(default)]
+    pub cameras: Vec<FurikakeCameraState>,
+}
+
+impl FurikakeStateSnapshot {
+    pub fn camera_info(
+        &self,
+        handle: Handle<FurikakeCamera>,
+    ) -> Option<&TerrainCameraInfo> {
+        let target = FurikakeCameraHandle::from(handle);
+        self.cameras
+            .iter()
+            .find(|camera| camera.handle == target)
+            .map(|camera| &camera.info)
+    }
+}
+
 pub fn chunk_coords_for_world(
     settings: &TerrainProjectSettings,
     world_x: f32,
@@ -1002,6 +1051,60 @@ impl TerrainDB {
         project_key: &str,
         camera: &TerrainCameraInfo,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
+        let available = self.data.as_ref().map(|rdb| {
+            rdb.entries()
+                .into_iter()
+                .map(|meta| meta.name)
+                .collect::<HashSet<_>>()
+        });
+
+        Self::fetch_chunks_for_camera_with(
+            settings,
+            project_key,
+            camera,
+            available,
+            |entry| self.fetch_chunk_artifact(entry),
+        )
+    }
+
+    /// Fetches terrain chunk artifacts using camera data stored in a furikake state entry.
+    pub fn fetch_chunks_from_view(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        view: &mut RDBView,
+        camera: Handle<FurikakeCamera>,
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
+        let state: FurikakeStateSnapshot = view.fetch(FURIKAKE_STATE_ENTRY)?;
+        let camera_info = state
+            .camera_info(camera)
+            .ok_or(NorenError::DataFailure())?;
+        let available = Some(
+            view.entries()
+                .into_iter()
+                .map(|meta| meta.name)
+                .collect::<HashSet<_>>(),
+        );
+
+        Self::fetch_chunks_for_camera_with(
+            settings,
+            project_key,
+            camera_info,
+            available,
+            |entry| view.fetch::<TerrainChunkArtifact>(entry).map_err(NorenError::from),
+        )
+    }
+
+    fn fetch_chunks_for_camera_with<F>(
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        camera: &TerrainCameraInfo,
+        available: Option<HashSet<String>>,
+        mut fetch: F,
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError>
+    where
+        F: FnMut(&str) -> Result<TerrainChunkArtifact, NorenError>,
+    {
         let max_dist = camera.max_dist.max(0.0);
         if max_dist <= 0.0 {
             return Ok(Vec::new());
@@ -1025,13 +1128,6 @@ impl TerrainDB {
             })
             .collect::<Vec<_>>();
 
-        let available = self.data.as_ref().map(|rdb| {
-            rdb.entries()
-                .into_iter()
-                .map(|meta| meta.name)
-                .collect::<HashSet<_>>()
-        });
-
         let mut artifacts = Vec::new();
         for entry in entries {
             if let Some(available) = &available {
@@ -1039,7 +1135,7 @@ impl TerrainDB {
                     continue;
                 }
             }
-            artifacts.push(self.fetch_chunk_artifact(entry.as_str())?);
+            artifacts.push(fetch(entry.as_str())?);
         }
 
         Ok(artifacts)

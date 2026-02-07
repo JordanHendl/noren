@@ -259,11 +259,13 @@ void main() {
 
     let mut zoom = 1.0f32;
     let mut zoom_offset = [0.0f32, 0.0f32];
+    let mut yaw = 0.0f32;
+    let mut pitch = 0.0f32;
     let mut cursor_pos = [WIDTH as f32 * 0.5, HEIGHT as f32 * 0.5];
     let projection = make_projection_matrix(-10000.0, 10000.0);
 
     let camera_uniform = CameraUniform {
-        view: make_view_matrix(zoom, zoom_offset),
+        view: make_view_matrix(zoom, zoom_offset, yaw, pitch),
         projection,
     };
     let camera_buffer = ctx.make_buffer(&BufferInfo {
@@ -288,13 +290,15 @@ void main() {
 
     let mut chunk_draws = Vec::new();
     let mut chunk_cache = std::collections::HashMap::new();
-    let mut camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
+    let mut camera_info = build_camera_info(zoom, zoom_offset, yaw, &settings, &normalization);
     let mut visible_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut needs_refresh = true;
 
     loop {
         let mut should_exit = false;
         let mut zoom_delta = 0.0f32;
+        let mut rotate_delta = 0.0f32;
+        let mut pitch_delta = 0.0f32;
         {
             let event_loop = display.winit_event_loop();
             event_loop.run_return(|event, _target, control_flow| {
@@ -311,6 +315,28 @@ void main() {
                                 },
                             ..
                         } => should_exit = true,
+                        WindowEvent::KeyboardInput {
+                            input:
+                                KeyboardInput {
+                                    virtual_keycode: Some(keycode),
+                                    state: ElementState::Pressed,
+                                    ..
+                                },
+                            ..
+                        } => {
+                            if matches!(keycode, VirtualKeyCode::Q | VirtualKeyCode::A) {
+                                rotate_delta -= 1.0;
+                            }
+                            if matches!(keycode, VirtualKeyCode::E | VirtualKeyCode::D) {
+                                rotate_delta += 1.0;
+                            }
+                            if matches!(keycode, VirtualKeyCode::W | VirtualKeyCode::Up) {
+                                pitch_delta += 1.0;
+                            }
+                            if matches!(keycode, VirtualKeyCode::S | VirtualKeyCode::Down) {
+                                pitch_delta -= 1.0;
+                            }
+                        }
                         WindowEvent::CursorMoved { position, .. } => {
                             cursor_pos = [position.x as f32, position.y as f32];
                         }
@@ -340,22 +366,40 @@ void main() {
                 (cursor_pos[0] / WIDTH as f32) * 2.0 - 1.0,
                 1.0 - (cursor_pos[1] / HEIGHT as f32) * 2.0,
             ];
-            let world = [
-                cursor_ndc[0] / old_zoom - zoom_offset[0],
-                cursor_ndc[1] / old_zoom - zoom_offset[1],
-            ];
+            let world = camera_norm_from_ndc(cursor_ndc, old_zoom, zoom_offset, yaw);
+            let rotated = rotate_2d(world, yaw);
             zoom_offset = [
-                cursor_ndc[0] / new_zoom - world[0],
-                cursor_ndc[1] / new_zoom - world[1],
+                cursor_ndc[0] / new_zoom - rotated[0],
+                cursor_ndc[1] / new_zoom - rotated[1],
             ];
             zoom = new_zoom;
             let camera_uniform = CameraUniform {
-                view: make_view_matrix(zoom, zoom_offset),
+                view: make_view_matrix(zoom, zoom_offset, yaw, pitch),
                 projection,
             };
             write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
-            camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
+            camera_info = build_camera_info(zoom, zoom_offset, yaw, &settings, &normalization);
             needs_refresh = true;
+        }
+
+        if rotate_delta.abs() > f32::EPSILON {
+            yaw = (yaw + rotate_delta * 0.05) % std::f32::consts::TAU;
+            let camera_uniform = CameraUniform {
+                view: make_view_matrix(zoom, zoom_offset, yaw, pitch),
+                projection,
+            };
+            write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
+            camera_info = build_camera_info(zoom, zoom_offset, yaw, &settings, &normalization);
+            needs_refresh = true;
+        }
+
+        if pitch_delta.abs() > f32::EPSILON {
+            pitch = (pitch + pitch_delta * 0.05).clamp(-1.1, 1.1);
+            let camera_uniform = CameraUniform {
+                view: make_view_matrix(zoom, zoom_offset, yaw, pitch),
+                projection,
+            };
+            write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
         }
 
         if needs_refresh {
@@ -567,11 +611,32 @@ fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
     [x, y, z]
 }
 
-fn make_view_matrix(zoom: f32, offset: [f32; 2]) -> [[f32; 4]; 4] {
+fn make_view_matrix(zoom: f32, offset: [f32; 2], yaw: f32, pitch: f32) -> [[f32; 4]; 4] {
+    let cos_yaw = yaw.cos();
+    let sin_yaw = yaw.sin();
+    let cos_pitch = pitch.cos();
+    let sin_pitch = pitch.sin();
+    let right = [cos_yaw, 0.0, -sin_yaw];
+    let forward = [sin_yaw, 0.0, cos_yaw];
+    let forward_pitch = [
+        forward[0] * cos_pitch,
+        sin_pitch,
+        forward[2] * cos_pitch,
+    ];
+    let up_pitch = [
+        -forward[0] * sin_pitch,
+        cos_pitch,
+        -forward[2] * sin_pitch,
+    ];
     [
-        [zoom, 0.0, 0.0, 0.0],
-        [0.0, 0.0, zoom, 0.0],
-        [0.0, -1.0, 0.0, 0.0],
+        [zoom * right[0], zoom * right[1], zoom * right[2], 0.0],
+        [
+            zoom * forward_pitch[0],
+            zoom * forward_pitch[1],
+            zoom * forward_pitch[2],
+            0.0,
+        ],
+        [-up_pitch[0], -up_pitch[1], -up_pitch[2], 0.0],
         [zoom * offset[0], 0.0, zoom * offset[1], 1.0],
     ]
 }
@@ -601,11 +666,12 @@ fn make_projection_matrix(near_plane: f32, far_plane: f32) -> [[f32; 4]; 4] {
 fn build_camera_info(
     zoom: f32,
     offset: [f32; 2],
+    yaw: f32,
     settings: &TerrainProjectSettings,
     normalization: &TerrainNormalization,
 ) -> TerrainCameraInfo {
-    let frustum = build_camera_frustum(zoom, offset, normalization);
-    let center_xz = camera_world_point([0.0, 0.0], zoom, offset, normalization);
+    let frustum = build_camera_frustum(zoom, offset, yaw, normalization);
+    let center_xz = camera_world_point([0.0, 0.0], zoom, offset, yaw, normalization);
     let center_y = (settings.world_bounds_min[1] + settings.world_bounds_max[1]) * 0.5;
     let position = [center_xz[0], center_y, center_xz[1]];
     let max_dist = frustum
@@ -629,13 +695,14 @@ fn build_camera_info(
 fn build_camera_frustum(
     zoom: f32,
     offset: [f32; 2],
+    yaw: f32,
     normalization: &TerrainNormalization,
 ) -> TerrainFrustum {
     [
-        camera_world_point([-1.0, -1.0], zoom, offset, normalization),
-        camera_world_point([1.0, -1.0], zoom, offset, normalization),
-        camera_world_point([1.0, 1.0], zoom, offset, normalization),
-        camera_world_point([-1.0, 1.0], zoom, offset, normalization),
+        camera_world_point([-1.0, -1.0], zoom, offset, yaw, normalization),
+        camera_world_point([1.0, -1.0], zoom, offset, yaw, normalization),
+        camera_world_point([1.0, 1.0], zoom, offset, yaw, normalization),
+        camera_world_point([-1.0, 1.0], zoom, offset, yaw, normalization),
     ]
 }
 
@@ -643,10 +710,10 @@ fn camera_world_point(
     ndc: [f32; 2],
     zoom: f32,
     offset: [f32; 2],
+    yaw: f32,
     normalization: &TerrainNormalization,
 ) -> [f32; 2] {
-    let norm_x = ndc[0] / zoom - offset[0];
-    let norm_y = ndc[1] / zoom - offset[1];
+    let [norm_x, norm_y] = camera_norm_from_ndc(ndc, zoom, offset, yaw);
     let world_x = (norm_x + 1.0) * 0.5 * normalization.world_size_x + normalization.world_min[0];
     let world_z = (norm_y + 1.0) * 0.5 * normalization.world_size_z + normalization.world_min[2];
     [world_x, world_z]
@@ -661,10 +728,6 @@ fn refresh_visible_chunks(
     normalization: &TerrainNormalization,
     cache: &mut std::collections::HashMap<String, TerrainChunkDraw>,
 ) -> Result<(Vec<TerrainChunkDraw>, std::collections::HashSet<String>), Box<dyn Error>> {
-
-    println!("DEBUG: {:?}", settings);
-    println!("DEBUG: {:?}", project_key);
-    println!("DEBUG: {:?}", camera);
     let artifacts = db
         .fetch_terrain_chunks_for_camera(settings, project_key, camera)
         .map_err(|err| terrain_db_error(err))?;
@@ -687,6 +750,25 @@ fn refresh_visible_chunks(
     }
 
     Ok((draws, entries))
+}
+
+fn camera_norm_from_ndc(
+    ndc: [f32; 2],
+    zoom: f32,
+    offset: [f32; 2],
+    yaw: f32,
+) -> [f32; 2] {
+    let camera = [ndc[0] / zoom - offset[0], ndc[1] / zoom - offset[1]];
+    rotate_2d(camera, -yaw)
+}
+
+fn rotate_2d(value: [f32; 2], yaw: f32) -> [f32; 2] {
+    let cos_yaw = yaw.cos();
+    let sin_yaw = yaw.sin();
+    [
+        value[0] * cos_yaw - value[1] * sin_yaw,
+        value[0] * sin_yaw + value[1] * cos_yaw,
+    ]
 }
 fn write_camera_buffer(
     ctx: &mut Context,

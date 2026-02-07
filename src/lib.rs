@@ -477,6 +477,18 @@ impl DB {
             .fetch_chunks_for_camera(settings, project_key, camera)
     }
 
+    /// Fetches terrain chunk artifacts from a database view using a furikake camera handle.
+    pub fn fetch_terrain_chunks_from_view(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        view: &mut RDBView,
+        camera: dashi::Handle<furikake::types::Camera>,
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
+        self.terrain
+            .fetch_chunks_from_view(settings, project_key, view, camera)
+    }
+
     /// Fetches the sampled terrain height at a world-space coordinate.
     pub fn fetch_terrain_height_at(
         &mut self,
