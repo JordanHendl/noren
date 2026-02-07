@@ -1001,7 +1001,7 @@ impl TerrainDB {
         settings: &TerrainProjectSettings,
         project_key: &str,
         camera: &TerrainCameraInfo,
-    ) -> Result<Vec<TerrainChunk>, NorenError> {
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         let max_dist = camera.max_dist.max(0.0);
         if max_dist <= 0.0 {
             return Ok(Vec::new());
@@ -1032,17 +1032,17 @@ impl TerrainDB {
                 .collect::<HashSet<_>>()
         });
 
-        let mut chunks = Vec::new();
+        let mut artifacts = Vec::new();
         for entry in entries {
             if let Some(available) = &available {
                 if !available.contains(&entry) {
                     continue;
                 }
             }
-            chunks.push(self.fetch_chunk(entry.as_str())?);
+            artifacts.push(self.fetch_chunk_artifact(entry.as_str())?);
         }
 
-        Ok(chunks)
+        Ok(artifacts)
     }
 
     /// Fetches the sampled height at a world-space coordinate.

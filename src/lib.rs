@@ -472,7 +472,7 @@ impl DB {
         settings: &TerrainProjectSettings,
         project_key: &str,
         camera: &TerrainCameraInfo,
-    ) -> Result<Vec<TerrainChunk>, NorenError> {
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         self.terrain
             .fetch_chunks_for_camera(settings, project_key, camera)
     }

@@ -18,9 +18,7 @@ use noren::{
         TerrainProjectSettings,
         chunk_artifact_entry,
         chunk_coord_key,
-        chunk_coords_in_frustum,
         lod_key,
-        parse_chunk_artifact_entry,
     },
     NorenError,
 };
@@ -82,43 +80,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut ctx = common::init_context()?;
 
     let mut db = common::open_sample_db(&mut ctx)?;
-    let entries = db.terrain().enumerate_entries();
     let project_key = "iceland";
     let settings_entry = project_settings_entry(project_key);
-    if !entries.iter().any(|entry| entry == &settings_entry) {
-        return Err(format!(
-            "missing terrain project settings entry: {settings_entry}"
-        )
-        .into());
-    }
     let settings: TerrainProjectSettings = db
         .terrain_mut()
         .fetch_project_settings(&settings_entry)
         .map_err(|err| terrain_db_error(err))?;
-
-    let mut artifacts = Vec::new();
-
-    for entry in &entries {
-        let Some(key) = parse_chunk_artifact_entry(entry) else {
-            continue;
-        };
-        if key.project_key != project_key || key.lod != 0 {
-            continue;
-        }
-
-        let artifact: TerrainChunkArtifact = db
-            .terrain_mut()
-            .fetch_chunk_artifact(entry)
-            .map_err(|err| terrain_db_error(err))?;
-        artifacts.push(artifact);
-    }
-
-    if artifacts.is_empty() {
-        return Err("no terrain chunk artifacts found in sample database".into());
-    }
-
-    let normalization = build_terrain_normalization(&artifacts, &settings);
-    let entry_set: std::collections::HashSet<_> = entries.into_iter().collect();
+    let normalization = build_terrain_normalization(&settings);
 
     const WIDTH: u32 = 1280;
     const HEIGHT: u32 = 720;
@@ -321,21 +289,8 @@ void main() {
     let mut chunk_draws = Vec::new();
     let mut chunk_cache = std::collections::HashMap::new();
     let mut camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
-    let mut visible_entries = compute_visible_entries(
-        project_key,
-        &entry_set,
-        &camera_info,
-        &settings,
-    );
-    let mut visible_set: std::collections::HashSet<String> =
-        visible_entries.iter().cloned().collect();
-    chunk_draws = build_chunk_draws_from_entries(
-        &mut ctx,
-        &mut db,
-        &visible_entries,
-        &mut chunk_cache,
-        &normalization,
-    )?;
+    let mut visible_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut needs_refresh = true;
 
     loop {
         let mut should_exit = false;
@@ -400,25 +355,24 @@ void main() {
             };
             write_camera_buffer(&mut ctx, camera_buffer, &camera_uniform)?;
             camera_info = build_camera_info(zoom, zoom_offset, &settings, &normalization);
-            let next_visible_entries = compute_visible_entries(
+            needs_refresh = true;
+        }
+
+        if needs_refresh {
+            let (next_draws, next_set) = refresh_visible_chunks(
+                &mut ctx,
+                &mut db,
                 project_key,
-                &entry_set,
-                &camera_info,
                 &settings,
-            );
-            let next_visible_set: std::collections::HashSet<String> =
-                next_visible_entries.iter().cloned().collect();
-            if next_visible_set != visible_set {
-                visible_set = next_visible_set;
-                visible_entries = next_visible_entries;
-                chunk_draws = build_chunk_draws_from_entries(
-                    &mut ctx,
-                    &mut db,
-                    &visible_entries,
-                    &mut chunk_cache,
-                    &normalization,
-                )?;
+                &camera_info,
+                &normalization,
+                &mut chunk_cache,
+            )?;
+            if next_set != visible_set {
+                visible_set = next_set;
+                chunk_draws = next_draws;
             }
+            needs_refresh = false;
         }
 
         let (img, sem, _idx, _good) = ctx.acquire_new_image(&mut display)?;
@@ -503,22 +457,13 @@ fn terrain_db_error(err: NorenError) -> Box<dyn Error> {
     Box::new(err)
 }
 
-fn build_terrain_normalization(
-    artifacts: &[TerrainChunkArtifact],
-    settings: &TerrainProjectSettings,
-) -> TerrainNormalization {
+fn build_terrain_normalization(settings: &TerrainProjectSettings) -> TerrainNormalization {
     let world_min = settings.world_bounds_min;
     let world_max = settings.world_bounds_max;
     let world_size_x = (world_max[0] - world_min[0]).max(1.0);
     let world_size_y = (world_max[1] - world_min[1]).max(1.0);
-    let mut min_height = f32::INFINITY;
-    let mut max_height = f32::NEG_INFINITY;
-    for artifact in artifacts {
-        for vertex in &artifact.vertices {
-            min_height = min_height.min(vertex.position[2]);
-            max_height = max_height.max(vertex.position[2]);
-        }
-    }
+    let min_height = world_min[2];
+    let max_height = world_max[2];
     let height_range = (max_height - min_height).max(1.0);
     let norm_scale_x = 2.0 / world_size_x;
     let norm_scale_y = 2.0 / world_size_y;
@@ -707,71 +652,41 @@ fn camera_world_point(
     [world_x, world_y]
 }
 
-fn chunk_center_world(settings: &TerrainProjectSettings, chunk_coords: [i32; 2]) -> [f32; 3] {
-    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    let origin_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
-    let origin_y = settings.world_bounds_min[1] + chunk_coords[1] as f32 * chunk_size_y;
-    let center_z = (settings.world_bounds_min[2] + settings.world_bounds_max[2]) * 0.5;
-    [
-        origin_x + chunk_size_x * 0.5,
-        origin_y + chunk_size_y * 0.5,
-        center_z,
-    ]
-}
-
-fn compute_visible_entries(
-    project_key: &str,
-    entries: &std::collections::HashSet<String>,
-    camera: &TerrainCameraInfo,
-    settings: &TerrainProjectSettings,
-) -> Vec<String> {
-    let mut visible = Vec::new();
-    for coords in chunk_coords_in_frustum(settings, &camera.frustum) {
-        let center = chunk_center_world(settings, coords);
-        let dx = center[0] - camera.position[0];
-        let dy = center[1] - camera.position[1];
-        let dz = center[2] - camera.position[2];
-        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-        if distance > camera.max_dist {
-            continue;
-        }
-
-        let lod = camera.lod_for_distance(settings, distance);
-        let coord_key = chunk_coord_key(coords[0], coords[1]);
-        let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key(lod));
-        if !entries.contains(&entry) {
-            continue;
-        }
-        visible.push(entry);
-    }
-
-    visible
-}
-
-fn build_chunk_draws_from_entries(
+fn refresh_visible_chunks(
     ctx: &mut Context,
     db: &mut noren::DB,
-    entries: &[String],
-    cache: &mut std::collections::HashMap<String, TerrainChunkDraw>,
+    project_key: &str,
+    settings: &TerrainProjectSettings,
+    camera: &TerrainCameraInfo,
     normalization: &TerrainNormalization,
-) -> Result<Vec<TerrainChunkDraw>, Box<dyn Error>> {
-    let mut draws = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if let Some(cached) = cache.get(entry) {
+    cache: &mut std::collections::HashMap<String, TerrainChunkDraw>,
+) -> Result<(Vec<TerrainChunkDraw>, std::collections::HashSet<String>), Box<dyn Error>> {
+
+    println!("DEBUG: {:?}", settings);
+    println!("DEBUG: {:?}", project_key);
+    println!("DEBUG: {:?}", camera);
+    let artifacts = db
+        .fetch_terrain_chunks_for_camera(settings, project_key, camera)
+        .map_err(|err| terrain_db_error(err))?;
+
+    let mut entries = std::collections::HashSet::with_capacity(artifacts.len());
+    let mut draws = Vec::with_capacity(artifacts.len());
+    for artifact in artifacts {
+        let coord_key = chunk_coord_key(artifact.chunk_coords[0], artifact.chunk_coords[1]);
+        let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key(artifact.lod));
+        entries.insert(entry.clone());
+
+        if let Some(cached) = cache.get(&entry) {
             draws.push(*cached);
             continue;
         }
 
-        let artifact: TerrainChunkArtifact = db
-            .terrain_mut()
-            .fetch_chunk_artifact(entry)
-            .map_err(|err| terrain_db_error(err))?;
         let draw = build_chunk_draw(ctx, &artifact, normalization)?;
-        cache.insert(entry.clone(), draw);
+        cache.insert(entry, draw);
         draws.push(draw);
     }
-    Ok(draws)
+
+    Ok((draws, entries))
 }
 fn write_camera_buffer(
     ctx: &mut Context,
