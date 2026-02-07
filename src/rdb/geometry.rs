@@ -411,7 +411,9 @@ impl GeometryDB {
         entry: DatabaseEntry<'_>,
         geom: HostGeometry,
     ) -> Result<DeviceGeometry, NorenError> {
-        debug_assert!(self.cache.get(entry).is_none());
+        if let Some(cache_entry) = self.cache.get(entry) {
+            return Ok(cache_entry.payload.clone());
+        }
 
         let geom = geom.with_counts();
 
