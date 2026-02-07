@@ -24,6 +24,14 @@
       "texture_lookups": {
         "base_color": "texture/imagery/peppers"
       }
+    },
+    "material/terrain_default": {
+      "name": "Terrain Default Material",
+      "material_type": "textured",
+      "render_mask": 0,
+      "texture_lookups": {
+        "base_color": "texture/terrain_blendmap"
+      }
     }
   }
 }

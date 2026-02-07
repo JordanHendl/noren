@@ -289,7 +289,7 @@ pub fn build_terrain_chunk_with_context(
         material_ids,
         material_weights,
         content_hash,
-        mesh_entry: "geometry/terrain_chunk".to_string(),
+        mesh_entry: "mesh/terrain_chunk".to_string(),
     };
 
     let mut last_built_hashes = existing_state
@@ -713,7 +713,7 @@ pub fn build_heightmap_chunk_artifact(
         material_ids: None,
         material_weights: None,
         content_hash,
-        mesh_entry: "geometry/terrain_chunk".to_string(),
+        mesh_entry: "mesh/terrain_chunk".to_string(),
     }
 }
 

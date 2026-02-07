@@ -114,7 +114,7 @@ Mesh data generated for a specific project chunk and LOD.
 - `material_ids`: optional material id per vertex
 - `material_weights`: optional material weight per vertex (`[f32; 4]`)
 - `content_hash`: content checksum for dependency tracking
-- `mesh_entry`: optional geometry entry name for downstream asset lookup
+- `mesh_entry`: optional mesh entry name for downstream asset lookup
 
 ### Chunk state (`TerrainChunkState`)
 
@@ -137,4 +137,4 @@ Legacy/raw chunk data stored as `terrain/chunk_{x}_{y}`.
 - `tile_size`, `tiles_per_chunk`
 - `tiles`: `TerrainTile` array (tile id + flags), row-major
 - `heights`: height samples stored in a `(width + 1) x (height + 1)` grid
-- `mesh_entry`: geometry entry name for rendering
+- `mesh_entry`: mesh entry name for rendering

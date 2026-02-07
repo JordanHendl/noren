@@ -1404,7 +1404,7 @@ fn default_terrain_chunk() -> TerrainChunk {
             tile_count as usize
         ],
         heights: vec![0.0; height_count as usize],
-        mesh_entry: "geometry/terrain_chunk".to_string(),
+        mesh_entry: "mesh/terrain_chunk".to_string(),
     }
 }
 
@@ -1441,7 +1441,7 @@ mod tests {
                 },
             ],
             heights: vec![0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 4.0],
-            mesh_entry: "geometry/terrain_chunk".to_string(),
+            mesh_entry: "mesh/terrain_chunk".to_string(),
         }
     }
 
@@ -1558,7 +1558,7 @@ mod tests {
             material_ids: Some(vec![10, 20]),
             material_weights: Some(vec![[0.7, 0.3, 0.0, 0.0], [0.4, 0.6, 0.0, 0.0]]),
             content_hash: 0xDEADBEEF,
-            mesh_entry: "geometry/terrain_chunk_lod1".to_string(),
+            mesh_entry: "mesh/terrain_chunk_lod1".to_string(),
         }
     }
 
@@ -1609,7 +1609,7 @@ mod tests {
 
         let mut db = TerrainDB::new(path.to_str().unwrap());
         let chunk = db.fetch_chunk("terrain/chunk_0_0")?;
-        assert_eq!(chunk.mesh_entry, "geometry/terrain_chunk");
+        assert_eq!(chunk.mesh_entry, "mesh/terrain_chunk");
         Ok(())
     }
 

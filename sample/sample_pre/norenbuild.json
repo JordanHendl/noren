@@ -49,6 +49,14 @@
     {
       "entry": "imagery/peppers",
       "file": "imagery/peppers.png"
+    },
+    {
+      "entry": "imagery/default_weather",
+      "file": "imagery/default_weather.png"
+    },
+    {
+      "entry": "imagery/tileable_grass",
+      "file": "imagery/tileable_grass.png"
     }
   ],
   "audio": [

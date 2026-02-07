@@ -20,6 +20,18 @@
       "image": "imagery/default",
       "name": "Default Texture"
     },
+    "texture/terrain_blendmap": {
+      "image": "imagery/default",
+      "name": "Default Terrain Blendmap"
+    },
+    "texture/default_grass": {
+      "image": "imagery/tileable_grass",
+      "name": "Default Grass"
+    },
+    "texture/default_weather": {
+      "image": "imagery/default_weather",
+      "name": "Default Weather Map"
+    },
     "texture/imagery/tulips": {
       "image": "imagery/tulips",
       "name": null

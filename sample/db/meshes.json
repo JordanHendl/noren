@@ -29,6 +29,28 @@
         "texture/imagery/peppers"
       ]
     },
+    "mesh/terrain_chunk": {
+      "name": "terrain_chunk",
+      "geometry": "geometry/terrain_chunk",
+      "material": "material/terrain_default",
+      "textures": [
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass"
+      ]
+    },
+    "mesh/terrain_chunk_lod1": {
+      "name": "terrain_chunk_lod1",
+      "geometry": "geometry/terrain_chunk_lod1",
+      "material": "material/terrain_default",
+      "textures": [
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass"
+      ]
+    },
     "mesh/witch/cube/3": {
       "name": "Witch cube 3",
       "geometry": "geometry/witch/cube/3",

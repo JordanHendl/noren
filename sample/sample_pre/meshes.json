@@ -13,6 +13,28 @@
       "name": "Simple Skin Mesh",
       "geometry": "geometry/simple_skin",
       "textures": []
+    },
+    "mesh/terrain_chunk": {
+      "name": "Terrain Chunk",
+      "geometry": "geometry/terrain_chunk",
+      "material": "material/terrain_default",
+      "textures": [
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass"
+      ]
+    },
+    "mesh/terrain_chunk_lod1": {
+      "name": "Terrain Chunk LOD1",
+      "geometry": "geometry/terrain_chunk_lod1",
+      "material": "material/terrain_default",
+      "textures": [
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass"
+      ]
     }
   }
 }

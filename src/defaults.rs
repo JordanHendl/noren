@@ -19,7 +19,11 @@ pub const DEFAULT_IMAGE_ENTRY: &str = "imagery/default";
 pub const DEFAULT_FONT_ATLAS_ENTRY: &str = "imagery/fonts/default";
 pub const DEFAULT_CUBEMAP_ENTRY: &str = "imagery/default_cubemap";
 pub const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
+pub const DEFAULT_TERRAIN_BLENDMAP_TEXTURE_ENTRY: &str = "texture/terrain_blendmap";
+pub const DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY: &str = "texture/default_grass";
+pub const DEFAULT_WEATHER_TEXTURE_ENTRY: &str = "texture/default_weather";
 pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
+pub const DEFAULT_TERRAIN_MATERIAL_ENTRY: &str = "material/terrain_default";
 pub const DEFAULT_SOUND_ENTRY: &str = "audio/beep";
 pub const DEFAULT_SOUND_ENTRIES: [&str; 2] = ["audio/beep", "audio/tone"];
 pub const DEFAULT_FONT_ENTRY: &str = "fonts/default";
@@ -552,6 +556,24 @@ pub fn ensure_default_assets(
             image: DEFAULT_IMAGE_ENTRY.into(),
             name: Some("Default Texture".into()),
         });
+    textures
+        .entry(DEFAULT_TERRAIN_BLENDMAP_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_IMAGE_ENTRY.into(),
+            name: Some("Default Terrain Blendmap".into()),
+        });
+    textures
+        .entry(DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_IMAGE_ENTRY.into(),
+            name: Some("Default Grass".into()),
+        });
+    textures
+        .entry(DEFAULT_WEATHER_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_IMAGE_ENTRY.into(),
+            name: Some("Default Weather Map".into()),
+        });
 
     materials
         .entry(DEFAULT_MATERIAL_ENTRY.into())
@@ -561,6 +583,17 @@ pub fn ensure_default_assets(
             material_type: MaterialType::VertexColor,
             texture_lookups: MaterialTextureLookups {
                 base_color: Some(DEFAULT_TEXTURE_ENTRY.into()),
+                ..Default::default()
+            },
+        });
+    materials
+        .entry(DEFAULT_TERRAIN_MATERIAL_ENTRY.into())
+        .or_insert(MaterialLayout {
+            name: Some("Terrain Default Material".into()),
+            render_mask: 0,
+            material_type: MaterialType::Textured,
+            texture_lookups: MaterialTextureLookups {
+                base_color: Some(DEFAULT_TERRAIN_BLENDMAP_TEXTURE_ENTRY.into()),
                 ..Default::default()
             },
         });
@@ -598,6 +631,23 @@ pub fn ensure_default_assets(
             render_mask: 0,
             material_type: MaterialType::VertexColor,
             texture_lookups: MaterialTextureLookups::default(),
+        });
+
+    meshes
+        .entry("mesh/terrain_chunk".into())
+        .or_insert(MeshLayout {
+            name: Some("terrain_chunk".into()),
+            geometry: "geometry/terrain_chunk".into(),
+            material: Some(DEFAULT_TERRAIN_MATERIAL_ENTRY.into()),
+            textures: vec![DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into(); 4],
+        });
+    meshes
+        .entry("mesh/terrain_chunk_lod1".into())
+        .or_insert(MeshLayout {
+            name: Some("terrain_chunk_lod1".into()),
+            geometry: "geometry/terrain_chunk_lod1".into(),
+            material: Some(DEFAULT_TERRAIN_MATERIAL_ENTRY.into()),
+            textures: vec![DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into(); 4],
         });
 
     for image_name in WITCH_IMAGE_NAMES {

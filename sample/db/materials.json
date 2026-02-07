@@ -84,6 +84,18 @@
         "emissive": null
       }
     },
+    "material/terrain_default": {
+      "name": "Terrain Default Material",
+      "render_mask": 0,
+      "material_type": "textured",
+      "texture_lookups": {
+        "base_color": "texture/terrain_blendmap",
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
     "material/witch/sweater": {
       "name": "sweater",
       "render_mask": 0,
