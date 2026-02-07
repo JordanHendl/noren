@@ -1,5 +1,10 @@
 use dashi::Handle;
-use furikake::types::Camera as FurikakeCamera;
+use furikake::{
+    BindlessState,
+    reservations::bindless_camera::ReservedBindlessCamera,
+    types::Camera as FurikakeCamera,
+};
+use glam::Vec4;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::info;
@@ -580,6 +585,73 @@ impl TerrainCameraInfo {
     }
 }
 
+fn terrain_camera_info_from_furikake(
+    settings: &TerrainProjectSettings,
+    camera: &FurikakeCamera,
+) -> TerrainCameraInfo {
+    const DEFAULT_CURVE: f32 = 1.0;
+    const DEFAULT_FALLOFF: f32 = 0.35;
+
+    let frustum = terrain_frustum_from_furikake(settings, camera);
+    let position = camera.position();
+    let max_dist = frustum
+        .iter()
+        .map(|corner| {
+            let dx = corner[0] - position.x;
+            let dz = corner[1] - position.z;
+            (dx * dx + dz * dz).sqrt()
+        })
+        .fold(0.0, f32::max)
+        .max(1.0);
+
+    TerrainCameraInfo {
+        frustum,
+        position: [position.x, position.y, position.z],
+        curve: DEFAULT_CURVE,
+        falloff: DEFAULT_FALLOFF,
+        max_dist,
+    }
+}
+
+fn terrain_frustum_from_furikake(
+    settings: &TerrainProjectSettings,
+    camera: &FurikakeCamera,
+) -> TerrainFrustum {
+    let view = camera.view_matrix();
+    let clip_to_world = (camera.projection * view).inverse();
+    let position = camera.position();
+    let plane_y = settings.world_bounds_min[1];
+    let fallback_dist = camera.far.max(1.0);
+
+    let corners = [
+        [-1.0, -1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+    ];
+
+    let mut frustum = [[0.0; 2]; 4];
+    for (idx, ndc) in corners.iter().enumerate() {
+        let clip = Vec4::new(ndc[0], ndc[1], 1.0, 1.0);
+        let world_h = clip_to_world * clip;
+        let world = (world_h / world_h.w).truncate();
+        let dir = (world - position).normalize();
+        let point = if dir.y.abs() <= f32::EPSILON {
+            position + dir * fallback_dist
+        } else {
+            let t = (plane_y - position.y) / dir.y;
+            if t.is_finite() && t > 0.0 {
+                position + dir * t
+            } else {
+                position + dir * fallback_dist
+            }
+        };
+        frustum[idx] = [point.x, point.z];
+    }
+
+    frustum
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FurikakeCameraHandle {
     pub slot: u16,
@@ -1067,31 +1139,29 @@ impl TerrainDB {
         )
     }
 
-    /// Fetches terrain chunk artifacts using camera data stored in a furikake state entry.
+    /// Fetches terrain chunk artifacts using camera data stored in furikake bindless state.
     pub fn fetch_chunks_from_view(
         &mut self,
         settings: &TerrainProjectSettings,
         project_key: &str,
-        view: &mut RDBView,
+        furikake: &BindlessState,
         camera: Handle<FurikakeCamera>,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
-        let state: FurikakeStateSnapshot = view.fetch(FURIKAKE_STATE_ENTRY)?;
-        let camera_info = state
-            .camera_info(camera)
-            .ok_or(NorenError::DataFailure())?;
-        let available = Some(
-            view.entries()
+        let cameras = furikake.reserved::<ReservedBindlessCamera>("meshi_bindless_cameras")?;
+        let camera_info = terrain_camera_info_from_furikake(settings, cameras.camera(camera));
+        let available = self.data.as_ref().map(|rdb| {
+            rdb.entries()
                 .into_iter()
                 .map(|meta| meta.name)
-                .collect::<HashSet<_>>(),
-        );
+                .collect::<HashSet<_>>()
+        });
 
         Self::fetch_chunks_for_camera_with(
             settings,
             project_key,
-            camera_info,
+            &camera_info,
             available,
-            |entry| view.fetch::<TerrainChunkArtifact>(entry).map_err(NorenError::from),
+            |entry| self.fetch_chunk_artifact(entry),
         )
     }
 

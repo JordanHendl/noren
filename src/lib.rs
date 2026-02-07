@@ -482,11 +482,15 @@ impl DB {
         &mut self,
         settings: &TerrainProjectSettings,
         project_key: &str,
-        view: &mut RDBView,
         camera: dashi::Handle<furikake::types::Camera>,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
+        let furikake = self.furikake.as_mut().ok_or_else(|| {
+            NorenError::FurikakeError(
+                "furikake bindless state is required to fetch terrain chunks from view".to_string(),
+            )
+        })?;
         self.terrain
-            .fetch_chunks_from_view(settings, project_key, view, camera)
+            .fetch_chunks_from_view(settings, project_key, furikake.state_mut(), camera)
     }
 
     /// Fetches the sampled terrain height at a world-space coordinate.
