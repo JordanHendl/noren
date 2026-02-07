@@ -1,12 +1,20 @@
 {
   "textures": {
-    "texture/witch/hands": {
-      "image": "imagery/witch/hands",
-      "name": "hands"
+    "texture/witch/sweater": {
+      "image": "imagery/witch/sweater",
+      "name": "sweater"
     },
     "texture/imagery/peppers": {
       "image": "imagery/peppers",
       "name": null
+    },
+    "texture/witch/hands": {
+      "image": "imagery/witch/hands",
+      "name": "hands"
+    },
+    "texture/witch/purple_smile": {
+      "image": "imagery/witch/purple_smile",
+      "name": "purple smile"
     },
     "texture/default": {
       "image": "imagery/default",
@@ -15,14 +23,6 @@
     "texture/imagery/tulips": {
       "image": "imagery/tulips",
       "name": null
-    },
-    "texture/witch/purple_smile": {
-      "image": "imagery/witch/purple_smile",
-      "name": "purple smile"
-    },
-    "texture/witch/sweater": {
-      "image": "imagery/witch/sweater",
-      "name": "sweater"
     }
   }
 }

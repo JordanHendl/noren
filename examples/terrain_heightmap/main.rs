@@ -61,7 +61,7 @@ struct TerrainChunkDraw {
 struct TerrainNormalization {
     world_min: [f32; 3],
     world_size_x: f32,
-    world_size_y: f32,
+    world_size_z: f32,
     min_height: f32,
     height_range: f32,
     inv_scale_x: f32,
@@ -461,21 +461,21 @@ fn build_terrain_normalization(settings: &TerrainProjectSettings) -> TerrainNorm
     let world_min = settings.world_bounds_min;
     let world_max = settings.world_bounds_max;
     let world_size_x = (world_max[0] - world_min[0]).max(1.0);
-    let world_size_y = (world_max[1] - world_min[1]).max(1.0);
-    let min_height = world_min[2];
-    let max_height = world_max[2];
+    let world_size_z = (world_max[2] - world_min[2]).max(1.0);
+    let min_height = world_min[1];
+    let max_height = world_max[1];
     let height_range = (max_height - min_height).max(1.0);
     let norm_scale_x = 2.0 / world_size_x;
-    let norm_scale_y = 2.0 / world_size_y;
-    let norm_scale_z = 2.0 / height_range;
+    let norm_scale_z = 2.0 / world_size_z;
+    let norm_scale_y = 2.0 / height_range;
     let inv_scale_x = 1.0 / norm_scale_x.max(0.001);
-    let inv_scale_y = 1.0 / norm_scale_y.max(0.001);
     let inv_scale_z = 1.0 / norm_scale_z.max(0.001);
+    let inv_scale_y = 1.0 / norm_scale_y.max(0.001);
 
     TerrainNormalization {
         world_min,
         world_size_x,
-        world_size_y,
+        world_size_z,
         min_height,
         height_range,
         inv_scale_x,
@@ -522,7 +522,7 @@ fn build_chunk_vertices(
     let TerrainNormalization {
         world_min,
         world_size_x,
-        world_size_y,
+        world_size_z,
         min_height,
         height_range,
         inv_scale_x,
@@ -533,11 +533,11 @@ fn build_chunk_vertices(
     let mut vertices = Vec::with_capacity(artifact.vertices.len());
     for vertex in &artifact.vertices {
         let world_x = vertex.position[0];
-        let world_y = vertex.position[1];
-        let height = vertex.position[2];
+        let height = vertex.position[1];
+        let world_z = vertex.position[2];
         let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
-        let norm_y = ((world_y - world_min[1]) / world_size_y) * 2.0 - 1.0;
-        let norm_z = ((height - min_height) / height_range) * 2.0 - 1.0;
+        let norm_z = ((world_z - world_min[2]) / world_size_z) * 2.0 - 1.0;
+        let norm_y = ((height - min_height) / height_range) * 2.0 - 1.0;
         let normal = normalize_vec3([
             vertex.normal[0] * inv_scale_x,
             vertex.normal[1] * inv_scale_y,
@@ -570,9 +570,9 @@ fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
 fn make_view_matrix(zoom: f32, offset: [f32; 2]) -> [[f32; 4]; 4] {
     [
         [zoom, 0.0, 0.0, 0.0],
-        [0.0, zoom, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [zoom * offset[0], zoom * offset[1], 0.0, 1.0],
+        [0.0, 0.0, zoom, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [zoom * offset[0], 0.0, zoom * offset[1], 1.0],
     ]
 }
 
@@ -605,15 +605,15 @@ fn build_camera_info(
     normalization: &TerrainNormalization,
 ) -> TerrainCameraInfo {
     let frustum = build_camera_frustum(zoom, offset, normalization);
-    let center_xy = camera_world_point([0.0, 0.0], zoom, offset, normalization);
-    let center_z = (settings.world_bounds_min[2] + settings.world_bounds_max[2]) * 0.5;
-    let position = [center_xy[0], center_xy[1], center_z];
+    let center_xz = camera_world_point([0.0, 0.0], zoom, offset, normalization);
+    let center_y = (settings.world_bounds_min[1] + settings.world_bounds_max[1]) * 0.5;
+    let position = [center_xz[0], center_y, center_xz[1]];
     let max_dist = frustum
         .iter()
         .map(|corner| {
             let dx = corner[0] - position[0];
-            let dy = corner[1] - position[1];
-            (dx * dx + dy * dy).sqrt()
+            let dz = corner[1] - position[2];
+            (dx * dx + dz * dz).sqrt()
         })
         .fold(0.0, f32::max);
 
@@ -648,8 +648,8 @@ fn camera_world_point(
     let norm_x = ndc[0] / zoom - offset[0];
     let norm_y = ndc[1] / zoom - offset[1];
     let world_x = (norm_x + 1.0) * 0.5 * normalization.world_size_x + normalization.world_min[0];
-    let world_y = (norm_y + 1.0) * 0.5 * normalization.world_size_y + normalization.world_min[1];
-    [world_x, world_y]
+    let world_z = (norm_y + 1.0) * 0.5 * normalization.world_size_z + normalization.world_min[2];
+    [world_x, world_z]
 }
 
 fn refresh_visible_chunks(

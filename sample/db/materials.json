@@ -1,5 +1,65 @@
 {
   "materials": {
+    "material/witch/hat": {
+      "name": "hat",
+      "render_mask": 0,
+      "material_type": "vertex_color",
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/nails": {
+      "name": "nails",
+      "render_mask": 0,
+      "material_type": "emissive_only",
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": "texture/witch/hands"
+      }
+    },
+    "material/witch/face_txt": {
+      "name": "face txt",
+      "render_mask": 0,
+      "material_type": "emissive_only",
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": "texture/witch/purple_smile"
+      }
+    },
+    "material/witch/skin": {
+      "name": "skin",
+      "render_mask": 0,
+      "material_type": "vertex_color",
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
+    "material/witch/material_006": {
+      "name": "Material.006",
+      "render_mask": 0,
+      "material_type": "vertex_color",
+      "texture_lookups": {
+        "base_color": null,
+        "normal": null,
+        "metallic_roughness": null,
+        "occlusion": null,
+        "emissive": null
+      }
+    },
     "material/witch/material_004": {
       "name": "Material.004",
       "render_mask": 0,
@@ -12,12 +72,12 @@
         "emissive": null
       }
     },
-    "material/witch/material_009": {
-      "name": "Material.009",
+    "material/default": {
+      "name": "Default Material",
       "render_mask": 0,
       "material_type": "vertex_color",
       "texture_lookups": {
-        "base_color": null,
+        "base_color": "texture/default",
         "normal": null,
         "metallic_roughness": null,
         "occlusion": null,
@@ -48,20 +108,8 @@
         "emissive": null
       }
     },
-    "material/witch/material_007": {
-      "name": "Material.007",
-      "render_mask": 0,
-      "material_type": "vertex_color",
-      "texture_lookups": {
-        "base_color": null,
-        "normal": null,
-        "metallic_roughness": null,
-        "occlusion": null,
-        "emissive": null
-      }
-    },
-    "material/witch/material_006": {
-      "name": "Material.006",
+    "material/witch/material": {
+      "name": "Material",
       "render_mask": 0,
       "material_type": "vertex_color",
       "texture_lookups": {
@@ -84,8 +132,8 @@
         "emissive": null
       }
     },
-    "material/witch/material": {
-      "name": "Material",
+    "material/witch/neck_skin_shading": {
+      "name": "neck/ skin shading",
       "render_mask": 0,
       "material_type": "vertex_color",
       "texture_lookups": {
@@ -96,16 +144,16 @@
         "emissive": null
       }
     },
-    "material/witch/face_txt": {
-      "name": "face txt",
+    "material/witch/material_009": {
+      "name": "Material.009",
       "render_mask": 0,
-      "material_type": "emissive_only",
+      "material_type": "vertex_color",
       "texture_lookups": {
         "base_color": null,
         "normal": null,
         "metallic_roughness": null,
         "occlusion": null,
-        "emissive": "texture/witch/purple_smile"
+        "emissive": null
       }
     },
     "material/witch/tights": {
@@ -120,8 +168,8 @@
         "emissive": null
       }
     },
-    "material/witch/hat": {
-      "name": "hat",
+    "material/witch/material_007": {
+      "name": "Material.007",
       "render_mask": 0,
       "material_type": "vertex_color",
       "texture_lookups": {
@@ -130,54 +178,6 @@
         "metallic_roughness": null,
         "occlusion": null,
         "emissive": null
-      }
-    },
-    "material/witch/skin": {
-      "name": "skin",
-      "render_mask": 0,
-      "material_type": "vertex_color",
-      "texture_lookups": {
-        "base_color": null,
-        "normal": null,
-        "metallic_roughness": null,
-        "occlusion": null,
-        "emissive": null
-      }
-    },
-    "material/default": {
-      "name": "Default Material",
-      "render_mask": 0,
-      "material_type": "vertex_color",
-      "texture_lookups": {
-        "base_color": "texture/default",
-        "normal": null,
-        "metallic_roughness": null,
-        "occlusion": null,
-        "emissive": null
-      }
-    },
-    "material/witch/neck_skin_shading": {
-      "name": "neck/ skin shading",
-      "render_mask": 0,
-      "material_type": "vertex_color",
-      "texture_lookups": {
-        "base_color": null,
-        "normal": null,
-        "metallic_roughness": null,
-        "occlusion": null,
-        "emissive": null
-      }
-    },
-    "material/witch/nails": {
-      "name": "nails",
-      "render_mask": 0,
-      "material_type": "emissive_only",
-      "texture_lookups": {
-        "base_color": null,
-        "normal": null,
-        "metallic_roughness": null,
-        "occlusion": null,
-        "emissive": "texture/witch/hands"
       }
     }
   }

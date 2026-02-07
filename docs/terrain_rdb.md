@@ -54,8 +54,8 @@ Defines global settings for a terrain project.
 - `name`: user-facing project name
 - `seed`: generator seed
 - `tile_size`: world-space units per tile
-- `tiles_per_chunk`: `[u32; 2]` tiles in x/y per chunk
-- `world_bounds_min` / `world_bounds_max`: `[f32; 3]` world-space bounds
+- `tiles_per_chunk`: `[u32; 2]` tiles in x/z per chunk
+- `world_bounds_min` / `world_bounds_max`: `[f32; 3]` world-space bounds (x/z footprint with +Y up)
 - `lod_policy`: `TerrainLodPolicy` (max LOD and distance bands)
 - `generator_graph_id`: generator graph identifier
 - `vertex_layout`: currently `Standard`
@@ -133,7 +133,7 @@ Tracks build metadata and dependencies for a chunk.
 Legacy/raw chunk data stored as `terrain/chunk_{x}_{y}`.
 
 - `chunk_coords`: chunk-space `[i32; 2]`
-- `origin`: world-space origin `[f32; 2]`
+- `origin`: world-space origin `[f32; 2]` (x/z)
 - `tile_size`, `tiles_per_chunk`
 - `tiles`: `TerrainTile` array (tile id + flags), row-major
 - `heights`: height samples stored in a `(width + 1) x (height + 1)` grid

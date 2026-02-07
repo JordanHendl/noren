@@ -451,7 +451,7 @@ struct ChunkFieldSamples {
     grid_y: u32,
     step: u32,
     origin_x: f32,
-    origin_y: f32,
+    origin_z: f32,
     heights: Vec<f32>,
 }
 
@@ -501,15 +501,15 @@ fn evaluate_chunk_field(
     let grid_y = tiles_y / step + 1;
 
     let origin_x = chunk_coords[0] as f32 * tiles_x as f32 * settings.tile_size;
-    let origin_y = chunk_coords[1] as f32 * tiles_y as f32 * settings.tile_size;
+    let origin_z = chunk_coords[1] as f32 * tiles_y as f32 * settings.tile_size;
 
     let mut heights = vec![0.0_f32; (grid_x * grid_y) as usize];
     for y in 0..grid_y {
         for x in 0..grid_x {
             let world_x = origin_x + x as f32 * step as f32 * settings.tile_size;
-            let world_y = origin_y + y as f32 * step as f32 * settings.tile_size;
+            let world_z = origin_z + y as f32 * step as f32 * settings.tile_size;
             let idx = (y * grid_x + x) as usize;
-            heights[idx] = sample_height(settings, generator, mutation_layers, world_x, world_y);
+            heights[idx] = sample_height(settings, generator, mutation_layers, world_x, world_z);
         }
     }
 
@@ -518,7 +518,7 @@ fn evaluate_chunk_field(
         grid_y,
         step,
         origin_x,
-        origin_y,
+        origin_z,
         heights,
     }
 }
@@ -532,14 +532,14 @@ fn extract_chunk_surface(
         grid_y,
         step,
         origin_x,
-        origin_y,
+        origin_z,
         heights,
     } = field;
     let grid_x = *grid_x;
     let grid_y = *grid_y;
     let step = *step;
     let origin_x = *origin_x;
-    let origin_y = *origin_y;
+    let origin_z = *origin_z;
 
     let tile_x = grid_x.saturating_sub(1);
     let tile_y = grid_y.saturating_sub(1);
@@ -550,7 +550,7 @@ fn extract_chunk_surface(
     for y in 0..tile_y {
         for x in 0..tile_x {
             let p00 = sample_height_vertex(
-                settings, heights, grid_x, grid_y, origin_x, origin_y, step, x, y,
+                settings, heights, grid_x, grid_y, origin_x, origin_z, step, x, y,
             );
             let p10 = sample_height_vertex(
                 settings,
@@ -558,7 +558,7 @@ fn extract_chunk_surface(
                 grid_x,
                 grid_y,
                 origin_x,
-                origin_y,
+                origin_z,
                 step,
                 x + 1,
                 y,
@@ -569,7 +569,7 @@ fn extract_chunk_surface(
                 grid_x,
                 grid_y,
                 origin_x,
-                origin_y,
+                origin_z,
                 step,
                 x,
                 y + 1,
@@ -580,7 +580,7 @@ fn extract_chunk_surface(
                 grid_x,
                 grid_y,
                 origin_x,
-                origin_y,
+                origin_z,
                 step,
                 x + 1,
                 y + 1,
@@ -686,7 +686,7 @@ pub fn build_heightmap_chunk_artifact(
         grid_y,
         step,
         origin_x: chunk.origin[0],
-        origin_y: chunk.origin[1],
+        origin_z: chunk.origin[1],
         heights,
     };
 
@@ -726,14 +726,14 @@ fn extract_heightmap_surface(
         grid_y,
         step,
         origin_x,
-        origin_y,
+        origin_z,
         heights,
     } = field;
     let grid_x = *grid_x;
     let grid_y = *grid_y;
     let step = *step;
     let origin_x = *origin_x;
-    let origin_y = *origin_y;
+    let origin_z = *origin_z;
 
     let tile_x = grid_x.saturating_sub(1);
     let tile_y = grid_y.saturating_sub(1);
@@ -745,7 +745,7 @@ fn extract_heightmap_surface(
     for y in 0..grid_y {
         for x in 0..grid_x {
             let sample = sample_height_vertex(
-                settings, heights, grid_x, grid_y, origin_x, origin_y, step, x, y,
+                settings, heights, grid_x, grid_y, origin_x, origin_z, step, x, y,
             );
             let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
             push_vertex(
@@ -796,7 +796,7 @@ fn sample_height_vertex(
     grid_x: u32,
     grid_y: u32,
     origin_x: f32,
-    origin_y: f32,
+    origin_z: f32,
     step: u32,
     x: u32,
     y: u32,
@@ -804,7 +804,7 @@ fn sample_height_vertex(
     let clamped_x = x.min(grid_x.saturating_sub(1));
     let clamped_y = y.min(grid_y.saturating_sub(1));
     let world_x = origin_x + clamped_x as f32 * step as f32 * settings.tile_size;
-    let world_y = origin_y + clamped_y as f32 * step as f32 * settings.tile_size;
+    let world_z = origin_z + clamped_y as f32 * step as f32 * settings.tile_size;
     let idx = (clamped_y * grid_x + clamped_x) as usize;
     let height = heights.get(idx).copied().unwrap_or(0.0);
     let uv = [
@@ -812,7 +812,7 @@ fn sample_height_vertex(
         clamped_y as f32 / (grid_y.saturating_sub(1).max(1)) as f32,
     ];
     HeightSample {
-        position: [world_x, world_y, height],
+        position: [world_x, height, world_z],
         uv,
     }
 }
@@ -876,9 +876,9 @@ fn evaluate_material_rules(
     normal: [f32; 3],
     mutation_layers: &[TerrainMutationLayer],
 ) -> MaterialSample {
-    let slope = (1.0 - normal[2].abs().clamp(0.0, 1.0)).clamp(0.0, 1.0);
-    let height = position[2];
-    let biome = biome_value(settings, generator, position[0], position[1]);
+    let slope = (1.0 - normal[1].abs().clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let height = position[1];
+    let biome = biome_value(settings, generator, position[0], position[2]);
 
     let mut weighted = Vec::new();
     for rule in &generator.material_rules {
@@ -958,7 +958,7 @@ fn apply_material_paint(
     sample: &mut MaterialSample,
 ) {
     let world_x = position[0];
-    let world_y = position[1];
+    let world_z = position[2];
     for layer in mutation_layers {
         for op in &layer.ops {
             if !op.enabled || op.strength == 0.0 {
@@ -972,7 +972,7 @@ fn apply_material_paint(
                 } => (center, material_id, blend_mode),
                 _ => continue,
             };
-            let influence = radial_falloff(center, world_x, world_y, op.radius, op.falloff);
+            let influence = radial_falloff(center, world_x, world_z, op.radius, op.falloff);
             if influence <= 0.0 {
                 continue;
             }
@@ -1044,9 +1044,9 @@ fn add_chunk_skirts(
         return;
     }
     let base_drop = (settings.tile_size * field.step as f32 * 2.0).max(1.0);
-    let desired_z = min_bounds[2] - base_drop;
-    let skirt_z = desired_z.min(settings.world_bounds_min[2]);
-    let skirt_depth = min_bounds[2] - skirt_z;
+    let desired_y = min_bounds[1] - base_drop;
+    let skirt_y = desired_y.min(settings.world_bounds_min[1]);
+    let skirt_depth = min_bounds[1] - skirt_y;
     if skirt_depth <= 0.0 {
         return;
     }
@@ -1106,7 +1106,7 @@ fn add_chunk_skirts(
         skirt_depth,
     );
 
-    min_bounds[2] = min_bounds[2].min(skirt_z);
+    min_bounds[1] = min_bounds[1].min(skirt_y);
 }
 
 fn append_skirt_edge(
@@ -1131,7 +1131,7 @@ fn append_skirt_edge(
             field.grid_x,
             field.grid_y,
             field.origin_x,
-            field.origin_y,
+            field.origin_z,
             field.step,
             x,
             y,
@@ -1158,8 +1158,8 @@ fn append_skirt_edge(
     let bottom_start = vertices.len() as u32;
     for i in 0..edge.len() {
         let mut v = vertices[(top_start + i as u32) as usize].clone();
-        v.position[2] -= skirt_depth;
-        v.normal = [0.0, 0.0, -1.0];
+        v.position[1] -= skirt_depth;
+        v.normal = [0.0, -1.0, 0.0];
         push_vertex(vertices, min_bounds, max_bounds, v.position, v.normal, v.uv);
     }
 
@@ -1200,11 +1200,11 @@ fn estimate_normal(
 
     let scale = settings.tile_size * step as f32;
     let dx = (h_l - h_r) / scale.max(0.001);
-    let dy = (h_d - h_u) / scale.max(0.001);
+    let dz = (h_d - h_u) / scale.max(0.001);
 
     let mut nx = dx;
-    let mut ny = dy;
-    let mut nz = 1.0;
+    let mut ny = 1.0;
+    let mut nz = dz;
     let length = (nx * nx + ny * ny + nz * nz).sqrt().max(0.001);
     nx /= length;
     ny /= length;
@@ -1217,12 +1217,12 @@ fn sample_height(
     generator: &TerrainGeneratorDefinition,
     mutation_layers: &[TerrainMutationLayer],
     world_x: f32,
-    world_y: f32,
+    world_z: f32,
 ) -> f32 {
     let seed = settings.seed as f32;
     let freq = generator.frequency.max(0.0001);
     let base =
-        ((world_x * freq + seed).sin() + (world_y * freq + seed).cos()) * generator.amplitude;
+        ((world_x * freq + seed).sin() + (world_z * freq + seed).cos()) * generator.amplitude;
     let mut height = base;
     for layer in mutation_layers {
         for op in &layer.ops {
@@ -1232,16 +1232,16 @@ fn sample_height(
             let influence = match op.params {
                 TerrainMutationParams::Sphere { center }
                 | TerrainMutationParams::Smooth { center } => {
-                    radial_falloff(center, world_x, world_y, op.radius, op.falloff)
+                    radial_falloff(center, world_x, world_z, op.radius, op.falloff)
                 }
                 TerrainMutationParams::Capsule { start, end } => {
-                    capsule_falloff(start, end, [world_x, world_y], op.radius, op.falloff)
+                    capsule_falloff(start, end, [world_x, world_z], op.radius, op.falloff)
                 }
                 TerrainMutationParams::MaterialPaint {
                     center,
                     material_id: _,
                     blend_mode: _,
-                } => radial_falloff(center, world_x, world_y, op.radius, op.falloff),
+                } => radial_falloff(center, world_x, world_z, op.radius, op.falloff),
             };
             if influence <= 0.0 {
                 continue;
@@ -1270,23 +1270,23 @@ fn biome_value(
     settings: &TerrainProjectSettings,
     generator: &TerrainGeneratorDefinition,
     world_x: f32,
-    world_y: f32,
+    world_z: f32,
 ) -> f32 {
     let freq = generator.biome_frequency.max(0.0001);
     let xi = (world_x * freq).floor() as i64;
-    let yi = (world_y * freq).floor() as i64;
+    let zi = (world_z * freq).floor() as i64;
     let mut bytes = Vec::with_capacity(24);
     bytes.extend_from_slice(&settings.seed.to_le_bytes());
     bytes.extend_from_slice(&xi.to_le_bytes());
-    bytes.extend_from_slice(&yi.to_le_bytes());
+    bytes.extend_from_slice(&zi.to_le_bytes());
     let hash = fnv1a64(&bytes);
     (hash as f64 / u64::MAX as f64) as f32
 }
 
-fn radial_falloff(center: [f32; 3], world_x: f32, world_y: f32, radius: f32, falloff: f32) -> f32 {
+fn radial_falloff(center: [f32; 3], world_x: f32, world_z: f32, radius: f32, falloff: f32) -> f32 {
     let dx = world_x - center[0];
-    let dy = world_y - center[1];
-    falloff_weight((dx * dx + dy * dy).sqrt(), radius, falloff)
+    let dz = world_z - center[2];
+    falloff_weight((dx * dx + dz * dz).sqrt(), radius, falloff)
 }
 
 fn capsule_falloff(
@@ -1297,20 +1297,20 @@ fn capsule_falloff(
     falloff: f32,
 ) -> f32 {
     let vx = end[0] - start[0];
-    let vy = end[1] - start[1];
+    let vz = end[2] - start[2];
     let wx = point[0] - start[0];
-    let wy = point[1] - start[1];
-    let len_sq = vx * vx + vy * vy;
+    let wz = point[1] - start[2];
+    let len_sq = vx * vx + vz * vz;
     let t = if len_sq > 0.0 {
-        (wx * vx + wy * vy) / len_sq
+        (wx * vx + wz * vz) / len_sq
     } else {
         0.0
     };
     let t = t.clamp(0.0, 1.0);
-    let closest = [start[0] + vx * t, start[1] + vy * t];
+    let closest = [start[0] + vx * t, start[2] + vz * t];
     let dx = point[0] - closest[0];
-    let dy = point[1] - closest[1];
-    falloff_weight((dx * dx + dy * dy).sqrt(), radius, falloff)
+    let dz = point[1] - closest[1];
+    falloff_weight((dx * dx + dz * dz).sqrt(), radius, falloff)
 }
 
 fn falloff_weight(distance: f32, radius: f32, falloff: f32) -> f32 {
@@ -1335,9 +1335,9 @@ pub fn sample_height_with_mutations(
     generator: &TerrainGeneratorDefinition,
     mutation_layers: &[TerrainMutationLayer],
     world_x: f32,
-    world_y: f32,
+    world_z: f32,
 ) -> f32 {
-    sample_height(settings, generator, mutation_layers, world_x, world_y)
+    sample_height(settings, generator, mutation_layers, world_x, world_z)
 }
 
 fn hash_serialize<T: Serialize>(value: &T) -> u64 {

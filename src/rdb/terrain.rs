@@ -67,9 +67,9 @@ pub struct TerrainProjectSettings {
     pub tile_size: f32,
     /// Tile grid dimensions per chunk.
     pub tiles_per_chunk: [u32; 2],
-    /// World bounds minimum (x, y, z).
+    /// World bounds minimum (x, y, z), with +Y as up (height).
     pub world_bounds_min: [f32; 3],
-    /// World bounds maximum (x, y, z).
+    /// World bounds maximum (x, y, z), with +Y as up (height).
     pub world_bounds_max: [f32; 3],
     pub lod_policy: TerrainLodPolicy,
     pub generator_graph_id: String,
@@ -89,7 +89,7 @@ impl Default for TerrainProjectSettings {
             tile_size: 1.0,
             tiles_per_chunk: [32, 32],
             world_bounds_min: [0.0, 0.0, 0.0],
-            world_bounds_max: [1024.0, 1024.0, 256.0],
+            world_bounds_max: [1024.0, 256.0, 1024.0],
             lod_policy: TerrainLodPolicy::default(),
             generator_graph_id: "default".to_string(),
             vertex_layout: TerrainVertexLayout::Standard,
@@ -524,7 +524,7 @@ pub fn parse_chunk_artifact_entry(entry: &str) -> Option<TerrainChunkArtifactKey
     })
 }
 
-/// World-space frustum corners projected onto the terrain plane.
+/// World-space frustum corners projected onto the terrain X/Z plane.
 pub type TerrainFrustum = [[f32; 2]; 4];
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -580,13 +580,13 @@ impl TerrainCameraInfo {
 pub fn chunk_coords_for_world(
     settings: &TerrainProjectSettings,
     world_x: f32,
-    world_y: f32,
+    world_z: f32,
 ) -> (i32, i32) {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
     let x = ((world_x - settings.world_bounds_min[0]) / chunk_size_x).floor() as i32;
-    let y = ((world_y - settings.world_bounds_min[1]) / chunk_size_y).floor() as i32;
-    (x, y)
+    let z = ((world_z - settings.world_bounds_min[2]) / chunk_size_z).floor() as i32;
+    (x, z)
 }
 
 /// Returns the chunk grid id for the given world-space coordinate if it lies within bounds.
@@ -595,18 +595,18 @@ pub fn chunk_id_at(
     coord: [f32; 2],
 ) -> Option<[i32; 2]> {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
         return None;
     }
 
-    let (max_chunk_x, max_chunk_y) = max_chunk_coords(settings, chunk_size_x, chunk_size_y);
-    let (chunk_x, chunk_y) = chunk_coords_for_world(settings, coord[0], coord[1]);
-    if chunk_x < 0 || chunk_y < 0 || chunk_x > max_chunk_x || chunk_y > max_chunk_y {
+    let (max_chunk_x, max_chunk_z) = max_chunk_coords(settings, chunk_size_x, chunk_size_z);
+    let (chunk_x, chunk_z) = chunk_coords_for_world(settings, coord[0], coord[1]);
+    if chunk_x < 0 || chunk_z < 0 || chunk_x > max_chunk_x || chunk_z > max_chunk_z {
         return None;
     }
 
-    Some([chunk_x, chunk_y])
+    Some([chunk_x, chunk_z])
 }
 
 pub fn chunk_coords_in_radius(
@@ -615,17 +615,17 @@ pub fn chunk_coords_in_radius(
     radius: f32,
 ) -> Vec<[i32; 2]> {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
         return Vec::new();
     }
 
     let min_x = center[0] - radius;
     let max_x = center[0] + radius;
-    let min_y = center[1] - radius;
-    let max_y = center[1] + radius;
+    let min_z = center[1] - radius;
+    let max_z = center[1] + radius;
 
-    chunk_coords_in_bounds(settings, [min_x, min_y], [max_x, max_y], chunk_size_x, chunk_size_y)
+    chunk_coords_in_bounds(settings, [min_x, min_z], [max_x, max_z], chunk_size_x, chunk_size_z)
 }
 
 pub fn chunk_coords_in_frustum(
@@ -642,12 +642,12 @@ pub fn chunk_coords_in_frustum(
     }
 
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    if chunk_size_x <= 0.0 || chunk_size_y <= 0.0 {
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
         return Vec::new();
     }
 
-    chunk_coords_in_bounds(settings, min, max, chunk_size_x, chunk_size_y)
+    chunk_coords_in_bounds(settings, min, max, chunk_size_x, chunk_size_z)
 }
 
 fn chunk_coords_in_bounds(
@@ -655,32 +655,32 @@ fn chunk_coords_in_bounds(
     min: [f32; 2],
     max: [f32; 2],
     chunk_size_x: f32,
-    chunk_size_y: f32,
+    chunk_size_z: f32,
 ) -> Vec<[i32; 2]> {
     let min_x = min[0].min(max[0]);
     let max_x = min[0].max(max[0]);
-    let min_y = min[1].min(max[1]);
-    let max_y = min[1].max(max[1]);
+    let min_z = min[1].min(max[1]);
+    let max_z = min[1].max(max[1]);
 
     if max_x < settings.world_bounds_min[0] || min_x > settings.world_bounds_max[0] {
         return Vec::new();
     }
-    if max_y < settings.world_bounds_min[1] || min_y > settings.world_bounds_max[1] {
+    if max_z < settings.world_bounds_min[2] || min_z > settings.world_bounds_max[2] {
         return Vec::new();
     }
 
-    let (max_chunk_x, max_chunk_y) = max_chunk_coords(settings, chunk_size_x, chunk_size_y);
-    let (min_chunk_x, min_chunk_y) = chunk_coords_for_world(settings, min_x, min_y);
-    let (max_chunk_x_raw, max_chunk_y_raw) = chunk_coords_for_world(settings, max_x, max_y);
+    let (max_chunk_x, max_chunk_z) = max_chunk_coords(settings, chunk_size_x, chunk_size_z);
+    let (min_chunk_x, min_chunk_z) = chunk_coords_for_world(settings, min_x, min_z);
+    let (max_chunk_x_raw, max_chunk_z_raw) = chunk_coords_for_world(settings, max_x, max_z);
     let min_chunk_x = min_chunk_x.clamp(0, max_chunk_x);
-    let min_chunk_y = min_chunk_y.clamp(0, max_chunk_y);
+    let min_chunk_z = min_chunk_z.clamp(0, max_chunk_z);
     let max_chunk_x = max_chunk_x_raw.clamp(0, max_chunk_x);
-    let max_chunk_y = max_chunk_y_raw.clamp(0, max_chunk_y);
+    let max_chunk_z = max_chunk_z_raw.clamp(0, max_chunk_z);
 
     let mut coords = Vec::new();
     for chunk_x in min_chunk_x..=max_chunk_x {
-        for chunk_y in min_chunk_y..=max_chunk_y {
-            coords.push([chunk_x, chunk_y]);
+        for chunk_z in min_chunk_z..=max_chunk_z {
+            coords.push([chunk_x, chunk_z]);
         }
     }
     coords
@@ -689,13 +689,13 @@ fn chunk_coords_in_bounds(
 fn max_chunk_coords(
     settings: &TerrainProjectSettings,
     chunk_size_x: f32,
-    chunk_size_y: f32,
+    chunk_size_z: f32,
 ) -> (i32, i32) {
     let world_size_x = (settings.world_bounds_max[0] - settings.world_bounds_min[0]).max(0.0);
-    let world_size_y = (settings.world_bounds_max[1] - settings.world_bounds_min[1]).max(0.0);
+    let world_size_z = (settings.world_bounds_max[2] - settings.world_bounds_min[2]).max(0.0);
     let count_x = (world_size_x / chunk_size_x).ceil().max(1.0) as i32;
-    let count_y = (world_size_y / chunk_size_y).ceil().max(1.0) as i32;
-    (count_x.saturating_sub(1), count_y.saturating_sub(1))
+    let count_z = (world_size_z / chunk_size_z).ceil().max(1.0) as i32;
+    (count_x.saturating_sub(1), count_z.saturating_sub(1))
 }
 
 fn chunk_center_world(
@@ -703,14 +703,14 @@ fn chunk_center_world(
     chunk_coords: [i32; 2],
 ) -> [f32; 3] {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
     let origin_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
-    let origin_y = settings.world_bounds_min[1] + chunk_coords[1] as f32 * chunk_size_y;
-    let center_z = (settings.world_bounds_min[2] + settings.world_bounds_max[2]) * 0.5;
+    let origin_z = settings.world_bounds_min[2] + chunk_coords[1] as f32 * chunk_size_z;
+    let center_y = (settings.world_bounds_min[1] + settings.world_bounds_max[1]) * 0.5;
     [
         origin_x + chunk_size_x * 0.5,
-        origin_y + chunk_size_y * 0.5,
-        center_z,
+        center_y,
+        origin_z + chunk_size_z * 0.5,
     ]
 }
 
@@ -724,7 +724,7 @@ pub struct TerrainTile {
 pub struct TerrainChunk {
     /// Grid coordinates of the chunk in chunk space.
     pub chunk_coords: [i32; 2],
-    /// World-space origin (x, y) for the chunk.
+    /// World-space origin (x, z) for the chunk.
     pub origin: [f32; 2],
     /// Size of each tile in world units.
     pub tile_size: f32,
@@ -765,24 +765,24 @@ impl TerrainChunk {
         self.tiles.get(idx)
     }
 
-    pub fn tile_at_world(&self, world_x: f32, world_y: f32) -> Option<&TerrainTile> {
-        let (tile_x, tile_y) = self.tile_coords_from_world(world_x, world_y)?;
+    pub fn tile_at_world(&self, world_x: f32, world_z: f32) -> Option<&TerrainTile> {
+        let (tile_x, tile_y) = self.tile_coords_from_world(world_x, world_z)?;
         self.tile_at(tile_x as i32, tile_y as i32)
     }
 
-    pub fn tile_coords_from_world(&self, world_x: f32, world_y: f32) -> Option<(u32, u32)> {
+    pub fn tile_coords_from_world(&self, world_x: f32, world_z: f32) -> Option<(u32, u32)> {
         if self.tile_size <= 0.0 {
             return None;
         }
 
         let local_x = (world_x - self.origin[0]) / self.tile_size;
-        let local_y = (world_y - self.origin[1]) / self.tile_size;
-        if local_x < 0.0 || local_y < 0.0 {
+        let local_z = (world_z - self.origin[1]) / self.tile_size;
+        if local_x < 0.0 || local_z < 0.0 {
             return None;
         }
 
         let tile_x = local_x.floor() as i32;
-        let tile_y = local_y.floor() as i32;
+        let tile_y = local_z.floor() as i32;
         if tile_x < 0 || tile_y < 0 {
             return None;
         }
@@ -796,23 +796,23 @@ impl TerrainChunk {
         Some((tile_x, tile_y))
     }
 
-    pub fn height_at_world(&self, world_x: f32, world_y: f32) -> Option<f32> {
+    pub fn height_at_world(&self, world_x: f32, world_z: f32) -> Option<f32> {
         if self.tile_size <= 0.0 {
             return None;
         }
 
         let local_x = world_x - self.origin[0];
-        let local_y = world_y - self.origin[1];
-        self.height_at_local(local_x, local_y)
+        let local_z = world_z - self.origin[1];
+        self.height_at_local(local_x, local_z)
     }
 
-    pub fn height_at_local(&self, local_x: f32, local_y: f32) -> Option<f32> {
+    pub fn height_at_local(&self, local_x: f32, local_z: f32) -> Option<f32> {
         if self.tile_size <= 0.0 {
             return None;
         }
 
         let grid_x = local_x / self.tile_size;
-        let grid_y = local_y / self.tile_size;
+        let grid_y = local_z / self.tile_size;
 
         if grid_x < 0.0 || grid_y < 0.0 {
             return None;
@@ -1045,7 +1045,7 @@ impl TerrainDB {
         Ok(artifacts)
     }
 
-    /// Fetches the sampled height at a world-space coordinate.
+    /// Fetches the sampled height at a world-space X/Z coordinate.
     pub fn fetch_height_at(
         &mut self,
         settings: &TerrainProjectSettings,
@@ -1069,7 +1069,7 @@ impl TerrainDB {
         None
     }
 
-    /// Fetches the slope (0-1) at a world-space coordinate.
+    /// Fetches the slope (0-1) at a world-space X/Z coordinate.
     pub fn fetch_slope_at(
         &mut self,
         settings: &TerrainProjectSettings,
@@ -1094,7 +1094,7 @@ impl TerrainDB {
         Some((1.0 - nz.abs().clamp(0.0, 1.0)).clamp(0.0, 1.0))
     }
 
-    /// Returns the chunk grid id at a given world-space coordinate.
+    /// Returns the chunk grid id at a given world-space X/Z coordinate.
     pub fn chunk_id_at(
         &self,
         settings: &TerrainProjectSettings,
@@ -1124,14 +1124,14 @@ fn height_from_artifact(
     settings: &TerrainProjectSettings,
     artifact: &TerrainChunkArtifact,
     world_x: f32,
-    world_y: f32,
+    world_z: f32,
 ) -> Option<f32> {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
     let origin_x = settings.world_bounds_min[0] + artifact.chunk_coords[0] as f32 * chunk_size_x;
-    let origin_y = settings.world_bounds_min[1] + artifact.chunk_coords[1] as f32 * chunk_size_y;
+    let origin_z = settings.world_bounds_min[2] + artifact.chunk_coords[1] as f32 * chunk_size_z;
     let local_x = (world_x - origin_x) / settings.tile_size;
-    let local_y = (world_y - origin_y) / settings.tile_size;
+    let local_y = (world_z - origin_z) / settings.tile_size;
 
     if local_x < 0.0 || local_y < 0.0 {
         return None;
@@ -1149,10 +1149,10 @@ fn height_from_artifact(
     let x1 = (x0 + 1).min(grid_x - 1);
     let y1 = (y0 + 1).min(grid_y - 1);
     let idx = |x: u32, y: u32| -> usize { (y * grid_x + x) as usize };
-    let h00 = artifact.vertices.get(idx(x0, y0))?.position[2];
-    let h10 = artifact.vertices.get(idx(x1, y0))?.position[2];
-    let h01 = artifact.vertices.get(idx(x0, y1))?.position[2];
-    let h11 = artifact.vertices.get(idx(x1, y1))?.position[2];
+    let h00 = artifact.vertices.get(idx(x0, y0))?.position[1];
+    let h10 = artifact.vertices.get(idx(x1, y0))?.position[1];
+    let h01 = artifact.vertices.get(idx(x0, y1))?.position[1];
+    let h11 = artifact.vertices.get(idx(x1, y1))?.position[1];
     let tx = local_x - x0 as f32;
     let ty = local_y - y0 as f32;
     let hx0 = h00 + (h10 - h00) * tx;
@@ -1414,7 +1414,7 @@ mod tests {
         settings.tile_size = 1.0;
         settings.tiles_per_chunk = [2, 2];
         settings.world_bounds_min = [0.0, 0.0, 0.0];
-        settings.world_bounds_max = [2.0, 2.0, 0.0];
+        settings.world_bounds_max = [2.0, 2.0, 2.0];
 
         let mut db = TerrainDB::new(path.to_str().unwrap());
         let height = db
@@ -1436,7 +1436,7 @@ mod tests {
         settings.tile_size = 1.0;
         settings.tiles_per_chunk = [2, 2];
         settings.world_bounds_min = [0.0, 0.0, 0.0];
-        settings.world_bounds_max = [2.0, 2.0, 0.0];
+        settings.world_bounds_max = [2.0, 2.0, 2.0];
 
         let mut db = TerrainDB::new(path.to_str().unwrap());
         let slope = db
@@ -1453,7 +1453,7 @@ mod tests {
         settings.tile_size = 1.0;
         settings.tiles_per_chunk = [10, 10];
         settings.world_bounds_min = [0.0, 0.0, 0.0];
-        settings.world_bounds_max = [100.0, 100.0, 0.0];
+        settings.world_bounds_max = [100.0, 10.0, 100.0];
 
         assert_eq!(chunk_id_at(&settings, [0.0, 0.0]), Some([0, 0]));
         assert_eq!(chunk_id_at(&settings, [9.9, 0.0]), Some([0, 0]));
