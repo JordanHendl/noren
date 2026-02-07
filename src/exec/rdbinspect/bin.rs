@@ -4,9 +4,9 @@ use bincode::deserialize;
 use noren::{
     RDBEntryMeta, RDBView,
     rdb::{
-        AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton,
-        TerrainChunk, TerrainChunkArtifact, TerrainChunkState, TerrainGeneratorDefinition,
-        TerrainMutationLayer, TerrainMutationOp, TerrainProjectSettings,
+        AnimationClip, HostCubemap, HostGeometry, HostImage, ShaderModule, Skeleton, TerrainChunk,
+        TerrainChunkArtifact, TerrainChunkState, TerrainGeneratorDefinition, TerrainMutationLayer,
+        TerrainMutationOp, TerrainProjectSettings,
     },
     type_tag_for,
 };
@@ -440,40 +440,41 @@ fn describe_terrain(chunk: &TerrainChunk) -> String {
     let tile_count = chunk.tiles.len();
     let height_count = chunk.heights.len();
     format!(
-        "Chunk coords: {:?}\nOrigin: {:?}\nTile size: {:.2}\nTiles: {:?} ({} entries)\nHeights: {} samples\nMesh entry: {}",
+        "Chunk coords: {:?}\nOrigin: {:?}\nTile size: {:.2}\nTiles: {:?} ({} entries)\nHeights: {} samples\nBounds: {:?} -> {:?}\nMesh entry: {}",
         chunk.chunk_coords,
         chunk.origin,
         chunk.tile_size,
         chunk.tiles_per_chunk,
         tile_count,
         height_count,
+        chunk.bounds_min,
+        chunk.bounds_max,
         chunk.mesh_entry
     )
 }
 
 fn describe_terrain_artifact(artifact: &TerrainChunkArtifact) -> String {
-    let vertex_count = artifact.vertices.len();
-    let index_count = artifact.indices.len();
-    let triangle_count = index_count / 3;
+    let sample_count = artifact.heights.len();
     let material_ids = artifact.material_ids.as_ref().map(|ids| ids.len());
     let material_weights = artifact
         .material_weights
         .as_ref()
         .map(|weights| weights.len());
     format!(
-        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nVertices: {}\nIndices: {}\nEstimated triangles: {}\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}\nMesh entry: {}",
+        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nGrid: {:?}\nSample spacing: {:.3}\nHeights: {}\nNormals: {}\nHoles: {}\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}",
         artifact.project_key,
         artifact.chunk_coords,
         artifact.lod,
         artifact.bounds_min,
         artifact.bounds_max,
-        vertex_count,
-        index_count,
-        triangle_count,
+        artifact.grid_size,
+        artifact.sample_spacing,
+        sample_count,
+        artifact.normals.len(),
+        artifact.hole_masks.len(),
         artifact.content_hash,
         material_ids,
         material_weights,
-        artifact.mesh_entry
     )
 }
 

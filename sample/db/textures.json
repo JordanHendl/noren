@@ -1,11 +1,11 @@
 {
   "textures": {
-    "texture/witch/sweater": {
-      "image": "imagery/witch/sweater",
-      "name": "sweater"
+    "texture/default_weather": {
+      "image": "imagery/default",
+      "name": "Default Weather Map"
     },
-    "texture/imagery/peppers": {
-      "image": "imagery/peppers",
+    "texture/imagery/tulips": {
+      "image": "imagery/tulips",
       "name": null
     },
     "texture/witch/hands": {
@@ -16,25 +16,25 @@
       "image": "imagery/witch/purple_smile",
       "name": "purple smile"
     },
+    "texture/default_grass": {
+      "image": "imagery/default",
+      "name": "Default Grass"
+    },
+    "texture/imagery/peppers": {
+      "image": "imagery/peppers",
+      "name": null
+    },
     "texture/default": {
       "image": "imagery/default",
       "name": "Default Texture"
     },
+    "texture/witch/sweater": {
+      "image": "imagery/witch/sweater",
+      "name": "sweater"
+    },
     "texture/terrain_blendmap": {
       "image": "imagery/default",
       "name": "Default Terrain Blendmap"
-    },
-    "texture/default_grass": {
-      "image": "imagery/tileable_grass",
-      "name": "Default Grass"
-    },
-    "texture/default_weather": {
-      "image": "imagery/default_weather",
-      "name": "Default Weather Map"
-    },
-    "texture/imagery/tulips": {
-      "image": "imagery/tulips",
-      "name": null
     }
   }
 }

@@ -4,18 +4,14 @@ use serde::Serialize;
 
 use crate::{
     RDBEntryMeta, RDBFile, RdbErr,
-    rdb::{
-        primitives::Vertex,
-        terrain::{
-            TERRAIN_DIRTY_GENERATOR, TERRAIN_DIRTY_MUTATION, TERRAIN_DIRTY_SETTINGS,
-            TerrainChunk, TerrainChunkArtifact, TerrainChunkDependencyHashes, TerrainChunkLodHash,
-            TerrainChunkState, TerrainDirtyReason, TerrainGeneratorDefinition,
-            TerrainMaterialBlendMode, TerrainMaterialRule, TerrainMutationLayer, TerrainMutationOp,
-            TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
-            TerrainVertexLayout, chunk_artifact_entry, chunk_coord_key, chunk_state_entry,
-            deserialize_legacy_mutation_op, generator_entry, lod_key, mutation_layer_entry,
-            project_settings_entry,
-        },
+    rdb::terrain::{
+        TERRAIN_DIRTY_GENERATOR, TERRAIN_DIRTY_MUTATION, TERRAIN_DIRTY_SETTINGS, TerrainChunk,
+        TerrainChunkArtifact, TerrainChunkDependencyHashes, TerrainChunkLodHash, TerrainChunkState,
+        TerrainDirtyReason, TerrainGeneratorDefinition, TerrainMaterialBlendMode,
+        TerrainMaterialRule, TerrainMutationLayer, TerrainMutationOp, TerrainMutationOpKind,
+        TerrainMutationParams, TerrainProjectSettings, TerrainVertexLayout, chunk_artifact_entry,
+        chunk_coord_key, chunk_state_entry, deserialize_legacy_mutation_op, generator_entry,
+        lod_key, mutation_layer_entry, project_settings_entry,
     },
 };
 
@@ -106,6 +102,8 @@ struct TerrainMutationHashInput<'a> {
 #[derive(Clone, Debug, Serialize)]
 struct HeightmapChunkHashInput<'a> {
     settings: TerrainProjectSettingsHashInput<'a>,
+    generator: &'a TerrainGeneratorDefinition,
+    mutation_layers: &'a [TerrainMutationLayer],
     chunk_coords: [i32; 2],
     tiles_per_chunk: [u32; 2],
     tile_size: f32,
@@ -253,7 +251,7 @@ pub fn build_terrain_chunk_with_context(
         });
     }
 
-    let geometry = generate_chunk_geometry_phased(
+    let maps = generate_chunk_maps_phased(
         &context.settings,
         &context.generator,
         &relevant_layers,
@@ -262,7 +260,18 @@ pub fn build_terrain_chunk_with_context(
         &mut phase_callback,
         &mut should_cancel,
     );
-    let Some((vertices, indices, bounds_min, bounds_max)) = geometry else {
+    let Some((
+        grid_size,
+        sample_spacing,
+        heights,
+        normals,
+        hole_masks,
+        material_ids,
+        material_weights,
+        bounds_min,
+        bounds_max,
+    )) = maps
+    else {
         return Ok(TerrainChunkBuildOutcome {
             status: TerrainChunkBuildStatus::Cancelled,
             artifact: None,
@@ -270,26 +279,20 @@ pub fn build_terrain_chunk_with_context(
         });
     };
 
-    let (material_ids, material_weights) = assign_chunk_materials(
-        &context.settings,
-        &context.generator,
-        &relevant_layers,
-        &vertices,
-    );
-
     let artifact = TerrainChunkArtifact {
         project_key: project_key.to_string(),
         chunk_coords: request.chunk_coords,
         lod: request.lod,
         bounds_min,
         bounds_max,
-        vertex_layout: context.settings.vertex_layout.clone(),
-        vertices,
-        indices,
+        grid_size,
+        sample_spacing,
+        heights,
+        normals,
+        hole_masks,
         material_ids,
         material_weights,
         content_hash,
-        mesh_entry: "mesh/terrain_chunk".to_string(),
     };
 
     let mut last_built_hashes = existing_state
@@ -455,7 +458,7 @@ struct ChunkFieldSamples {
     heights: Vec<f32>,
 }
 
-fn generate_chunk_geometry_phased(
+fn generate_chunk_maps_phased(
     settings: &TerrainProjectSettings,
     generator: &TerrainGeneratorDefinition,
     mutation_layers: &[TerrainMutationLayer],
@@ -463,7 +466,17 @@ fn generate_chunk_geometry_phased(
     lod: u8,
     phase_callback: &mut impl FnMut(TerrainChunkBuildPhase),
     should_cancel: &mut impl FnMut() -> bool,
-) -> Option<(Vec<Vertex>, Vec<u32>, [f32; 3], [f32; 3])> {
+) -> Option<(
+    [u32; 2],
+    f32,
+    Vec<f32>,
+    Vec<[f32; 3]>,
+    Vec<u8>,
+    Option<Vec<[u32; 4]>>,
+    Option<Vec<[f32; 4]>>,
+    [f32; 3],
+    [f32; 3],
+)> {
     phase_callback(TerrainChunkBuildPhase::FieldEval);
     let field = evaluate_chunk_field(settings, generator, mutation_layers, chunk_coords, lod);
     if should_cancel() {
@@ -471,20 +484,43 @@ fn generate_chunk_geometry_phased(
     }
 
     phase_callback(TerrainChunkBuildPhase::SurfaceExtraction);
-    let (mut vertices, mut indices, bounds_min, bounds_max) =
-        extract_chunk_surface(settings, &field);
+    let (
+        mut normals,
+        mut hole_masks,
+        mut material_ids,
+        mut material_weights,
+        bounds_min,
+        bounds_max,
+    ) = build_chunk_maps(settings, generator, mutation_layers, &field);
     if should_cancel() {
         return None;
     }
 
     phase_callback(TerrainChunkBuildPhase::Optimize);
-    vertices.shrink_to_fit();
-    indices.shrink_to_fit();
+    normals.shrink_to_fit();
+    hole_masks.shrink_to_fit();
+    if let Some(ids) = &mut material_ids {
+        ids.shrink_to_fit();
+    }
+    if let Some(weights) = &mut material_weights {
+        weights.shrink_to_fit();
+    }
     if should_cancel() {
         return None;
     }
 
-    Some((vertices, indices, bounds_min, bounds_max))
+    let sample_spacing = settings.tile_size * field.step as f32;
+    Some((
+        [field.grid_x, field.grid_y],
+        sample_spacing,
+        field.heights,
+        normals,
+        hole_masks,
+        material_ids,
+        material_weights,
+        bounds_min,
+        bounds_max,
+    ))
 }
 
 fn evaluate_chunk_field(
@@ -500,8 +536,10 @@ fn evaluate_chunk_field(
     let grid_x = tiles_x / step + 1;
     let grid_y = tiles_y / step + 1;
 
-    let origin_x = chunk_coords[0] as f32 * tiles_x as f32 * settings.tile_size;
-    let origin_z = chunk_coords[1] as f32 * tiles_y as f32 * settings.tile_size;
+    let origin_x =
+        settings.world_bounds_min[0] + chunk_coords[0] as f32 * tiles_x as f32 * settings.tile_size;
+    let origin_z =
+        settings.world_bounds_min[2] + chunk_coords[1] as f32 * tiles_y as f32 * settings.tile_size;
 
     let mut heights = vec![0.0_f32; (grid_x * grid_y) as usize];
     for y in 0..grid_y {
@@ -523,10 +561,19 @@ fn evaluate_chunk_field(
     }
 }
 
-fn extract_chunk_surface(
+fn build_chunk_maps(
     settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    mutation_layers: &[TerrainMutationLayer],
     field: &ChunkFieldSamples,
-) -> (Vec<Vertex>, Vec<u32>, [f32; 3], [f32; 3]) {
+) -> (
+    Vec<[f32; 3]>,
+    Vec<u8>,
+    Option<Vec<[u32; 4]>>,
+    Option<Vec<[f32; 4]>>,
+    [f32; 3],
+    [f32; 3],
+) {
     let ChunkFieldSamples {
         grid_x,
         grid_y,
@@ -541,125 +588,62 @@ fn extract_chunk_surface(
     let origin_x = *origin_x;
     let origin_z = *origin_z;
 
-    let tile_x = grid_x.saturating_sub(1);
-    let tile_y = grid_y.saturating_sub(1);
-    let mut vertices = Vec::with_capacity((tile_x * tile_y * 6) as usize);
+    let sample_count = (grid_x * grid_y) as usize;
+    let mut normals = Vec::with_capacity(sample_count);
+    let mut hole_masks = Vec::with_capacity(sample_count);
+    let mut material_ids = Vec::with_capacity(sample_count);
+    let mut material_weights = Vec::with_capacity(sample_count);
     let mut min_bounds = [f32::MAX; 3];
     let mut max_bounds = [f32::MIN; 3];
-    let mut indices = Vec::with_capacity((tile_x * tile_y * 6) as usize);
-    for y in 0..tile_y {
-        for x in 0..tile_x {
-            let p00 = sample_height_vertex(
-                settings, heights, grid_x, grid_y, origin_x, origin_z, step, x, y,
-            );
-            let p10 = sample_height_vertex(
-                settings,
-                heights,
-                grid_x,
-                grid_y,
-                origin_x,
-                origin_z,
-                step,
-                x + 1,
-                y,
-            );
-            let p01 = sample_height_vertex(
-                settings,
-                heights,
-                grid_x,
-                grid_y,
-                origin_x,
-                origin_z,
-                step,
-                x,
-                y + 1,
-            );
-            let p11 = sample_height_vertex(
-                settings,
-                heights,
-                grid_x,
-                grid_y,
-                origin_x,
-                origin_z,
-                step,
-                x + 1,
-                y + 1,
+
+    for y in 0..grid_y {
+        for x in 0..grid_x {
+            let idx = (y * grid_x + x) as usize;
+            let height = heights.get(idx).copied().unwrap_or_default();
+            let world_x = origin_x + x as f32 * step as f32 * settings.tile_size;
+            let world_z = origin_z + y as f32 * step as f32 * settings.tile_size;
+            update_bounds(
+                &mut min_bounds,
+                &mut max_bounds,
+                &[world_x, height, world_z],
             );
 
-            let n00 = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
-            let n10 = estimate_normal(grid_x, grid_y, x + 1, y, heights, settings, step);
-            let n01 = estimate_normal(grid_x, grid_y, x, y + 1, heights, settings, step);
-            let n11 = estimate_normal(grid_x, grid_y, x + 1, y + 1, heights, settings, step);
+            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
+            normals.push(normal);
+            hole_masks.push(0);
 
-            let base = vertices.len() as u32;
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                p00.position,
-                n00,
-                p00.uv,
+            let mut sample = evaluate_material_rules(
+                settings,
+                generator,
+                [world_x, height, world_z],
+                normal,
+                mutation_layers,
             );
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                p01.position,
-                n01,
-                p01.uv,
-            );
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                p10.position,
-                n10,
-                p10.uv,
-            );
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                p10.position,
-                n10,
-                p10.uv,
-            );
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                p01.position,
-                n01,
-                p01.uv,
-            );
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                p11.position,
-                n11,
-                p11.uv,
-            );
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 3, base + 4, base + 5]);
+            normalize_material_sample(&mut sample);
+            material_ids.push(sample.ids);
+            material_weights.push(sample.weights);
         }
     }
 
-    add_chunk_skirts(
-        settings,
-        field,
-        &mut vertices,
-        &mut indices,
-        &mut min_bounds,
-        &mut max_bounds,
-    );
-
-    match settings.vertex_layout {
-        TerrainVertexLayout::Standard => (vertices, indices, min_bounds, max_bounds),
+    if sample_count == 0 {
+        min_bounds = [0.0; 3];
+        max_bounds = [0.0; 3];
     }
+
+    (
+        normals,
+        hole_masks,
+        Some(material_ids),
+        Some(material_weights),
+        min_bounds,
+        max_bounds,
+    )
 }
 
 pub fn build_heightmap_chunk_artifact(
     settings: &TerrainProjectSettings,
+    generator: &TerrainGeneratorDefinition,
+    mutation_layers: &[TerrainMutationLayer],
     project_key: &str,
     chunk: &TerrainChunk,
     lod: u8,
@@ -690,9 +674,13 @@ pub fn build_heightmap_chunk_artifact(
         heights,
     };
 
-    let (vertices, indices, bounds_min, bounds_max) = extract_heightmap_surface(settings, &field);
+    let (normals, hole_masks, material_ids, material_weights, bounds_min, bounds_max) =
+        build_chunk_maps(settings, generator, mutation_layers, &field);
+    let sample_spacing = settings.tile_size * step as f32;
     let content_hash = hash_serialize(&HeightmapChunkHashInput {
         settings: settings_hash_input(settings),
+        generator,
+        mutation_layers,
         chunk_coords: chunk.chunk_coords,
         tiles_per_chunk: chunk.tiles_per_chunk,
         tile_size: chunk.tile_size,
@@ -707,166 +695,21 @@ pub fn build_heightmap_chunk_artifact(
         lod,
         bounds_min,
         bounds_max,
-        vertex_layout: settings.vertex_layout.clone(),
-        vertices,
-        indices,
-        material_ids: None,
-        material_weights: None,
+        grid_size: [grid_x, grid_y],
+        sample_spacing,
+        heights: field.heights,
+        normals,
+        hole_masks,
+        material_ids,
+        material_weights,
         content_hash,
-        mesh_entry: "mesh/terrain_chunk".to_string(),
     }
-}
-
-fn extract_heightmap_surface(
-    settings: &TerrainProjectSettings,
-    field: &ChunkFieldSamples,
-) -> (Vec<Vertex>, Vec<u32>, [f32; 3], [f32; 3]) {
-    let ChunkFieldSamples {
-        grid_x,
-        grid_y,
-        step,
-        origin_x,
-        origin_z,
-        heights,
-    } = field;
-    let grid_x = *grid_x;
-    let grid_y = *grid_y;
-    let step = *step;
-    let origin_x = *origin_x;
-    let origin_z = *origin_z;
-
-    let tile_x = grid_x.saturating_sub(1);
-    let tile_y = grid_y.saturating_sub(1);
-    let mut vertices = Vec::with_capacity((grid_x * grid_y) as usize);
-    let mut indices = Vec::with_capacity((tile_x * tile_y * 6) as usize);
-    let mut min_bounds = [f32::MAX; 3];
-    let mut max_bounds = [f32::MIN; 3];
-
-    for y in 0..grid_y {
-        for x in 0..grid_x {
-            let sample = sample_height_vertex(
-                settings, heights, grid_x, grid_y, origin_x, origin_z, step, x, y,
-            );
-            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
-            push_vertex(
-                &mut vertices,
-                &mut min_bounds,
-                &mut max_bounds,
-                sample.position,
-                normal,
-                sample.uv,
-            );
-        }
-    }
-
-    for y in 0..tile_y {
-        for x in 0..tile_x {
-            let base = y * grid_x + x;
-            let i0 = base;
-            let i1 = base + 1;
-            let i2 = base + grid_x;
-            let i3 = i2 + 1;
-            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
-        }
-    }
-
-    add_chunk_skirts(
-        settings,
-        field,
-        &mut vertices,
-        &mut indices,
-        &mut min_bounds,
-        &mut max_bounds,
-    );
-
-    match settings.vertex_layout {
-        TerrainVertexLayout::Standard => (vertices, indices, min_bounds, max_bounds),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct HeightSample {
-    position: [f32; 3],
-    uv: [f32; 2],
-}
-
-fn sample_height_vertex(
-    settings: &TerrainProjectSettings,
-    heights: &[f32],
-    grid_x: u32,
-    grid_y: u32,
-    origin_x: f32,
-    origin_z: f32,
-    step: u32,
-    x: u32,
-    y: u32,
-) -> HeightSample {
-    let clamped_x = x.min(grid_x.saturating_sub(1));
-    let clamped_y = y.min(grid_y.saturating_sub(1));
-    let world_x = origin_x + clamped_x as f32 * step as f32 * settings.tile_size;
-    let world_z = origin_z + clamped_y as f32 * step as f32 * settings.tile_size;
-    let idx = (clamped_y * grid_x + clamped_x) as usize;
-    let height = heights.get(idx).copied().unwrap_or(0.0);
-    let uv = [
-        clamped_x as f32 / (grid_x.saturating_sub(1).max(1)) as f32,
-        clamped_y as f32 / (grid_y.saturating_sub(1).max(1)) as f32,
-    ];
-    HeightSample {
-        position: [world_x, height, world_z],
-        uv,
-    }
-}
-
-fn push_vertex(
-    vertices: &mut Vec<Vertex>,
-    min_bounds: &mut [f32; 3],
-    max_bounds: &mut [f32; 3],
-    position: [f32; 3],
-    normal: [f32; 3],
-    uv: [f32; 2],
-) {
-    update_bounds(min_bounds, max_bounds, &position);
-    vertices.push(Vertex {
-        position,
-        normal,
-        tangent: [1.0, 0.0, 0.0, 1.0],
-        uv,
-        color: [1.0, 1.0, 1.0, 1.0],
-        joint_indices: [0; 4],
-        joint_weights: [0.0; 4],
-    });
 }
 
 #[derive(Clone, Copy)]
 struct MaterialSample {
     ids: [u32; 4],
     weights: [f32; 4],
-}
-
-fn assign_chunk_materials(
-    settings: &TerrainProjectSettings,
-    generator: &TerrainGeneratorDefinition,
-    mutation_layers: &[TerrainMutationLayer],
-    vertices: &[Vertex],
-) -> (Option<Vec<u32>>, Option<Vec<[f32; 4]>>) {
-    if vertices.is_empty() {
-        return (None, None);
-    }
-
-    let mut material_ids = Vec::with_capacity(vertices.len() * 4);
-    let mut material_weights = Vec::with_capacity(vertices.len());
-
-    for vertex in vertices {
-        let position = vertex.position;
-        let normal = vertex.normal;
-        let mut sample =
-            evaluate_material_rules(settings, generator, position, normal, mutation_layers);
-        normalize_material_sample(&mut sample);
-        material_ids.extend_from_slice(&sample.ids);
-        material_weights.push(sample.weights);
-    }
-
-    (Some(material_ids), Some(material_weights))
 }
 
 fn evaluate_material_rules(
@@ -1029,146 +872,6 @@ fn normalize_material_sample(sample: &mut MaterialSample) {
     for (i, (id, weight)) in entries.iter().enumerate() {
         sample.ids[i] = *id;
         sample.weights[i] = *weight;
-    }
-}
-
-fn add_chunk_skirts(
-    settings: &TerrainProjectSettings,
-    field: &ChunkFieldSamples,
-    vertices: &mut Vec<Vertex>,
-    indices: &mut Vec<u32>,
-    min_bounds: &mut [f32; 3],
-    max_bounds: &mut [f32; 3],
-) {
-    if field.grid_x < 2 || field.grid_y < 2 {
-        return;
-    }
-    let base_drop = (settings.tile_size * field.step as f32 * 2.0).max(1.0);
-    let desired_y = min_bounds[1] - base_drop;
-    let skirt_y = desired_y.min(settings.world_bounds_min[1]);
-    let skirt_depth = min_bounds[1] - skirt_y;
-    if skirt_depth <= 0.0 {
-        return;
-    }
-
-    let grid_x = field.grid_x;
-    let grid_y = field.grid_y;
-
-    let mut edge_samples = Vec::new();
-    edge_samples.extend((0..grid_x).map(|x| (x, 0)));
-    append_skirt_edge(
-        settings,
-        field,
-        vertices,
-        indices,
-        min_bounds,
-        max_bounds,
-        &edge_samples,
-        skirt_depth,
-    );
-
-    edge_samples.clear();
-    edge_samples.extend((0..grid_x).map(|x| (x, grid_y - 1)));
-    append_skirt_edge(
-        settings,
-        field,
-        vertices,
-        indices,
-        min_bounds,
-        max_bounds,
-        &edge_samples,
-        skirt_depth,
-    );
-
-    edge_samples.clear();
-    edge_samples.extend((0..grid_y).map(|y| (0, y)));
-    append_skirt_edge(
-        settings,
-        field,
-        vertices,
-        indices,
-        min_bounds,
-        max_bounds,
-        &edge_samples,
-        skirt_depth,
-    );
-
-    edge_samples.clear();
-    edge_samples.extend((0..grid_y).map(|y| (grid_x - 1, y)));
-    append_skirt_edge(
-        settings,
-        field,
-        vertices,
-        indices,
-        min_bounds,
-        max_bounds,
-        &edge_samples,
-        skirt_depth,
-    );
-
-    min_bounds[1] = min_bounds[1].min(skirt_y);
-}
-
-fn append_skirt_edge(
-    settings: &TerrainProjectSettings,
-    field: &ChunkFieldSamples,
-    vertices: &mut Vec<Vertex>,
-    indices: &mut Vec<u32>,
-    min_bounds: &mut [f32; 3],
-    max_bounds: &mut [f32; 3],
-    edge: &[(u32, u32)],
-    skirt_depth: f32,
-) {
-    if edge.len() < 2 {
-        return;
-    }
-
-    let top_start = vertices.len() as u32;
-    for &(x, y) in edge {
-        let sample = sample_height_vertex(
-            settings,
-            &field.heights,
-            field.grid_x,
-            field.grid_y,
-            field.origin_x,
-            field.origin_z,
-            field.step,
-            x,
-            y,
-        );
-        let normal = estimate_normal(
-            field.grid_x,
-            field.grid_y,
-            x,
-            y,
-            &field.heights,
-            settings,
-            field.step,
-        );
-        push_vertex(
-            vertices,
-            min_bounds,
-            max_bounds,
-            sample.position,
-            normal,
-            sample.uv,
-        );
-    }
-
-    let bottom_start = vertices.len() as u32;
-    for i in 0..edge.len() {
-        let mut v = vertices[(top_start + i as u32) as usize].clone();
-        v.position[1] -= skirt_depth;
-        v.normal = [0.0, -1.0, 0.0];
-        push_vertex(vertices, min_bounds, max_bounds, v.position, v.normal, v.uv);
-    }
-
-    for i in 0..edge.len() - 1 {
-        let top0 = top_start + i as u32;
-        let top1 = top_start + i as u32 + 1;
-        let skirt0 = bottom_start + i as u32;
-        let skirt1 = bottom_start + i as u32 + 1;
-        indices.extend_from_slice(&[top0, top1, skirt1, top0, skirt1, skirt0]);
     }
 }
 

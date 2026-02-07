@@ -11,24 +11,14 @@ use dashi::driver::command::{BeginDrawing, BlitImage, DrawIndexed};
 use dashi::*;
 use inline_spirv::inline_spirv;
 use noren::{
-    rdb::terrain::{
-        TerrainCameraInfo,
-        TerrainChunkArtifact,
-        TerrainFrustum,
-        TerrainProjectSettings,
-        chunk_artifact_entry,
-        chunk_coord_key,
-        lod_key,
-    },
     NorenError,
+    rdb::terrain::{
+        TerrainCameraInfo, TerrainChunkArtifact, TerrainFrustum, TerrainProjectSettings,
+        chunk_artifact_entry, chunk_coord_key, lod_key,
+    },
 };
 use winit::event::{
-    ElementState,
-    Event,
-    KeyboardInput,
-    MouseScrollDelta,
-    VirtualKeyCode,
-    WindowEvent,
+    ElementState, Event, KeyboardInput, MouseScrollDelta, VirtualKeyCode, WindowEvent,
 };
 use winit::event_loop::ControlFlow;
 use winit::platform::run_return::EventLoopExtRunReturn;
@@ -99,7 +89,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         initial_data: None,
         ..Default::default()
     })?;
-    let fb_view = ImageView { img: fb, ..Default::default() };
+    let fb_view = ImageView {
+        img: fb,
+        ..Default::default()
+    };
 
     let depth_image = ctx.make_image(&ImageInfo {
         debug_name: "terrain_depth_buffer",
@@ -543,7 +536,8 @@ fn build_chunk_draw(
         initial_data: Some(vertex_bytes),
     })?;
 
-    let index_bytes = bytemuck::cast_slice(artifact.indices.as_slice());
+    let indices = build_chunk_indices(artifact);
+    let index_bytes = bytemuck::cast_slice(indices.as_slice());
     let index_buffer = ctx.make_buffer(&BufferInfo {
         debug_name: "terrain_chunk_indices",
         byte_size: index_bytes.len() as u32,
@@ -555,7 +549,7 @@ fn build_chunk_draw(
     Ok(TerrainChunkDraw {
         vertex_buffer,
         index_buffer,
-        index_count: artifact.indices.len() as u32,
+        index_count: indices.len() as u32,
     })
 }
 
@@ -574,30 +568,74 @@ fn build_chunk_vertices(
         inv_scale_z,
     } = *normalization;
 
-    let mut vertices = Vec::with_capacity(artifact.vertices.len());
-    for vertex in &artifact.vertices {
-        let world_x = vertex.position[0];
-        let height = vertex.position[1];
-        let world_z = vertex.position[2];
-        let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
-        let norm_z = ((world_z - world_min[2]) / world_size_z) * 2.0 - 1.0;
-        let norm_y = ((height - min_height) / height_range) * 2.0 - 1.0;
-        let normal = normalize_vec3([
-            vertex.normal[0] * inv_scale_x,
-            vertex.normal[1] * inv_scale_y,
-            vertex.normal[2] * inv_scale_z,
-        ]);
-        let t = ((height - min_height) / height_range).clamp(0.0, 1.0);
-        let color = [0.1 + 0.4 * t, 0.3 + 0.5 * t, 0.2 + 0.2 * t];
+    let grid_x = artifact.grid_size[0];
+    let grid_y = artifact.grid_size[1];
+    let spacing = artifact.sample_spacing.max(0.0001);
+    let chunk_size_x = spacing * grid_x.saturating_sub(1) as f32;
+    let chunk_size_z = spacing * grid_y.saturating_sub(1) as f32;
+    let origin_x = world_min[0] + artifact.chunk_coords[0] as f32 * chunk_size_x;
+    let origin_z = world_min[2] + artifact.chunk_coords[1] as f32 * chunk_size_z;
 
-        vertices.push(TerrainVertex {
-            position: [norm_x, norm_y, norm_z],
-            normal,
-            color,
-        });
+    let mut vertices = Vec::with_capacity(artifact.heights.len());
+    for y in 0..grid_y {
+        for x in 0..grid_x {
+            let idx = (y * grid_x + x) as usize;
+            let height = artifact.heights.get(idx).copied().unwrap_or_default();
+            let world_x = origin_x + x as f32 * spacing;
+            let world_z = origin_z + y as f32 * spacing;
+            let normal = artifact
+                .normals
+                .get(idx)
+                .copied()
+                .unwrap_or([0.0, 1.0, 0.0]);
+            let norm_x = ((world_x - world_min[0]) / world_size_x) * 2.0 - 1.0;
+            let norm_z = ((world_z - world_min[2]) / world_size_z) * 2.0 - 1.0;
+            let norm_y = ((height - min_height) / height_range) * 2.0 - 1.0;
+            let normal = normalize_vec3([
+                normal[0] * inv_scale_x,
+                normal[1] * inv_scale_y,
+                normal[2] * inv_scale_z,
+            ]);
+            let t = ((height - min_height) / height_range).clamp(0.0, 1.0);
+            let color = [0.1 + 0.4 * t, 0.3 + 0.5 * t, 0.2 + 0.2 * t];
+
+            vertices.push(TerrainVertex {
+                position: [norm_x, norm_y, norm_z],
+                normal,
+                color,
+            });
+        }
     }
 
     vertices
+}
+
+fn build_chunk_indices(artifact: &TerrainChunkArtifact) -> Vec<u32> {
+    let grid_x = artifact.grid_size[0];
+    let grid_y = artifact.grid_size[1];
+    let sample_count = (grid_x * grid_y) as usize;
+    let mut indices =
+        Vec::with_capacity((grid_x.saturating_sub(1) * grid_y.saturating_sub(1) * 6) as usize);
+    let has_holes = artifact.hole_masks.len() == sample_count;
+    for y in 0..grid_y.saturating_sub(1) {
+        for x in 0..grid_x.saturating_sub(1) {
+            let base = y * grid_x + x;
+            let i0 = base;
+            let i1 = base + 1;
+            let i2 = base + grid_x;
+            let i3 = i2 + 1;
+            if has_holes
+                && (artifact.hole_masks[i0 as usize] != 0
+                    || artifact.hole_masks[i1 as usize] != 0
+                    || artifact.hole_masks[i2 as usize] != 0
+                    || artifact.hole_masks[i3 as usize] != 0)
+            {
+                continue;
+            }
+            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
+        }
+    }
+    indices
 }
 
 fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
@@ -618,16 +656,8 @@ fn make_view_matrix(zoom: f32, offset: [f32; 2], yaw: f32, pitch: f32) -> [[f32;
     let sin_pitch = pitch.sin();
     let right = [cos_yaw, 0.0, -sin_yaw];
     let forward = [sin_yaw, 0.0, cos_yaw];
-    let forward_pitch = [
-        forward[0] * cos_pitch,
-        sin_pitch,
-        forward[2] * cos_pitch,
-    ];
-    let up_pitch = [
-        -forward[0] * sin_pitch,
-        cos_pitch,
-        -forward[2] * sin_pitch,
-    ];
+    let forward_pitch = [forward[0] * cos_pitch, sin_pitch, forward[2] * cos_pitch];
+    let up_pitch = [-forward[0] * sin_pitch, cos_pitch, -forward[2] * sin_pitch];
     [
         [zoom * right[0], zoom * right[1], zoom * right[2], 0.0],
         [
@@ -752,12 +782,7 @@ fn refresh_visible_chunks(
     Ok((draws, entries))
 }
 
-fn camera_norm_from_ndc(
-    ndc: [f32; 2],
-    zoom: f32,
-    offset: [f32; 2],
-    yaw: f32,
-) -> [f32; 2] {
+fn camera_norm_from_ndc(ndc: [f32; 2], zoom: f32, offset: [f32; 2], yaw: f32) -> [f32; 2] {
     let camera = [ndc[0] / zoom - offset[0], ndc[1] / zoom - offset[1]];
     rotate_2d(camera, -yaw)
 }

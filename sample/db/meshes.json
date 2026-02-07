@@ -1,44 +1,22 @@
 {
   "meshes": {
-    "mesh/witch/cube_014/3": {
-      "name": "Witch cube_014 3",
-      "geometry": "geometry/witch/cube_014/3",
-      "material": "material/witch/skin",
+    "mesh/witch/cube/2": {
+      "name": "Witch cube 2",
+      "geometry": "geometry/witch/cube/2",
+      "material": "material/witch/legs",
       "textures": []
     },
-    "mesh/witch/circle_004/0": {
-      "name": "Witch circle_004 0",
-      "geometry": "geometry/witch/circle_004/0",
-      "material": "material/witch/hat",
-      "textures": []
-    },
-    "mesh/sphere": {
-      "name": "sphere",
-      "geometry": "geometry/sphere",
-      "material": "material/default",
-      "textures": [
-        "texture/default"
-      ]
-    },
-    "mesh/quad": {
-      "name": "quad",
-      "geometry": "geometry/quad",
+    "mesh/simple_skin": {
+      "name": "simple_skin",
+      "geometry": "geometry/simple_skin",
       "material": null,
-      "textures": [
-        "texture/imagery/tulips",
-        "texture/imagery/peppers"
-      ]
+      "textures": []
     },
-    "mesh/terrain_chunk": {
-      "name": "terrain_chunk",
-      "geometry": "geometry/terrain_chunk",
-      "material": "material/terrain_default",
-      "textures": [
-        "texture/default_grass",
-        "texture/default_grass",
-        "texture/default_grass",
-        "texture/default_grass"
-      ]
+    "mesh/witch/cube/0": {
+      "name": "Witch cube 0",
+      "geometry": "geometry/witch/cube/0",
+      "material": "material/witch/nails",
+      "textures": []
     },
     "mesh/terrain_chunk_lod1": {
       "name": "terrain_chunk_lod1",
@@ -51,10 +29,30 @@
         "texture/default_grass"
       ]
     },
-    "mesh/witch/cube/3": {
-      "name": "Witch cube 3",
-      "geometry": "geometry/witch/cube/3",
-      "material": "material/witch/material_006",
+    "mesh/witch/cube_014/2": {
+      "name": "Witch cube_014 2",
+      "geometry": "geometry/witch/cube_014/2",
+      "material": "material/witch/material_009",
+      "textures": []
+    },
+    "mesh/cone": {
+      "name": "cone",
+      "geometry": "geometry/cone",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/witch/cube/6": {
+      "name": "Witch cube 6",
+      "geometry": "geometry/witch/cube/6",
+      "material": "material/witch/material_007",
+      "textures": []
+    },
+    "mesh/witch/cube_014/3": {
+      "name": "Witch cube_014 3",
+      "geometry": "geometry/witch/cube_014/3",
+      "material": "material/witch/skin",
       "textures": []
     },
     "mesh/witch/cube_014/4": {
@@ -63,54 +61,28 @@
       "material": "material/witch/material_007",
       "textures": []
     },
+    "mesh/witch/cube/1": {
+      "name": "Witch cube 1",
+      "geometry": "geometry/witch/cube/1",
+      "material": "material/witch/material",
+      "textures": []
+    },
+    "mesh/witch/cube/3": {
+      "name": "Witch cube 3",
+      "geometry": "geometry/witch/cube/3",
+      "material": "material/witch/material_006",
+      "textures": []
+    },
+    "mesh/witch/circle_004/0": {
+      "name": "Witch circle_004 0",
+      "geometry": "geometry/witch/circle_004/0",
+      "material": "material/witch/hat",
+      "textures": []
+    },
     "mesh/witch/circle_004/1": {
       "name": "Witch circle_004 1",
       "geometry": "geometry/witch/circle_004/1",
       "material": "material/witch/material_007",
-      "textures": []
-    },
-    "mesh/cylinder": {
-      "name": "cylinder",
-      "geometry": "geometry/cylinder",
-      "material": "material/default",
-      "textures": [
-        "texture/default"
-      ]
-    },
-    "mesh/witch/circle_004/3": {
-      "name": "Witch circle_004 3",
-      "geometry": "geometry/witch/circle_004/3",
-      "material": "material/witch/material_004",
-      "textures": []
-    },
-    "mesh/simple_skin": {
-      "name": "simple_skin",
-      "geometry": "geometry/simple_skin",
-      "material": null,
-      "textures": []
-    },
-    "mesh/witch/cube/6": {
-      "name": "Witch cube 6",
-      "geometry": "geometry/witch/cube/6",
-      "material": "material/witch/material_007",
-      "textures": []
-    },
-    "mesh/witch/cube/7": {
-      "name": "Witch cube 7",
-      "geometry": "geometry/witch/cube/7",
-      "material": "material/witch/tights",
-      "textures": []
-    },
-    "mesh/witch/cube/2": {
-      "name": "Witch cube 2",
-      "geometry": "geometry/witch/cube/2",
-      "material": "material/witch/legs",
-      "textures": []
-    },
-    "mesh/witch/cube_014/1": {
-      "name": "Witch cube_014 1",
-      "geometry": "geometry/witch/cube_014/1",
-      "material": "material/witch/material_006",
       "textures": []
     },
     "mesh/witch/circle_004/2": {
@@ -119,33 +91,24 @@
       "material": "material/witch/material_009",
       "textures": []
     },
-    "mesh/witch/cube/4": {
-      "name": "Witch cube 4",
-      "geometry": "geometry/witch/cube/4",
-      "material": "material/witch/face_txt",
+    "mesh/witch/circle_004/3": {
+      "name": "Witch circle_004 3",
+      "geometry": "geometry/witch/circle_004/3",
+      "material": "material/witch/material_004",
       "textures": []
     },
-    "mesh/witch/cube/0": {
-      "name": "Witch cube 0",
-      "geometry": "geometry/witch/cube/0",
-      "material": "material/witch/nails",
-      "textures": []
+    "mesh/quad": {
+      "name": "quad",
+      "geometry": "geometry/quad",
+      "material": null,
+      "textures": [
+        "texture/imagery/tulips",
+        "texture/imagery/peppers"
+      ]
     },
-    "mesh/witch/cube_003/0": {
-      "name": "Witch cube_003 0",
-      "geometry": "geometry/witch/cube_003/0",
-      "material": "material/witch/material",
-      "textures": []
-    },
-    "mesh/fox": {
-      "name": "fox",
-      "geometry": "geometry/fox",
-      "material": "material/fox",
-      "textures": []
-    },
-    "mesh/cube": {
-      "name": "cube",
-      "geometry": "geometry/cube",
+    "mesh/cylinder": {
+      "name": "cylinder",
+      "geometry": "geometry/cylinder",
       "material": "material/default",
       "textures": [
         "texture/default"
@@ -159,18 +122,10 @@
         "texture/default"
       ]
     },
-    "mesh/cone": {
-      "name": "cone",
-      "geometry": "geometry/cone",
-      "material": "material/default",
-      "textures": [
-        "texture/default"
-      ]
-    },
-    "mesh/witch/cube/1": {
-      "name": "Witch cube 1",
-      "geometry": "geometry/witch/cube/1",
-      "material": "material/witch/material",
+    "mesh/witch/cube/4": {
+      "name": "Witch cube 4",
+      "geometry": "geometry/witch/cube/4",
+      "material": "material/witch/face_txt",
       "textures": []
     },
     "mesh/witch/cube/5": {
@@ -179,16 +134,61 @@
       "material": "material/witch/neck_skin_shading",
       "textures": []
     },
+    "mesh/sphere": {
+      "name": "sphere",
+      "geometry": "geometry/sphere",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
     "mesh/witch/cube_014/0": {
       "name": "Witch cube_014 0",
       "geometry": "geometry/witch/cube_014/0",
       "material": "material/witch/sweater",
       "textures": []
     },
-    "mesh/witch/cube_014/2": {
-      "name": "Witch cube_014 2",
-      "geometry": "geometry/witch/cube_014/2",
-      "material": "material/witch/material_009",
+    "mesh/witch/cube/7": {
+      "name": "Witch cube 7",
+      "geometry": "geometry/witch/cube/7",
+      "material": "material/witch/tights",
+      "textures": []
+    },
+    "mesh/fox": {
+      "name": "fox",
+      "geometry": "geometry/fox",
+      "material": "material/fox",
+      "textures": []
+    },
+    "mesh/witch/cube_003/0": {
+      "name": "Witch cube_003 0",
+      "geometry": "geometry/witch/cube_003/0",
+      "material": "material/witch/material",
+      "textures": []
+    },
+    "mesh/terrain_chunk": {
+      "name": "terrain_chunk",
+      "geometry": "geometry/terrain_chunk",
+      "material": "material/terrain_default",
+      "textures": [
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass",
+        "texture/default_grass"
+      ]
+    },
+    "mesh/cube": {
+      "name": "cube",
+      "geometry": "geometry/cube",
+      "material": "material/default",
+      "textures": [
+        "texture/default"
+      ]
+    },
+    "mesh/witch/cube_014/1": {
+      "name": "Witch cube_014 1",
+      "geometry": "geometry/witch/cube_014/1",
+      "material": "material/witch/material_006",
       "textures": []
     }
   }

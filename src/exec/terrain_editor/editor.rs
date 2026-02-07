@@ -228,6 +228,7 @@ impl ChunkPreviewCache {
     fn upsert(
         &mut self,
         key: ChunkMeshKey,
+        settings: &TerrainProjectSettings,
         artifact: &noren::rdb::terrain::TerrainChunkArtifact,
         entry_offset: u64,
         entry_len: u64,
@@ -242,23 +243,14 @@ impl ChunkPreviewCache {
             })
             .unwrap_or(true);
         if needs_update {
-            let positions = artifact
-                .vertices
-                .iter()
-                .map(|vertex| Vec3::from(vertex.position))
-                .collect::<Vec<_>>();
-            let normals = artifact
-                .vertices
-                .iter()
-                .map(|vertex| Vec3::from(vertex.normal))
-                .collect::<Vec<_>>();
-            let material_ids = collect_material_ids(artifact);
-            let material_weights = collect_material_weights(artifact);
+            let (positions, normals, indices) = build_chunk_mesh_from_artifact(settings, artifact);
+            let material_ids = collect_material_ids(artifact, positions.len());
+            let material_weights = collect_material_weights(artifact, positions.len());
             let mesh = ChunkMeshResource {
                 content_hash: artifact.content_hash,
                 positions,
                 normals,
-                indices: artifact.indices.clone(),
+                indices,
                 material_ids,
                 material_weights,
                 bounds_min: Vec3::from(artifact.bounds_min),
@@ -277,6 +269,7 @@ impl ChunkPreviewCache {
         &'a mut self,
         key: ChunkMeshKey,
         info: &ChunkArtifactInfo,
+        settings: &TerrainProjectSettings,
         rdb: &mut RDBFile,
     ) -> Option<&'a ChunkMeshResource> {
         let s: &mut Self = unsafe { &mut *(self as *mut Self) };
@@ -290,7 +283,14 @@ impl ChunkPreviewCache {
         else {
             return None;
         };
-        Some(Self::upsert(s, key, &artifact, info.offset, info.len))
+        Some(Self::upsert(
+            s,
+            key,
+            settings,
+            &artifact,
+            info.offset,
+            info.len,
+        ))
     }
 
     fn retain_keys(&mut self, keys: &HashSet<ChunkMeshKey>) {
@@ -1419,7 +1419,11 @@ impl TerrainEditorApp {
                     coords: [coords.0, coords.1],
                     lod,
                 };
-                if self.preview_cache.ensure_mesh(key, &info, rdb).is_some() {
+                if self
+                    .preview_cache
+                    .ensure_mesh(key, &info, &project.settings, rdb)
+                    .is_some()
+                {
                     valid_keys.insert(key);
                     mesh_keys.push(key);
                 }
@@ -1489,29 +1493,17 @@ impl TerrainEditorApp {
                 let base0 = if self.preview.show_lod_colors {
                     lod_debug_color(key.lod)
                 } else {
-                    triplanar_tint(
-                        material_color_for_vertex(mesh, i0),
-                        mesh.positions[i0],
-                        n0,
-                    )
+                    triplanar_tint(material_color_for_vertex(mesh, i0), mesh.positions[i0], n0)
                 };
                 let base1 = if self.preview.show_lod_colors {
                     lod_debug_color(key.lod)
                 } else {
-                    triplanar_tint(
-                        material_color_for_vertex(mesh, i1),
-                        mesh.positions[i1],
-                        n1,
-                    )
+                    triplanar_tint(material_color_for_vertex(mesh, i1), mesh.positions[i1], n1)
                 };
                 let base2 = if self.preview.show_lod_colors {
                     lod_debug_color(key.lod)
                 } else {
-                    triplanar_tint(
-                        material_color_for_vertex(mesh, i2),
-                        mesh.positions[i2],
-                        n2,
-                    )
+                    triplanar_tint(material_color_for_vertex(mesh, i2), mesh.positions[i2], n2)
                 };
                 let c0 = shade_color(base0, n0, light_dir);
                 let c1 = shade_color(base1, n1, light_dir);
@@ -2953,7 +2945,11 @@ fn material_color_for_vertex(mesh: &ChunkMeshResource, index: usize) -> egui::Co
         g += *weight * color.g() as f32;
         b += *weight * color.b() as f32;
     }
-    egui::Color32::from_rgb(r.clamp(0.0, 255.0) as u8, g.clamp(0.0, 255.0) as u8, b.clamp(0.0, 255.0) as u8)
+    egui::Color32::from_rgb(
+        r.clamp(0.0, 255.0) as u8,
+        g.clamp(0.0, 255.0) as u8,
+        b.clamp(0.0, 255.0) as u8,
+    )
 }
 
 fn triplanar_tint(base: egui::Color32, position: Vec3, normal: Vec3) -> egui::Color32 {
@@ -2971,7 +2967,11 @@ fn triplanar_tint(base: egui::Color32, position: Vec3, normal: Vec3) -> egui::Co
     let y_color = scale_color(base, 0.85 + 0.15 * y_variation);
     let z_color = scale_color(base, 0.85 + 0.15 * z_variation);
 
-    blend_colors(blend_colors(x_color, y_color, wy / (wx + wy).max(0.0001)), z_color, wz)
+    blend_colors(
+        blend_colors(x_color, y_color, wy / (wx + wy).max(0.0001)),
+        z_color,
+        wz,
+    )
 }
 
 fn blend_colors(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
@@ -2996,29 +2996,89 @@ fn world_variation(a: f32, b: f32, scale: f32) -> f32 {
     value.sin().abs().clamp(0.0, 1.0)
 }
 
+fn build_chunk_mesh_from_artifact(
+    settings: &TerrainProjectSettings,
+    artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+) -> (Vec<Vec3>, Vec<Vec3>, Vec<u32>) {
+    let grid_x = artifact.grid_size[0];
+    let grid_y = artifact.grid_size[1];
+    if grid_x == 0 || grid_y == 0 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+    let origin_x = settings.world_bounds_min[0] + artifact.chunk_coords[0] as f32 * chunk_size_x;
+    let origin_z = settings.world_bounds_min[2] + artifact.chunk_coords[1] as f32 * chunk_size_z;
+    let spacing = artifact.sample_spacing.max(0.0001);
+
+    let sample_count = (grid_x * grid_y) as usize;
+    let mut positions = Vec::with_capacity(sample_count);
+    for y in 0..grid_y {
+        for x in 0..grid_x {
+            let idx = (y * grid_x + x) as usize;
+            let height = artifact.heights.get(idx).copied().unwrap_or_default();
+            let world_x = origin_x + x as f32 * spacing;
+            let world_z = origin_z + y as f32 * spacing;
+            positions.push(Vec3::new(world_x, height, world_z));
+        }
+    }
+
+    let normals = if artifact.normals.len() == sample_count {
+        artifact
+            .normals
+            .iter()
+            .map(|normal| Vec3::from(*normal))
+            .collect()
+    } else {
+        vec![Vec3::Y; sample_count]
+    };
+
+    let mut indices =
+        Vec::with_capacity((grid_x.saturating_sub(1) * grid_y.saturating_sub(1) * 6) as usize);
+    let has_holes = artifact.hole_masks.len() == sample_count;
+    for y in 0..grid_y.saturating_sub(1) {
+        for x in 0..grid_x.saturating_sub(1) {
+            let base = y * grid_x + x;
+            let i0 = base;
+            let i1 = base + 1;
+            let i2 = base + grid_x;
+            let i3 = i2 + 1;
+            if has_holes
+                && (artifact.hole_masks[i0 as usize] != 0
+                    || artifact.hole_masks[i1 as usize] != 0
+                    || artifact.hole_masks[i2 as usize] != 0
+                    || artifact.hole_masks[i3 as usize] != 0)
+            {
+                continue;
+            }
+            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
+        }
+    }
+
+    (positions, normals, indices)
+}
+
 fn collect_material_ids(
     artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+    sample_count: usize,
 ) -> Option<Vec<[u32; 4]>> {
     let ids = artifact.material_ids.as_ref()?;
-    if ids.len() < artifact.vertices.len() * 4 {
+    if ids.len() < sample_count {
         return None;
     }
-    Some(
-        ids.chunks(4)
-            .take(artifact.vertices.len())
-            .map(|chunk| [chunk[0], chunk[1], chunk[2], chunk[3]])
-            .collect(),
-    )
+    Some(ids[..sample_count].to_vec())
 }
 
 fn collect_material_weights(
     artifact: &noren::rdb::terrain::TerrainChunkArtifact,
+    sample_count: usize,
 ) -> Option<Vec<[f32; 4]>> {
     let weights = artifact.material_weights.as_ref()?;
-    if weights.len() < artifact.vertices.len() {
+    if weights.len() < sample_count {
         return None;
     }
-    Some(weights[..artifact.vertices.len()].to_vec())
+    Some(weights[..sample_count].to_vec())
 }
 
 fn chunk_coords_for_world(
@@ -3041,16 +3101,20 @@ fn height_from_artifact(
 ) -> Option<f32> {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
     let chunk_size_y = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    let origin_x = artifact.chunk_coords[0] as f32 * chunk_size_x;
-    let origin_y = artifact.chunk_coords[1] as f32 * chunk_size_y;
-    let local_x = (world_x - origin_x) / settings.tile_size;
-    let local_y = (world_y - origin_y) / settings.tile_size;
+    let origin_x = settings.world_bounds_min[0] + artifact.chunk_coords[0] as f32 * chunk_size_x;
+    let origin_y = settings.world_bounds_min[1] + artifact.chunk_coords[1] as f32 * chunk_size_y;
+    let spacing = artifact.sample_spacing.max(0.0001);
+    let local_x = (world_x - origin_x) / spacing;
+    let local_y = (world_y - origin_y) / spacing;
 
     if local_x < 0.0 || local_y < 0.0 {
         return None;
     }
-    let grid_x = settings.tiles_per_chunk[0] + 1;
-    let grid_y = settings.tiles_per_chunk[1] + 1;
+    let grid_x = artifact.grid_size[0];
+    let grid_y = artifact.grid_size[1];
+    if grid_x == 0 || grid_y == 0 {
+        return None;
+    }
     let max_x = grid_x.saturating_sub(1) as f32;
     let max_y = grid_y.saturating_sub(1) as f32;
     if local_x > max_x || local_y > max_y {
@@ -3062,10 +3126,10 @@ fn height_from_artifact(
     let x1 = (x0 + 1).min(grid_x - 1);
     let y1 = (y0 + 1).min(grid_y - 1);
     let idx = |x: u32, y: u32| -> usize { (y * grid_x + x) as usize };
-    let h00 = artifact.vertices.get(idx(x0, y0))?.position[2];
-    let h10 = artifact.vertices.get(idx(x1, y0))?.position[2];
-    let h01 = artifact.vertices.get(idx(x0, y1))?.position[2];
-    let h11 = artifact.vertices.get(idx(x1, y1))?.position[2];
+    let h00 = *artifact.heights.get(idx(x0, y0))?;
+    let h10 = *artifact.heights.get(idx(x1, y0))?;
+    let h01 = *artifact.heights.get(idx(x0, y1))?;
+    let h11 = *artifact.heights.get(idx(x1, y1))?;
     let tx = local_x - x0 as f32;
     let ty = local_y - y0 as f32;
     let hx0 = h00 + (h10 - h00) * tx;
@@ -3187,9 +3251,7 @@ fn affected_chunks_for_op(
                     center,
                     material_id: _,
                     blend_mode: _,
-                } => {
-                    sphere_intersects_aabb(center, op.radius, aabb_min, aabb_max)
-                }
+                } => sphere_intersects_aabb(center, op.radius, aabb_min, aabb_max),
                 TerrainMutationParams::Capsule { start, end } => {
                     let (expanded_min, expanded_max) = expand_aabb(aabb_min, aabb_max, op.radius);
                     segment_intersects_aabb(start, end, expanded_min, expanded_max)

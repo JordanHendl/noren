@@ -1,7 +1,6 @@
 use dashi::Handle;
 use furikake::{
-    BindlessState,
-    reservations::bindless_camera::ReservedBindlessCamera,
+    BindlessState, reservations::bindless_camera::ReservedBindlessCamera,
     types::Camera as FurikakeCamera,
 };
 use glam::Vec4;
@@ -9,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::info;
 
-use super::{DatabaseEntry, primitives::Vertex};
+use super::DatabaseEntry;
 use crate::{RDBView, error::NorenError};
 
 /// RDB schema for terrain data.
@@ -226,9 +225,16 @@ pub enum TerrainMutationOpKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum TerrainMutationParams {
-    Sphere { center: [f32; 3] },
-    Capsule { start: [f32; 3], end: [f32; 3] },
-    Smooth { center: [f32; 3] },
+    Sphere {
+        center: [f32; 3],
+    },
+    Capsule {
+        start: [f32; 3],
+        end: [f32; 3],
+    },
+    Smooth {
+        center: [f32; 3],
+    },
     MaterialPaint {
         center: [f32; 3],
         material_id: u32,
@@ -311,18 +317,23 @@ pub(crate) struct LegacyTerrainMutationOp {
 impl LegacyTerrainMutationOp {
     pub(crate) fn upgrade(self) -> TerrainMutationOp {
         let params = match self.params {
-            LegacyTerrainMutationParams::Sphere { center } => TerrainMutationParams::Sphere { center },
+            LegacyTerrainMutationParams::Sphere { center } => {
+                TerrainMutationParams::Sphere { center }
+            }
             LegacyTerrainMutationParams::Capsule { start, end } => {
                 TerrainMutationParams::Capsule { start, end }
             }
-            LegacyTerrainMutationParams::Smooth { center } => TerrainMutationParams::Smooth { center },
-            LegacyTerrainMutationParams::MaterialPaint { center, material_id } => {
-                TerrainMutationParams::MaterialPaint {
-                    center,
-                    material_id,
-                    blend_mode: TerrainMaterialBlendMode::Blend,
-                }
+            LegacyTerrainMutationParams::Smooth { center } => {
+                TerrainMutationParams::Smooth { center }
             }
+            LegacyTerrainMutationParams::MaterialPaint {
+                center,
+                material_id,
+            } => TerrainMutationParams::MaterialPaint {
+                center,
+                material_id,
+                blend_mode: TerrainMaterialBlendMode::Blend,
+            },
         };
         TerrainMutationOp {
             op_id: self.op_id,
@@ -399,18 +410,20 @@ pub struct TerrainChunkArtifact {
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
     #[serde(default)]
-    pub vertex_layout: TerrainVertexLayout,
+    pub grid_size: [u32; 2],
     #[serde(default)]
-    pub vertices: Vec<Vertex>,
+    pub sample_spacing: f32,
     #[serde(default)]
-    pub indices: Vec<u32>,
+    pub heights: Vec<f32>,
     #[serde(default)]
-    pub material_ids: Option<Vec<u32>>,
+    pub normals: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub hole_masks: Vec<u8>,
+    #[serde(default)]
+    pub material_ids: Option<Vec<[u32; 4]>>,
     #[serde(default)]
     pub material_weights: Option<Vec<[f32; 4]>>,
     pub content_hash: u64,
-    #[serde(default)]
-    pub mesh_entry: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -545,11 +558,7 @@ pub struct TerrainCameraInfo {
 }
 
 impl TerrainCameraInfo {
-    pub fn lod_for_distance(
-        &self,
-        settings: &TerrainProjectSettings,
-        distance: f32,
-    ) -> u8 {
+    pub fn lod_for_distance(&self, settings: &TerrainProjectSettings, distance: f32) -> u8 {
         let max_lod = settings.lod_policy.max_lod;
         if max_lod == 0 {
             return 0;
@@ -614,12 +623,7 @@ fn terrain_frustum_from_furikake(
     let plane_y = settings.world_bounds_min[1];
     let fallback_dist = camera.far.max(1.0);
 
-    let corners = [
-        [-1.0, -1.0],
-        [1.0, -1.0],
-        [1.0, 1.0],
-        [-1.0, 1.0],
-    ];
+    let corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
 
     let mut frustum = [[0.0; 2]; 4];
     let mut max_dist: f32 = 0.0;
@@ -680,10 +684,7 @@ pub struct FurikakeStateSnapshot {
 }
 
 impl FurikakeStateSnapshot {
-    pub fn camera_info(
-        &self,
-        handle: Handle<FurikakeCamera>,
-    ) -> Option<&TerrainCameraInfo> {
+    pub fn camera_info(&self, handle: Handle<FurikakeCamera>) -> Option<&TerrainCameraInfo> {
         let target = FurikakeCameraHandle::from(handle);
         self.cameras
             .iter()
@@ -705,10 +706,7 @@ pub fn chunk_coords_for_world(
 }
 
 /// Returns the chunk grid id for the given world-space coordinate if it lies within bounds.
-pub fn chunk_id_at(
-    settings: &TerrainProjectSettings,
-    coord: [f32; 2],
-) -> Option<[i32; 2]> {
+pub fn chunk_id_at(settings: &TerrainProjectSettings, coord: [f32; 2]) -> Option<[i32; 2]> {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
     let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
     if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
@@ -740,7 +738,13 @@ pub fn chunk_coords_in_radius(
     let min_z = center[1] - radius;
     let max_z = center[1] + radius;
 
-    chunk_coords_in_bounds(settings, [min_x, min_z], [max_x, max_z], chunk_size_x, chunk_size_z)
+    chunk_coords_in_bounds(
+        settings,
+        [min_x, min_z],
+        [max_x, max_z],
+        chunk_size_x,
+        chunk_size_z,
+    )
 }
 
 pub fn chunk_coords_in_frustum(
@@ -813,10 +817,7 @@ fn max_chunk_coords(
     (count_x.saturating_sub(1), count_z.saturating_sub(1))
 }
 
-fn chunk_center_world(
-    settings: &TerrainProjectSettings,
-    chunk_coords: [i32; 2],
-) -> [f32; 3] {
+fn chunk_center_world(settings: &TerrainProjectSettings, chunk_coords: [i32; 2]) -> [f32; 3] {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
     let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
     let origin_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
@@ -849,6 +850,10 @@ pub struct TerrainChunk {
     pub tiles: Vec<TerrainTile>,
     /// Height samples stored in a (width + 1) x (height + 1) grid.
     pub heights: Vec<f32>,
+    /// World-space bounds minimum (x, y, z) for the chunk.
+    pub bounds_min: [f32; 3],
+    /// World-space bounds maximum (x, y, z) for the chunk.
+    pub bounds_max: [f32; 3],
     /// Geometry entry name for the chunk mesh.
     pub mesh_entry: String,
 }
@@ -1012,7 +1017,10 @@ impl TerrainDB {
                         }
                         project_settings += 1;
                     }
-                    if entry.name.starts_with(&format!("{}/", TERRAIN_GENERATOR_PREFIX)) {
+                    if entry
+                        .name
+                        .starts_with(&format!("{}/", TERRAIN_GENERATOR_PREFIX))
+                    {
                         generators += 1;
                     }
                     if entry
@@ -1101,8 +1109,11 @@ impl TerrainDB {
             info!(resource = "terrain", entry = %entry, source = "fallback");
             return Ok(chunk.clone());
         }
-        
-        tracing::error!("Failed to fetch terrain chunk {} from RDB or fallback", entry);
+
+        tracing::error!(
+            "Failed to fetch terrain chunk {} from RDB or fallback",
+            entry
+        );
         Err(NorenError::DataFailure())
     }
 
@@ -1190,13 +1201,9 @@ impl TerrainDB {
                 .collect::<HashSet<_>>()
         });
 
-        Self::fetch_chunks_for_camera_with(
-            settings,
-            project_key,
-            camera,
-            available,
-            |entry| self.fetch_chunk_artifact(entry),
-        )
+        Self::fetch_chunks_for_camera_with(settings, project_key, camera, available, |entry| {
+            self.fetch_chunk_artifact(entry)
+        })
     }
 
     /// Fetches terrain chunk artifacts using camera data stored in furikake bindless state.
@@ -1356,14 +1363,18 @@ fn height_from_artifact(
     let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
     let origin_x = settings.world_bounds_min[0] + artifact.chunk_coords[0] as f32 * chunk_size_x;
     let origin_z = settings.world_bounds_min[2] + artifact.chunk_coords[1] as f32 * chunk_size_z;
-    let local_x = (world_x - origin_x) / settings.tile_size;
-    let local_y = (world_z - origin_z) / settings.tile_size;
+    let spacing = artifact.sample_spacing.max(0.0001);
+    let local_x = (world_x - origin_x) / spacing;
+    let local_y = (world_z - origin_z) / spacing;
 
     if local_x < 0.0 || local_y < 0.0 {
         return None;
     }
-    let grid_x = settings.tiles_per_chunk[0].saturating_add(1);
-    let grid_y = settings.tiles_per_chunk[1].saturating_add(1);
+    let grid_x = artifact.grid_size[0];
+    let grid_y = artifact.grid_size[1];
+    if grid_x == 0 || grid_y == 0 {
+        return None;
+    }
     let max_x = grid_x.saturating_sub(1) as f32;
     let max_y = grid_y.saturating_sub(1) as f32;
     if local_x > max_x || local_y > max_y {
@@ -1375,10 +1386,10 @@ fn height_from_artifact(
     let x1 = (x0 + 1).min(grid_x - 1);
     let y1 = (y0 + 1).min(grid_y - 1);
     let idx = |x: u32, y: u32| -> usize { (y * grid_x + x) as usize };
-    let h00 = artifact.vertices.get(idx(x0, y0))?.position[1];
-    let h10 = artifact.vertices.get(idx(x1, y0))?.position[1];
-    let h01 = artifact.vertices.get(idx(x0, y1))?.position[1];
-    let h11 = artifact.vertices.get(idx(x1, y1))?.position[1];
+    let h00 = *artifact.heights.get(idx(x0, y0))?;
+    let h10 = *artifact.heights.get(idx(x1, y0))?;
+    let h01 = *artifact.heights.get(idx(x0, y1))?;
+    let h11 = *artifact.heights.get(idx(x1, y1))?;
     let tx = local_x - x0 as f32;
     let ty = local_y - y0 as f32;
     let hx0 = h00 + (h10 - h00) * tx;
@@ -1390,6 +1401,10 @@ fn default_terrain_chunk() -> TerrainChunk {
     let tiles_per_chunk = [64, 64];
     let tile_count = tiles_per_chunk[0] * tiles_per_chunk[1];
     let height_count = (tiles_per_chunk[0] + 1) * (tiles_per_chunk[1] + 1);
+    let min_height = 0.0;
+    let max_height = 0.0;
+    let chunk_size_x = tiles_per_chunk[0] as f32;
+    let chunk_size_z = tiles_per_chunk[1] as f32;
 
     TerrainChunk {
         chunk_coords: [0, 0],
@@ -1404,6 +1419,8 @@ fn default_terrain_chunk() -> TerrainChunk {
             tile_count as usize
         ],
         heights: vec![0.0; height_count as usize],
+        bounds_min: [0.0, min_height, 0.0],
+        bounds_max: [chunk_size_x, max_height, chunk_size_z],
         mesh_entry: "mesh/terrain_chunk".to_string(),
     }
 }
@@ -1412,9 +1429,9 @@ fn default_terrain_chunk() -> TerrainChunk {
 mod tests {
     use super::*;
     use crate::utils::rdbfile::RDBFile;
-    use tempfile::tempdir;
-    use bincode::serialize;
     use crate::utils::rdbfile::RDBView;
+    use bincode::serialize;
+    use tempfile::tempdir;
 
     fn sample_chunk() -> TerrainChunk {
         TerrainChunk {
@@ -1441,6 +1458,8 @@ mod tests {
                 },
             ],
             heights: vec![0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 4.0],
+            bounds_min: [0.0, 0.0, 0.0],
+            bounds_max: [2.0, 4.0, 2.0],
             mesh_entry: "mesh/terrain_chunk".to_string(),
         }
     }
@@ -1533,32 +1552,29 @@ mod tests {
             lod: 1,
             bounds_min: [0.0, 0.0, -12.0],
             bounds_max: [32.0, 48.0, 64.0],
-            vertex_layout: TerrainVertexLayout::Standard,
-            vertices: vec![
-                Vertex {
-                    position: [0.0, 0.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    tangent: [1.0, 0.0, 0.0, 1.0],
-                    uv: [0.0, 0.0],
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    joint_indices: [0, 0, 0, 0],
-                    joint_weights: [0.0, 0.0, 0.0, 0.0],
-                },
-                Vertex {
-                    position: [1.0, 0.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    tangent: [1.0, 0.0, 0.0, 1.0],
-                    uv: [1.0, 0.0],
-                    color: [0.8, 0.9, 1.0, 1.0],
-                    joint_indices: [0, 0, 0, 0],
-                    joint_weights: [0.0, 0.0, 0.0, 0.0],
-                },
+            grid_size: [2, 2],
+            sample_spacing: 1.0,
+            heights: vec![0.0, 1.0, 2.0, 3.0],
+            normals: vec![
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
             ],
-            indices: vec![0, 1, 0],
-            material_ids: Some(vec![10, 20]),
-            material_weights: Some(vec![[0.7, 0.3, 0.0, 0.0], [0.4, 0.6, 0.0, 0.0]]),
+            hole_masks: vec![0, 0, 0, 0],
+            material_ids: Some(vec![
+                [10, 20, 0, 0],
+                [10, 20, 0, 0],
+                [10, 20, 0, 0],
+                [10, 20, 0, 0],
+            ]),
+            material_weights: Some(vec![
+                [0.7, 0.3, 0.0, 0.0],
+                [0.6, 0.4, 0.0, 0.0],
+                [0.5, 0.5, 0.0, 0.0],
+                [0.4, 0.6, 0.0, 0.0],
+            ]),
             content_hash: 0xDEADBEEF,
-            mesh_entry: "mesh/terrain_chunk_lod1".to_string(),
         }
     }
 
@@ -1567,7 +1583,10 @@ mod tests {
             project_key: project_key.to_string(),
             chunk_coords: [1, 2],
             dirty_flags: TERRAIN_DIRTY_SETTINGS | TERRAIN_DIRTY_MUTATION,
-            dirty_reasons: vec![TerrainDirtyReason::SettingsChanged, TerrainDirtyReason::MutationChanged],
+            dirty_reasons: vec![
+                TerrainDirtyReason::SettingsChanged,
+                TerrainDirtyReason::MutationChanged,
+            ],
             generator_version: 3,
             mutation_version: 7,
             last_built_hashes: vec![
@@ -1824,10 +1843,15 @@ mod tests {
         let mut view = RDBView::load(&path)?;
         let settings_back: TerrainProjectSettings =
             view.fetch(&project_settings_entry(project_key))?;
-        let generator_back: TerrainGeneratorDefinition =
-            view.fetch(&generator_entry(project_key, settings.active_generator_version))?;
-        let layer_back: TerrainMutationLayer =
-            view.fetch(&mutation_layer_entry(project_key, &layer.layer_id, layer.version))?;
+        let generator_back: TerrainGeneratorDefinition = view.fetch(&generator_entry(
+            project_key,
+            settings.active_generator_version,
+        ))?;
+        let layer_back: TerrainMutationLayer = view.fetch(&mutation_layer_entry(
+            project_key,
+            &layer.layer_id,
+            layer.version,
+        ))?;
         let op_back: TerrainMutationOp = view.fetch(&mutation_op_entry(
             project_key,
             &layer.layer_id,

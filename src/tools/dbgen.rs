@@ -119,11 +119,7 @@ impl ProgressBar {
         let filled = filled.min(self.width);
         let empty = self.width - filled;
         let percent = (ratio * 100.0).round() as u32;
-        let bar = format!(
-            "[{}{}]",
-            "#".repeat(filled),
-            "-".repeat(empty)
-        );
+        let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(empty));
         let message = format!(
             "{} {} {:>3}% ({}/{})",
             self.label, bar, percent, current, total
@@ -2479,6 +2475,8 @@ fn import_terrain_heightmap(
             ];
             let tiles = vec![TerrainTile::default(); tile_len];
             let mut heights = Vec::with_capacity(chunk_sample_len);
+            let mut min_height = f32::MAX;
+            let mut max_height = f32::MIN;
             for sample_y in 0..=tiles_per_chunk {
                 let tile_y = chunk_y * tiles_per_chunk + sample_y;
                 let global_y = (tile_y * args.detail).min(height - 1);
@@ -2487,9 +2485,24 @@ fn import_terrain_heightmap(
                     let global_x = (tile_x * args.detail).min(width - 1);
                     let value = heightmap.get_pixel(global_x, global_y).0[0];
                     let normalized = value as f32 / u16::MAX as f32;
-                    heights.push(args.height_min + normalized * height_scale);
+                    let height_sample = args.height_min + normalized * height_scale;
+                    min_height = min_height.min(height_sample);
+                    max_height = max_height.max(height_sample);
+                    heights.push(height_sample);
                 }
             }
+            if heights.is_empty() {
+                min_height = args.height_min;
+                max_height = args.height_min;
+            }
+            let chunk_size_x = tiles_per_chunk as f32 * args.tile_size;
+            let chunk_size_z = tiles_per_chunk as f32 * args.tile_size;
+            let bounds_min = [origin[0], min_height, origin[1]];
+            let bounds_max = [
+                origin[0] + chunk_size_x,
+                max_height,
+                origin[1] + chunk_size_z,
+            ];
 
             let valid_tiles_x = tiles_x
                 .saturating_sub(chunk_x * tiles_per_chunk)
@@ -2504,6 +2517,8 @@ fn import_terrain_heightmap(
                 tiles_per_chunk: [tiles_per_chunk, tiles_per_chunk],
                 tiles,
                 heights,
+                bounds_min,
+                bounds_max,
                 mesh_entry: "mesh/terrain_chunk".to_string(),
             };
             let entry = format!("terrain/chunk_{chunk_x}_{chunk_y}");
@@ -2514,6 +2529,8 @@ fn import_terrain_heightmap(
             for lod in 0..=settings.lod_policy.max_lod {
                 let artifact = build_heightmap_chunk_artifact(
                     &settings,
+                    &generator,
+                    std::slice::from_ref(&layer),
                     &args.project_key,
                     &chunk,
                     lod,
