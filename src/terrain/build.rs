@@ -458,6 +458,8 @@ struct ChunkFieldSamples {
     origin_x: f32,
     origin_z: f32,
     heights: Vec<f32>,
+    sample_x: Vec<u32>,
+    sample_y: Vec<u32>,
 }
 
 fn generate_chunk_maps_phased(
@@ -548,10 +550,18 @@ fn evaluate_chunk_field(
         settings.world_bounds_min[2] + chunk_coords[1] as f32 * tiles_y as f32 * settings.tile_size;
 
     let mut heights = vec![0.0_f32; (grid_x * grid_y) as usize];
+    let mut sample_x = Vec::with_capacity(grid_x as usize);
+    for x in 0..grid_x {
+        sample_x.push(x * step);
+    }
+    let mut sample_y = Vec::with_capacity(grid_y as usize);
+    for y in 0..grid_y {
+        sample_y.push(y * step);
+    }
     for y in 0..grid_y {
         for x in 0..grid_x {
-            let world_x = origin_x + x as f32 * step as f32 * settings.tile_size;
-            let world_z = origin_z + y as f32 * step as f32 * settings.tile_size;
+            let world_x = origin_x + sample_x[x as usize] as f32 * settings.tile_size;
+            let world_z = origin_z + sample_y[y as usize] as f32 * settings.tile_size;
             let idx = (y * grid_x + x) as usize;
             heights[idx] = sample_height(settings, generator, mutation_layers, world_x, world_z);
         }
@@ -564,6 +574,8 @@ fn evaluate_chunk_field(
         origin_x,
         origin_z,
         heights,
+        sample_x,
+        sample_y,
     }
 }
 
@@ -584,16 +596,19 @@ fn build_chunk_maps(
     let ChunkFieldSamples {
         grid_x,
         grid_y,
-        step,
         origin_x,
         origin_z,
         heights,
+        sample_x,
+        sample_y,
+        ..
     } = field;
     let grid_x = *grid_x;
     let grid_y = *grid_y;
-    let step = *step;
     let origin_x = *origin_x;
     let origin_z = *origin_z;
+    let sample_x = sample_x.as_slice();
+    let sample_y = sample_y.as_slice();
 
     let sample_count = (grid_x * grid_y) as usize;
     let mut normals = Vec::with_capacity(sample_count);
@@ -607,15 +622,15 @@ fn build_chunk_maps(
         for x in 0..grid_x {
             let idx = (y * grid_x + x) as usize;
             let height = heights.get(idx).copied().unwrap_or_default();
-            let world_x = origin_x + x as f32 * step as f32 * settings.tile_size;
-            let world_z = origin_z + y as f32 * step as f32 * settings.tile_size;
+            let world_x = origin_x + sample_x[x as usize] as f32 * settings.tile_size;
+            let world_z = origin_z + sample_y[y as usize] as f32 * settings.tile_size;
             update_bounds(
                 &mut min_bounds,
                 &mut max_bounds,
                 &[world_x, height, world_z],
             );
 
-            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, step);
+            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, sample_x, sample_y);
             normals.push(normal);
             hole_masks.push(0);
 
@@ -660,17 +675,31 @@ pub fn build_heightmap_chunk_artifact(
     valid_tiles: [u32; 2],
 ) -> TerrainChunkArtifact {
     let step = 1_u32.checked_shl(lod as u32).unwrap_or(1).max(1);
-    let valid_tiles_x = valid_tiles[0] / step;
-    let valid_tiles_y = valid_tiles[1] / step;
-    let grid_x = valid_tiles_x.saturating_add(1);
-    let grid_y = valid_tiles_y.saturating_add(1);
+    let valid_tiles_x = valid_tiles[0].min(chunk.tiles_per_chunk[0]);
+    let valid_tiles_y = valid_tiles[1].min(chunk.tiles_per_chunk[1]);
+    let grid_x = chunk.tiles_per_chunk[0] / step + 1;
+    let grid_y = chunk.tiles_per_chunk[1] / step + 1;
+    let max_sample_x = valid_tiles_x.min(chunk.tiles_per_chunk[0]);
+    let max_sample_y = valid_tiles_y.min(chunk.tiles_per_chunk[1]);
     let full_grid_x = chunk.tiles_per_chunk[0].saturating_add(1);
     let full_grid_y = chunk.tiles_per_chunk[1].saturating_add(1);
     let mut heights = Vec::with_capacity((grid_x * grid_y) as usize);
+    let mut sample_x = Vec::with_capacity(grid_x as usize);
+    for x in 0..grid_x {
+        sample_x.push(x * step);
+    }
+    let mut sample_y = Vec::with_capacity(grid_y as usize);
     for y in 0..grid_y {
-        let sample_y = (y * step).min(full_grid_y.saturating_sub(1));
+        sample_y.push(y * step);
+    }
+    for y in 0..grid_y {
+        let sample_y = sample_y[y as usize]
+            .min(max_sample_y)
+            .min(full_grid_y.saturating_sub(1));
         for x in 0..grid_x {
-            let sample_x = (x * step).min(full_grid_x.saturating_sub(1));
+            let sample_x = sample_x[x as usize]
+                .min(max_sample_x)
+                .min(full_grid_x.saturating_sub(1));
             let idx = (sample_y * full_grid_x + sample_x) as usize;
             heights.push(chunk.heights.get(idx).copied().unwrap_or_default());
         }
@@ -682,6 +711,8 @@ pub fn build_heightmap_chunk_artifact(
         origin_x: chunk.origin[0],
         origin_z: chunk.origin[1],
         heights,
+        sample_x,
+        sample_y,
     };
 
     let (normals, hole_masks, material_blend_texture, material_ids, material_weights, bounds_min, bounds_max) =
@@ -918,7 +949,8 @@ fn estimate_normal(
     y: u32,
     heights: &[f32],
     settings: &TerrainProjectSettings,
-    step: u32,
+    sample_x: &[u32],
+    sample_y: &[u32],
 ) -> [f32; 3] {
     let left = x.saturating_sub(1);
     let right = (x + 1).min(grid_x - 1);
@@ -930,9 +962,13 @@ fn estimate_normal(
     let h_d = heights[(down * grid_x + x) as usize];
     let h_u = heights[(up * grid_x + x) as usize];
 
-    let scale = settings.tile_size * step as f32;
-    let dx = (h_l - h_r) / scale.max(0.001);
-    let dz = (h_d - h_u) / scale.max(0.001);
+    let tile = settings.tile_size;
+    let scale_x = (sample_x[right as usize] as i32 - sample_x[left as usize] as i32).abs() as f32
+        * tile;
+    let scale_z = (sample_y[up as usize] as i32 - sample_y[down as usize] as i32).abs() as f32
+        * tile;
+    let dx = (h_l - h_r) / scale_x.max(0.001);
+    let dz = (h_d - h_u) / scale_z.max(0.001);
 
     let mut nx = dx;
     let mut ny = 1.0;
@@ -1104,7 +1140,7 @@ fn settings_hash_input(settings: &TerrainProjectSettings) -> TerrainProjectSetti
 mod tests {
     use super::*;
     use crate::rdb::terrain::{
-        LegacyTerrainMutationOp, LegacyTerrainMutationParams, TerrainMutationLayer,
+        LegacyTerrainMutationOp, LegacyTerrainMutationParams, TerrainMutationLayer, TerrainTile,
         TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
         mutation_op_entry,
     };
@@ -1703,5 +1739,42 @@ mod tests {
         let coord_key = chunk_coord_key(0, 0);
         let artifact_key = chunk_artifact_entry("sample", &coord_key, "lod0");
         assert!(rdb.fetch::<TerrainChunkArtifact>(&artifact_key).is_err());
+    }
+
+    #[test]
+    fn heightmap_artifact_clamps_missing_tiles() {
+        let mut settings = TerrainProjectSettings::default();
+        settings.tile_size = 1.0;
+        settings.tiles_per_chunk = [4, 4];
+
+        let generator = TerrainGeneratorDefinition::default();
+        let layer = TerrainMutationLayer::new("layer-1", "Layer 1", 0);
+
+        let heights: Vec<f32> = (0..25).map(|value| value as f32).collect();
+        let chunk = TerrainChunk {
+            chunk_coords: [0, 0],
+            origin: [0.0, 0.0],
+            tile_size: settings.tile_size,
+            tiles_per_chunk: settings.tiles_per_chunk,
+            tiles: vec![TerrainTile::default(); 16],
+            heights,
+            bounds_min: [0.0, 0.0, 0.0],
+            bounds_max: [4.0, 1.0, 4.0],
+        };
+
+        let artifact = build_heightmap_chunk_artifact(
+            &settings,
+            &generator,
+            std::slice::from_ref(&layer),
+            "sample",
+            &chunk,
+            1,
+            [3, 3],
+        );
+
+        assert_eq!(artifact.grid_size, [3, 3]);
+        assert_eq!(artifact.heights.len(), 9);
+        assert!((artifact.bounds_max[0] - 4.0).abs() < 0.0001);
+        assert!((artifact.bounds_max[2] - 4.0).abs() < 0.0001);
     }
 }

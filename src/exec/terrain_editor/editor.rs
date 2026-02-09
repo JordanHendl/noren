@@ -2044,8 +2044,8 @@ impl TerrainEditorApp {
                                 .iter()
                                 .find(|chunk_info| chunk_info.entry == artifact_key)
                             {
-                                self.preview_cache
-                                    .upsert(key, &artifact, info.offset, info.len);
+//                                self.preview_cache
+//                                    .upsert(key, &artifact, info.offset, info.len);
                             } else {
                                 self.preview_cache.meshes.remove(&key);
                             }

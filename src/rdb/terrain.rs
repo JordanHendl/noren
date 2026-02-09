@@ -3,7 +3,6 @@ use furikake::{
     BindlessState, reservations::bindless_camera::ReservedBindlessCamera,
     types::Camera as FurikakeCamera,
 };
-use glam::Vec4;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::info;
@@ -597,60 +596,19 @@ impl TerrainCameraInfo {
     }
 }
 
-fn terrain_camera_info_from_furikake(
-    settings: &TerrainProjectSettings,
-    camera: &FurikakeCamera,
-) -> TerrainCameraInfo {
+fn terrain_camera_info_from_furikake(camera: &FurikakeCamera) -> TerrainCameraInfo {
     const DEFAULT_CURVE: f32 = 1.0;
     const DEFAULT_FALLOFF: f32 = 0.35;
 
-    let (frustum, max_dist) = terrain_frustum_from_furikake(settings, camera);
     let position = camera.position();
 
     TerrainCameraInfo {
-        frustum,
+        frustum: [[0.0; 2]; 4],
         position: [position.x, position.y, position.z],
         curve: DEFAULT_CURVE,
         falloff: DEFAULT_FALLOFF,
-        max_dist: max_dist.max(1.0),
+        max_dist: camera.far.max(1.0),
     }
-}
-
-fn terrain_frustum_from_furikake(
-    settings: &TerrainProjectSettings,
-    camera: &FurikakeCamera,
-) -> (TerrainFrustum, f32) {
-    let view = camera.view_matrix();
-    let clip_to_world = (camera.projection * view).inverse();
-    let position = camera.position();
-    let plane_y = settings.world_bounds_min[1];
-    let fallback_dist = camera.far.max(1.0);
-
-    let corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
-
-    let mut frustum = [[0.0; 2]; 4];
-    let mut max_dist: f32 = 0.0;
-    for (idx, ndc) in corners.iter().enumerate() {
-        let clip = Vec4::new(ndc[0], ndc[1], 1.0, 1.0);
-        let world_h = clip_to_world * clip;
-        let world = (world_h / world_h.w).truncate();
-        let dir = (world - position).normalize();
-        let point = if dir.y.abs() <= f32::EPSILON {
-            position + dir * fallback_dist
-        } else {
-            let t = (plane_y - position.y) / dir.y;
-            if t.is_finite() && t > 0.0 {
-                position + dir * t
-            } else {
-                position + dir * fallback_dist
-            }
-        };
-        let delta = point - position;
-        max_dist = max_dist.max(delta.length());
-        frustum[idx] = [point.x, point.z];
-    }
-
-    (frustum, max_dist)
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -820,17 +778,38 @@ fn max_chunk_coords(
     (count_x.saturating_sub(1), count_z.saturating_sub(1))
 }
 
-fn chunk_center_world(settings: &TerrainProjectSettings, chunk_coords: [i32; 2]) -> [f32; 3] {
+fn chunk_bounds_world(
+    settings: &TerrainProjectSettings,
+    chunk_coords: [i32; 2],
+) -> Option<([f32; 3], [f32; 3])> {
     let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
     let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    let origin_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
-    let origin_z = settings.world_bounds_min[2] + chunk_coords[1] as f32 * chunk_size_z;
-    let center_y = (settings.world_bounds_min[1] + settings.world_bounds_max[1]) * 0.5;
-    [
-        origin_x + chunk_size_x * 0.5,
-        center_y,
-        origin_z + chunk_size_z * 0.5,
-    ]
+    if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
+        return None;
+    }
+    let min_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
+    let min_z = settings.world_bounds_min[2] + chunk_coords[1] as f32 * chunk_size_z;
+    let max_x = min_x + chunk_size_x;
+    let max_z = min_z + chunk_size_z;
+    Some((
+        [min_x, settings.world_bounds_min[1], min_z],
+        [max_x, settings.world_bounds_max[1], max_z],
+    ))
+}
+
+fn distance_sq_point_aabb(point: [f32; 3], bounds_min: [f32; 3], bounds_max: [f32; 3]) -> f32 {
+    let mut distance_sq = 0.0;
+    for idx in 0..3 {
+        let value = point[idx];
+        if value < bounds_min[idx] {
+            let delta = bounds_min[idx] - value;
+            distance_sq += delta * delta;
+        } else if value > bounds_max[idx] {
+            let delta = value - bounds_max[idx];
+            distance_sq += delta * delta;
+        }
+    }
+    distance_sq
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -1216,7 +1195,7 @@ impl TerrainDB {
         camera: Handle<FurikakeCamera>,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         let cameras = furikake.reserved::<ReservedBindlessCamera>("meshi_bindless_cameras")?;
-        let camera_info = terrain_camera_info_from_furikake(settings, cameras.camera(camera));
+        let camera_info = terrain_camera_info_from_furikake(cameras.camera(camera));
         let available = self.data.as_ref().map(|rdb| {
             rdb.entries()
                 .into_iter()
@@ -1248,18 +1227,21 @@ impl TerrainDB {
             return Ok(Vec::new());
         }
 
-        let entries = chunk_coords_in_frustum(settings, &camera.frustum)
+        let entries = chunk_coords_in_radius(
+            settings,
+            [camera.position[0], camera.position[2]],
+            max_dist,
+        )
             .into_iter()
             .filter_map(|coords| {
-                let center = chunk_center_world(settings, coords);
-                let dx = center[0] - camera.position[0];
-                let dy = center[1] - camera.position[1];
-                let dz = center[2] - camera.position[2];
-                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-                if distance > max_dist {
+                let (bounds_min, bounds_max) = chunk_bounds_world(settings, coords)?;
+                let distance_sq =
+                    distance_sq_point_aabb(camera.position, bounds_min, bounds_max);
+                if distance_sq > max_dist * max_dist {
                     return None;
                 }
 
+                let distance = distance_sq.sqrt();
                 let lod = camera.lod_for_distance(settings, distance);
                 let coord_key = chunk_coord_key(coords[0], coords[1]);
                 Some(chunk_artifact_entry(project_key, &coord_key, &lod_key(lod)))
