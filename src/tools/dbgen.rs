@@ -9,7 +9,7 @@ use std::{
 use crate::{
     DatabaseLayoutFile, NorenError, RDBEntryMeta, RDBFile, RdbErr,
     defaults::{
-        DEFAULT_IMAGE_ENTRY, default_fonts, default_image, default_primitives, default_sounds,
+        DEFAULT_IMAGE_ENTRY, default_fonts, default_images, default_primitives, default_sounds,
         ensure_default_assets,
     },
     parsing::{
@@ -38,7 +38,7 @@ use bento::{
 };
 use fontdue::{Font, FontSettings};
 use gltf::{animation::util::ReadOutputs, image::Format};
-use image::DynamicImage;
+use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgb, RgbImage, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default)]
@@ -808,6 +808,7 @@ fn parse_terrain_heightmap(
     let mut detail = 1u32;
     let mut height_min = 0.0f32;
     let mut height_max = 256.0f32;
+    let mut export_images: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -853,6 +854,9 @@ fn parse_terrain_heightmap(
                     .parse()
                     .map_err(|_| "--height-max must be a number".to_string())?;
             }
+            "--export-images" => {
+                export_images = Some(PathBuf::from(next_value("--export-images", &mut args)?));
+            }
             other => return Err(format!("unexpected argument to terrain heightmap: {other}")),
         }
     }
@@ -868,6 +872,7 @@ fn parse_terrain_heightmap(
         detail,
         height_min,
         height_max,
+        export_images,
     })
 }
 
@@ -987,6 +992,7 @@ struct TerrainHeightmapArgs {
     detail: u32,
     height_min: f32,
     height_max: f32,
+    export_images: Option<PathBuf>,
 }
 
 pub fn build_from_path(
@@ -1416,15 +1422,12 @@ fn inject_default_geometry(
 }
 
 fn inject_default_imagery(rdb: &mut RDBFile, logger: &Logger) -> Result<(), BuildError> {
-    let has_default = rdb
-        .entries()
-        .iter()
-        .any(|meta| meta.name == DEFAULT_IMAGE_ENTRY);
-
-    if !has_default {
-        logger.log(format!("imagery: injecting {DEFAULT_IMAGE_ENTRY}"));
-        rdb.add(DEFAULT_IMAGE_ENTRY, &default_image())
-            .map_err(BuildError::from)?;
+    let existing: HashSet<String> = rdb.entries().iter().map(|meta| meta.name.clone()).collect();
+    for (entry, image) in default_images() {
+        if !existing.contains(&entry) {
+            logger.log(format!("imagery: injecting {entry}"));
+            rdb.add(&entry, &image).map_err(BuildError::from)?;
+        }
     }
 
     Ok(())
@@ -2464,6 +2467,14 @@ fn import_terrain_heightmap(
     ));
 
     let total_chunks = (chunk_count_x * chunk_count_y) as usize;
+    let export_dir = args.export_images.clone();
+    if let Some(dir) = &export_dir {
+        fs::create_dir_all(dir)?;
+        logger.log(format!(
+            "terrain: exporting chunk material maps to {}",
+            dir.display()
+        ));
+    }
     let mut progress = ProgressBar::new("terrain: chunks", total_chunks);
     let mut processed_chunks = 0usize;
 
@@ -2539,6 +2550,19 @@ fn import_terrain_heightmap(
                     chunk_artifact_entry(&args.project_key, &coord_key, &lod_key(lod));
                 rdb.add(&artifact_entry, &artifact)
                     .map_err(BuildError::from)?;
+                if lod == 0 {
+                    if let Some(dir) = &export_dir {
+                        write_terrain_debug_images(
+                            dir,
+                            &args.project_key,
+                            chunk_x,
+                            chunk_y,
+                            &artifact,
+                            args.height_min,
+                            args.height_max,
+                        )?;
+                    }
+                }
             }
 
             processed_chunks += 1;
@@ -2557,6 +2581,67 @@ fn import_terrain_heightmap(
         print_stage("stage 3/3 - skipping binary output (--layouts-only)");
         logger.log("terrain: skipping binary output (--layouts-only)");
     }
+    Ok(())
+}
+
+fn write_terrain_debug_images(
+    output_dir: &Path,
+    project_key: &str,
+    chunk_x: u32,
+    chunk_y: u32,
+    artifact: &crate::rdb::terrain::TerrainChunkArtifact,
+    height_min: f32,
+    height_max: f32,
+) -> Result<(), BuildError> {
+    let [width, height] = artifact.grid_size;
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let sample_count = width_usize * height_usize;
+    if artifact.heights.len() < sample_count {
+        return Ok(());
+    }
+
+    let chunk_prefix = format!("{}_chunk_{}_{}", project_key, chunk_x, chunk_y);
+    let height_denominator = (height_max - height_min).max(0.0001);
+    let mut height_img: GrayImage = ImageBuffer::new(width, height);
+    let mut normal_img: RgbImage = ImageBuffer::new(width, height);
+    let mut blend_img: RgbaImage = ImageBuffer::new(width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y as usize * width_usize + x as usize;
+            let height_sample = artifact.heights[idx];
+            let height_norm = ((height_sample - height_min) / height_denominator).clamp(0.0, 1.0);
+            let height_byte = (height_norm * 255.0).round() as u8;
+            height_img.put_pixel(x, y, Luma([height_byte]));
+
+            let normal = artifact
+                .normals
+                .get(idx)
+                .copied()
+                .unwrap_or([0.0, 1.0, 0.0]);
+            let encode = |v: f32| ((v.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255.0).round() as u8;
+            normal_img.put_pixel(
+                x,
+                y,
+                Rgb([encode(normal[0]), encode(normal[1]), encode(normal[2])]),
+            );
+
+            let blend = artifact
+                .material_blend_texture
+                .get(idx)
+                .copied()
+                .unwrap_or([0, 0, 0, 0]);
+            blend_img.put_pixel(x, y, Rgba(blend));
+        }
+    }
+
+    height_img.save(output_dir.join(format!("{chunk_prefix}_height.png")))?;
+    normal_img.save(output_dir.join(format!("{chunk_prefix}_normal.png")))?;
+    blend_img.save(output_dir.join(format!("{chunk_prefix}_blend.png")))?;
     Ok(())
 }
 
@@ -3215,7 +3300,7 @@ fn print_usage(program: &str) {
     eprintln!("  {program} terrain export --rdb <terrain.rdb> --project <key> --out <file>");
     eprintln!("  {program} terrain import --rdb <terrain.rdb> --input <file> [--project <key>]");
     eprintln!(
-        "  {program} terrain heightmap --rdb <terrain.rdb> --project <key> --heightmap <file> [--name <name>] [--tile-size <size>] [--tiles-per-chunk <count>] [--detail <pixels>] [--max-lod <index>] [--height-min <value>] [--height-max <value>]"
+        "  {program} terrain heightmap --rdb <terrain.rdb> --project <key> --heightmap <file> [--name <name>] [--tile-size <size>] [--tiles-per-chunk <count>] [--detail <pixels>] [--max-lod <index>] [--height-min <value>] [--height-max <value>] [--export-images <dir>]"
     );
     eprintln!("");
     eprintln!("Options:");
@@ -4314,6 +4399,26 @@ mod tests {
         assert_eq!(original.vertices.len(), 4);
         let appended = rdb.fetch::<HostGeometry>("geometry/appended").unwrap();
         assert_eq!(appended.vertices.len(), 4);
+    }
+
+    #[test]
+    fn parse_terrain_heightmap_accepts_export_images_flag() {
+        let args = vec![
+            "--rdb".to_string(),
+            "sample/db/terrain.rdb".to_string(),
+            "--project".to_string(),
+            "iceland".to_string(),
+            "--heightmap".to_string(),
+            "assets/iceland_heightmap.png".to_string(),
+            "--export-images".to_string(),
+            "sample/db/terrain_maps".to_string(),
+        ];
+
+        let parsed = parse_terrain_heightmap(args.into_iter()).expect("valid terrain args");
+        assert_eq!(
+            parsed.export_images,
+            Some(PathBuf::from("sample/db/terrain_maps"))
+        );
     }
 
     fn copy_fixture(src: &str, dst: PathBuf) {

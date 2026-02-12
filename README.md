@@ -48,6 +48,41 @@ layouts without touching the binary `.rdb` payloads. You can also call `dbgen
 append` to inject a single resource (geometry, imagery, skeleton, animation, or
 shader) into an existing database file.
 
+For terrain workflows, `dbgen terrain heightmap` now accepts
+`--export-images <dir>` to emit per-chunk PNG maps for LOD0 (`*_height.png`,
+`*_normal.png`, and `*_blend.png`). This makes it easier to inspect and iterate
+on Icelandic-style terrain material blends while authoring realistic terrain
+materials in your metadata JSON.
+
+### Copy-paste `dbgen` examples
+
+```bash
+# Build database from a staging recipe
+cargo run --bin dbgen -- sample/sample_pre/norenbuild.json
+
+# Validate a generated layout file against a DB root
+cargo run --bin dbgen -- validate sample/db/layout.json --base sample/db
+
+# Append one image to an existing imagery RDB
+cargo run --bin dbgen -- append imagery \
+  --rdb sample/db/imagery.rdb \
+  --entry imagery/terrain/custom_grass \
+  --image sample/sample_pre/imagery/tileable_grass.png
+
+# Create a terrain project from a heightmap and export inspectable material maps
+cargo run --bin dbgen -- terrain heightmap \
+  --rdb sample/db/terrain.rdb \
+  --project iceland \
+  --heightmap assets/iceland_heightmap.png \
+  --tile-size 4 \
+  --tiles-per-chunk 64 \
+  --detail 8 \
+  --height-min -20 \
+  --height-max 900 \
+  --max-lod 0 \
+  --export-images sample/db/terrain_maps
+```
+
 ### Default audio samples
 
 Noren ships with two default audio samples that are always built into the audio

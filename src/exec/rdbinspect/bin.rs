@@ -459,8 +459,14 @@ fn describe_terrain_artifact(artifact: &TerrainChunkArtifact) -> String {
         .material_weights
         .as_ref()
         .map(|weights| weights.len());
+    let has_normals = !artifact.normals.is_empty();
+    let has_holes = !artifact.hole_masks.is_empty();
+    let has_blend_texture = !artifact.material_blend_texture.is_empty();
+    let hole_summary = describe_hole_masks(&artifact.hole_masks);
+    let blend_summary = describe_blend_texture(&artifact.material_blend_texture);
+    let material_id_summary = describe_material_ids(artifact.material_ids.as_ref());
     format!(
-        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nGrid: {:?}\nSample spacing: {:.3}\nHeights: {}\nNormals: {}\nHoles: {}\nBlend texture: {}\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}",
+        "Project: {}\nChunk coords: {:?}\nLOD: {}\nBounds: {:?} -> {:?}\nGrid: {:?}\nSample spacing: {:.3}\nHeights: {}\nNormals: {} (present: {})\nHoles: {} (present: {})\nBlend texture: {} (present: {})\nContent hash: {:#016X}\nMaterials: ids {:?}, weights {:?}\nMaterial ID summary: {}\nHole summary: {}\nBlend summary: {}",
         artifact.project_key,
         artifact.chunk_coords,
         artifact.lod,
@@ -470,12 +476,81 @@ fn describe_terrain_artifact(artifact: &TerrainChunkArtifact) -> String {
         artifact.sample_spacing,
         sample_count,
         artifact.normals.len(),
+        yes_no(has_normals),
         artifact.hole_masks.len(),
+        yes_no(has_holes),
         artifact.material_blend_texture.len(),
+        yes_no(has_blend_texture),
         artifact.content_hash,
         material_ids,
         material_weights,
+        material_id_summary,
+        hole_summary,
+        blend_summary,
     )
+}
+
+fn describe_hole_masks(hole_masks: &[u8]) -> String {
+    if hole_masks.is_empty() {
+        return "none".to_string();
+    }
+
+    let total_bits = hole_masks.len() * 8;
+    let hole_bits: u32 = hole_masks.iter().map(|mask| mask.count_ones()).sum();
+    let nonzero_bytes = hole_masks.iter().filter(|mask| **mask != 0).count();
+    format!(
+        "{hole_bits} / {total_bits} holes set across {nonzero_bytes} nonzero bytes",
+    )
+}
+
+fn describe_blend_texture(texture: &[[u8; 4]]) -> String {
+    if texture.is_empty() {
+        return "none".to_string();
+    }
+
+    let nonzero_texels = texture
+        .iter()
+        .filter(|rgba| rgba.iter().any(|channel| *channel != 0))
+        .count();
+    format!(
+        "{} texels ({} nonzero)",
+        texture.len(),
+        nonzero_texels
+    )
+}
+
+fn describe_material_ids(material_ids: Option<&Vec<[u32; 4]>>) -> String {
+    let Some(material_ids) = material_ids else {
+        return "none".to_string();
+    };
+    if material_ids.is_empty() {
+        return "empty".to_string();
+    }
+
+    let mut unique_ids = std::collections::BTreeSet::new();
+    for ids in material_ids {
+        for id in ids {
+            unique_ids.insert(*id);
+        }
+    }
+
+    let mut summary = format!("unique material IDs: {}", unique_ids.len());
+    if !unique_ids.is_empty() {
+        let preview: Vec<String> = unique_ids.iter().take(8).map(|id| id.to_string()).collect();
+        summary.push_str(&format!(" (sample: {})", preview.join(", ")));
+        if unique_ids.len() > 8 {
+            summary.push_str(", …");
+        }
+    }
+    summary
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn describe_terrain_state(state: &TerrainChunkState) -> String {

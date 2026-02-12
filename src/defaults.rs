@@ -16,11 +16,21 @@ use crate::{
 };
 
 pub const DEFAULT_IMAGE_ENTRY: &str = "imagery/default";
+pub const DEFAULT_TERRAIN_BLENDMAP_IMAGE_ENTRY: &str = "imagery/terrain/blendmap_default";
+pub const DEFAULT_TERRAIN_GRASS_IMAGE_ENTRY: &str = "imagery/terrain/grass_albedo";
+pub const DEFAULT_TERRAIN_ROCK_IMAGE_ENTRY: &str = "imagery/terrain/rock_albedo";
+pub const DEFAULT_TERRAIN_SCREE_IMAGE_ENTRY: &str = "imagery/terrain/scree_albedo";
+pub const DEFAULT_TERRAIN_SNOW_IMAGE_ENTRY: &str = "imagery/terrain/snow_albedo";
+pub const DEFAULT_TERRAIN_NORMAL_IMAGE_ENTRY: &str = "imagery/terrain/terrain_normal";
 pub const DEFAULT_FONT_ATLAS_ENTRY: &str = "imagery/fonts/default";
 pub const DEFAULT_CUBEMAP_ENTRY: &str = "imagery/default_cubemap";
 pub const DEFAULT_TEXTURE_ENTRY: &str = "texture/default";
 pub const DEFAULT_TERRAIN_BLENDMAP_TEXTURE_ENTRY: &str = "texture/terrain_blendmap";
 pub const DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY: &str = "texture/default_grass";
+pub const DEFAULT_TERRAIN_ROCK_TEXTURE_ENTRY: &str = "texture/default_rock";
+pub const DEFAULT_TERRAIN_SCREE_TEXTURE_ENTRY: &str = "texture/default_scree";
+pub const DEFAULT_TERRAIN_SNOW_TEXTURE_ENTRY: &str = "texture/default_snow";
+pub const DEFAULT_TERRAIN_NORMAL_TEXTURE_ENTRY: &str = "texture/default_terrain_normal";
 pub const DEFAULT_WEATHER_TEXTURE_ENTRY: &str = "texture/default_weather";
 pub const DEFAULT_MATERIAL_ENTRY: &str = "material/default";
 pub const DEFAULT_TERRAIN_MATERIAL_ENTRY: &str = "material/terrain_default";
@@ -272,6 +282,30 @@ pub fn default_images() -> Vec<(String, HostImage)> {
     let mut images = vec![
         (DEFAULT_IMAGE_ENTRY.to_string(), default_image()),
         (
+            DEFAULT_TERRAIN_BLENDMAP_IMAGE_ENTRY.to_string(),
+            default_terrain_blendmap_image(),
+        ),
+        (
+            DEFAULT_TERRAIN_GRASS_IMAGE_ENTRY.to_string(),
+            default_terrain_grass_image(),
+        ),
+        (
+            DEFAULT_TERRAIN_ROCK_IMAGE_ENTRY.to_string(),
+            default_terrain_rock_image(),
+        ),
+        (
+            DEFAULT_TERRAIN_SCREE_IMAGE_ENTRY.to_string(),
+            default_terrain_scree_image(),
+        ),
+        (
+            DEFAULT_TERRAIN_SNOW_IMAGE_ENTRY.to_string(),
+            default_terrain_snow_image(),
+        ),
+        (
+            DEFAULT_TERRAIN_NORMAL_IMAGE_ENTRY.to_string(),
+            default_terrain_normal_image(),
+        ),
+        (
             DEFAULT_FONT_ATLAS_ENTRY.to_string(),
             default_font_atlas().image.clone(),
         ),
@@ -279,6 +313,103 @@ pub fn default_images() -> Vec<(String, HostImage)> {
     images.extend(load_default_fox_images());
     images.extend(load_default_witch_images());
     images
+}
+
+fn procedural_image(
+    entry: &str,
+    width: u32,
+    height: u32,
+    mut pixel: impl FnMut(u32, u32) -> [u8; 4],
+) -> HostImage {
+    let mut data = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            data.extend_from_slice(&pixel(x, y));
+        }
+    }
+    HostImage::new(
+        ImageInfo {
+            name: entry.into(),
+            dim: [width, height, 1],
+            layers: 1,
+            format: dashi::Format::RGBA8,
+            mip_levels: 1,
+        },
+        data,
+    )
+}
+
+fn hash_noise(x: u32, y: u32, seed: u32) -> u8 {
+    let mut v = x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663) ^ seed.wrapping_mul(83492791);
+    v ^= v >> 13;
+    v = v.wrapping_mul(1274126177);
+    (v & 0xff) as u8
+}
+
+fn default_terrain_blendmap_image() -> HostImage {
+    procedural_image(DEFAULT_TERRAIN_BLENDMAP_IMAGE_ENTRY, 256, 256, |x, y| {
+        let u = x as f32 / 255.0;
+        let v = y as f32 / 255.0;
+        let lowland = ((1.0 - v) * 255.0) as u8;
+        let cliff = ((u * (1.0 - v)) * 255.0) as u8;
+        let highland = (((u * 0.65 + v * 0.35).clamp(0.0, 1.0)) * 255.0) as u8;
+        let snow = ((((v - 0.45) / 0.55).clamp(0.0, 1.0)) * 255.0) as u8;
+        [lowland, cliff, highland, snow]
+    })
+}
+
+fn default_terrain_grass_image() -> HostImage {
+    procedural_image(DEFAULT_TERRAIN_GRASS_IMAGE_ENTRY, 256, 256, |x, y| {
+        let n = hash_noise(x, y, 17);
+        let shade = (n as f32 / 255.0 * 48.0) as u8;
+        [46 + shade / 3, 102 + shade / 2, 36 + shade / 4, 255]
+    })
+}
+
+fn default_terrain_rock_image() -> HostImage {
+    procedural_image(DEFAULT_TERRAIN_ROCK_IMAGE_ENTRY, 256, 256, |x, y| {
+        let n = hash_noise(x, y, 41);
+        let veins = hash_noise(x / 4, y / 4, 211);
+        let base = 85 + (n / 3);
+        [base + veins / 8, base + veins / 10, base + veins / 7, 255]
+    })
+}
+
+fn default_terrain_scree_image() -> HostImage {
+    procedural_image(DEFAULT_TERRAIN_SCREE_IMAGE_ENTRY, 256, 256, |x, y| {
+        let n = hash_noise(x, y, 73);
+        let pebbles = hash_noise(x / 2, y / 2, 97);
+        let base = 96 + (n / 4);
+        [
+            base + pebbles / 12,
+            base + pebbles / 10,
+            84 + pebbles / 10,
+            255,
+        ]
+    })
+}
+
+fn default_terrain_snow_image() -> HostImage {
+    procedural_image(DEFAULT_TERRAIN_SNOW_IMAGE_ENTRY, 256, 256, |x, y| {
+        let n = hash_noise(x, y, 131);
+        let sparkle = if n > 248 { 20 } else { 0 };
+        [
+            220 + n / 8 + sparkle,
+            225 + n / 8 + sparkle,
+            230 + n / 7 + sparkle,
+            255,
+        ]
+    })
+}
+
+fn default_terrain_normal_image() -> HostImage {
+    procedural_image(DEFAULT_TERRAIN_NORMAL_IMAGE_ENTRY, 256, 256, |x, y| {
+        let nx = hash_noise(x, y, 23) as f32 / 255.0 * 0.12 - 0.06;
+        let ny = hash_noise(x, y, 59) as f32 / 255.0 * 0.12 - 0.06;
+        let nz = (1.0 - nx * nx - ny * ny).sqrt().clamp(0.0, 1.0);
+        let enc = |v: f32| ((v * 0.5 + 0.5) * 255.0).round() as u8;
+        [enc(nx), enc(ny), enc(nz), 255]
+    })
 }
 
 pub fn default_cubemaps() -> Vec<(String, HostCubemap)> {
@@ -559,14 +690,38 @@ pub fn ensure_default_assets(
     textures
         .entry(DEFAULT_TERRAIN_BLENDMAP_TEXTURE_ENTRY.into())
         .or_insert(TextureLayout {
-            image: DEFAULT_IMAGE_ENTRY.into(),
+            image: DEFAULT_TERRAIN_BLENDMAP_IMAGE_ENTRY.into(),
             name: Some("Default Terrain Blendmap".into()),
         });
     textures
         .entry(DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into())
         .or_insert(TextureLayout {
-            image: DEFAULT_IMAGE_ENTRY.into(),
+            image: DEFAULT_TERRAIN_GRASS_IMAGE_ENTRY.into(),
             name: Some("Default Grass".into()),
+        });
+    textures
+        .entry(DEFAULT_TERRAIN_ROCK_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_TERRAIN_ROCK_IMAGE_ENTRY.into(),
+            name: Some("Default Rock".into()),
+        });
+    textures
+        .entry(DEFAULT_TERRAIN_SCREE_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_TERRAIN_SCREE_IMAGE_ENTRY.into(),
+            name: Some("Default Scree".into()),
+        });
+    textures
+        .entry(DEFAULT_TERRAIN_SNOW_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_TERRAIN_SNOW_IMAGE_ENTRY.into(),
+            name: Some("Default Snow".into()),
+        });
+    textures
+        .entry(DEFAULT_TERRAIN_NORMAL_TEXTURE_ENTRY.into())
+        .or_insert(TextureLayout {
+            image: DEFAULT_TERRAIN_NORMAL_IMAGE_ENTRY.into(),
+            name: Some("Default Terrain Normal".into()),
         });
     textures
         .entry(DEFAULT_WEATHER_TEXTURE_ENTRY.into())
@@ -594,6 +749,7 @@ pub fn ensure_default_assets(
             material_type: MaterialType::Textured,
             texture_lookups: MaterialTextureLookups {
                 base_color: Some(DEFAULT_TERRAIN_BLENDMAP_TEXTURE_ENTRY.into()),
+                normal: Some(DEFAULT_TERRAIN_NORMAL_TEXTURE_ENTRY.into()),
                 ..Default::default()
             },
         });
@@ -639,7 +795,12 @@ pub fn ensure_default_assets(
             name: Some("terrain_chunk".into()),
             geometry: "geometry/terrain_chunk".into(),
             material: Some(DEFAULT_TERRAIN_MATERIAL_ENTRY.into()),
-            textures: vec![DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into(); 4],
+            textures: vec![
+                DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into(),
+                DEFAULT_TERRAIN_ROCK_TEXTURE_ENTRY.into(),
+                DEFAULT_TERRAIN_SCREE_TEXTURE_ENTRY.into(),
+                DEFAULT_TERRAIN_SNOW_TEXTURE_ENTRY.into(),
+            ],
         });
     meshes
         .entry("mesh/terrain_chunk_lod1".into())
@@ -647,7 +808,12 @@ pub fn ensure_default_assets(
             name: Some("terrain_chunk_lod1".into()),
             geometry: "geometry/terrain_chunk_lod1".into(),
             material: Some(DEFAULT_TERRAIN_MATERIAL_ENTRY.into()),
-            textures: vec![DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into(); 4],
+            textures: vec![
+                DEFAULT_TERRAIN_GRASS_TEXTURE_ENTRY.into(),
+                DEFAULT_TERRAIN_ROCK_TEXTURE_ENTRY.into(),
+                DEFAULT_TERRAIN_SCREE_TEXTURE_ENTRY.into(),
+                DEFAULT_TERRAIN_SNOW_TEXTURE_ENTRY.into(),
+            ],
         });
 
     for image_name in WITCH_IMAGE_NAMES {
