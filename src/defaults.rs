@@ -346,6 +346,47 @@ fn hash_noise(x: u32, y: u32, seed: u32) -> u8 {
     (v & 0xff) as u8
 }
 
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn smoothstep(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn value_noise(x: f32, y: f32, seed: u32) -> f32 {
+    let xi = x.floor() as u32;
+    let yi = y.floor() as u32;
+    let xf = smoothstep(x - xi as f32);
+    let yf = smoothstep(y - yi as f32);
+
+    let sample = |sx: u32, sy: u32| hash_noise(sx, sy, seed) as f32 / 255.0;
+    let n00 = sample(xi, yi);
+    let n10 = sample(xi.wrapping_add(1), yi);
+    let n01 = sample(xi, yi.wrapping_add(1));
+    let n11 = sample(xi.wrapping_add(1), yi.wrapping_add(1));
+
+    let nx0 = lerp(n00, n10, xf);
+    let nx1 = lerp(n01, n11, xf);
+    lerp(nx0, nx1, yf)
+}
+
+fn fbm_noise(x: f32, y: f32, seed: u32, octaves: u32) -> f32 {
+    let mut sum = 0.0;
+    let mut amp = 0.5;
+    let mut freq = 1.0;
+    let mut norm = 0.0;
+
+    for octave in 0..octaves {
+        sum += value_noise(x * freq, y * freq, seed.wrapping_add(octave * 97)) * amp;
+        norm += amp;
+        amp *= 0.5;
+        freq *= 2.03;
+    }
+
+    if norm > 0.0 { sum / norm } else { 0.0 }
+}
+
 fn default_terrain_blendmap_image() -> HostImage {
     procedural_image(DEFAULT_TERRAIN_BLENDMAP_IMAGE_ENTRY, 256, 256, |x, y| {
         let u = x as f32 / 255.0;
@@ -360,43 +401,69 @@ fn default_terrain_blendmap_image() -> HostImage {
 
 fn default_terrain_grass_image() -> HostImage {
     procedural_image(DEFAULT_TERRAIN_GRASS_IMAGE_ENTRY, 256, 256, |x, y| {
-        let n = hash_noise(x, y, 17);
-        let shade = (n as f32 / 255.0 * 48.0) as u8;
-        [46 + shade / 3, 102 + shade / 2, 36 + shade / 4, 255]
+        let xf = x as f32 / 256.0;
+        let yf = y as f32 / 256.0;
+
+        let broad = fbm_noise(xf * 4.0, yf * 4.0, 17, 4);
+        let fine = fbm_noise(xf * 26.0, yf * 26.0, 101, 2);
+        let blade = hash_noise(x, y, 187) as f32 / 255.0;
+
+        let lush = (0.62 + broad * 0.32 + fine * 0.14).clamp(0.0, 1.0);
+        let dry = (0.35 + broad * 0.28).clamp(0.0, 1.0);
+        let fiber = if blade > 0.94 { 0.11 } else { 0.0 };
+
+        let r = (40.0 + lush * 42.0 + fiber * 30.0).round() as u8;
+        let g = (70.0 + lush * 110.0 + fiber * 42.0).round() as u8;
+        let b = (26.0 + dry * 50.0 + fiber * 10.0).round() as u8;
+        [r, g, b, 255]
     })
 }
 
 fn default_terrain_rock_image() -> HostImage {
     procedural_image(DEFAULT_TERRAIN_ROCK_IMAGE_ENTRY, 256, 256, |x, y| {
-        let n = hash_noise(x, y, 41);
-        let veins = hash_noise(x / 4, y / 4, 211);
-        let base = 85 + (n / 3);
-        [base + veins / 8, base + veins / 10, base + veins / 7, 255]
+        let xf = x as f32 / 256.0;
+        let yf = y as f32 / 256.0;
+
+        let soil = fbm_noise(xf * 5.0, yf * 5.0, 41, 4);
+        let pebbles = fbm_noise(xf * 21.0, yf * 21.0, 211, 3);
+        let streaks = value_noise(xf * 13.0 + yf * 2.0, yf * 4.0, 509);
+
+        let warm = (0.45 + soil * 0.35).clamp(0.0, 1.0);
+        let grit = (pebbles * 0.45 + streaks * 0.25).clamp(0.0, 1.0);
+
+        let r = (78.0 + warm * 60.0 + grit * 30.0).round() as u8;
+        let g = (62.0 + warm * 44.0 + grit * 20.0).round() as u8;
+        let b = (42.0 + warm * 24.0 + grit * 16.0).round() as u8;
+        [r, g, b, 255]
     })
 }
 
 fn default_terrain_scree_image() -> HostImage {
     procedural_image(DEFAULT_TERRAIN_SCREE_IMAGE_ENTRY, 256, 256, |x, y| {
-        let n = hash_noise(x, y, 73);
-        let pebbles = hash_noise(x / 2, y / 2, 97);
-        let base = 96 + (n / 4);
-        [
-            base + pebbles / 12,
-            base + pebbles / 10,
-            84 + pebbles / 10,
-            255,
-        ]
+        let xf = x as f32 / 256.0;
+        let yf = y as f32 / 256.0;
+
+        let gravel = fbm_noise(xf * 18.0, yf * 18.0, 73, 3);
+        let stones = fbm_noise(xf * 36.0, yf * 36.0, 97, 2);
+        let chips = hash_noise(x, y, 149) as f32 / 255.0;
+        let edge = if chips > 0.965 { 0.2 } else { 0.0 };
+
+        let tone = (0.48 + gravel * 0.4 + stones * 0.16).clamp(0.0, 1.0);
+        let r = (92.0 + tone * 88.0 + edge * 30.0).round() as u8;
+        let g = (90.0 + tone * 82.0 + edge * 25.0).round() as u8;
+        let b = (86.0 + tone * 70.0 + edge * 20.0).round() as u8;
+        [r, g, b, 255]
     })
 }
 
 fn default_terrain_snow_image() -> HostImage {
     procedural_image(DEFAULT_TERRAIN_SNOW_IMAGE_ENTRY, 256, 256, |x, y| {
         let n = hash_noise(x, y, 131);
-        let sparkle = if n > 248 { 20 } else { 0 };
+        let sparkle: u8 = if n > 248 { 20 } else { 0 };
         [
-            220 + n / 8 + sparkle,
-            225 + n / 8 + sparkle,
-            230 + n / 7 + sparkle,
+            220u8.saturating_add(n / 8).saturating_add(sparkle),
+            225u8.saturating_add(n / 8).saturating_add(sparkle),
+            230u8.saturating_add(n / 7).saturating_add(sparkle),
             255,
         ]
     })
