@@ -63,14 +63,20 @@ pub fn blit_image_to_display(
         let (img, sem, _idx, _good) = ctx.acquire_new_image(&mut display)?;
 
         ring.record(|list| {
-            CommandStream::new().begin().blit_images(&BlitImage {
-                src: source,
-                dst: img.img,
-                src_range: SubresourceRange::default(),
-                dst_range: SubresourceRange::default(),
-                filter: Filter::Linear,
-                ..Default::default()
-            }).prepare_for_presentation(img.img).end().append(list).unwrap();
+            CommandStream::new()
+                .begin()
+                .blit_images(&BlitImage {
+                    src: source,
+                    dst: img.img,
+                    src_range: SubresourceRange::default(),
+                    dst_range: SubresourceRange::default(),
+                    filter: Filter::Linear,
+                    ..Default::default()
+                })
+                .prepare_for_presentation(img.img)
+                .end()
+                .append(list)
+                .unwrap();
         })?;
 
         ring.submit(&SubmitInfo {

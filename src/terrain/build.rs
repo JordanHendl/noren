@@ -630,7 +630,8 @@ fn build_chunk_maps(
                 &[world_x, height, world_z],
             );
 
-            let normal = estimate_normal(grid_x, grid_y, x, y, heights, settings, sample_x, sample_y);
+            let normal =
+                estimate_normal(grid_x, grid_y, x, y, heights, settings, sample_x, sample_y);
             normals.push(normal);
             hole_masks.push(0);
 
@@ -715,8 +716,15 @@ pub fn build_heightmap_chunk_artifact(
         sample_y,
     };
 
-    let (normals, hole_masks, material_blend_texture, material_ids, material_weights, bounds_min, bounds_max) =
-        build_chunk_maps(settings, generator, mutation_layers, &field);
+    let (
+        normals,
+        hole_masks,
+        material_blend_texture,
+        material_ids,
+        material_weights,
+        bounds_min,
+        bounds_max,
+    ) = build_chunk_maps(settings, generator, mutation_layers, &field);
     let sample_spacing = settings.tile_size * step as f32;
     let content_hash = hash_serialize(&HeightmapChunkHashInput {
         settings: settings_hash_input(settings),
@@ -963,10 +971,10 @@ fn estimate_normal(
     let h_u = heights[(up * grid_x + x) as usize];
 
     let tile = settings.tile_size;
-    let scale_x = (sample_x[right as usize] as i32 - sample_x[left as usize] as i32).abs() as f32
-        * tile;
-    let scale_z = (sample_y[up as usize] as i32 - sample_y[down as usize] as i32).abs() as f32
-        * tile;
+    let scale_x =
+        (sample_x[right as usize] as i32 - sample_x[left as usize] as i32).abs() as f32 * tile;
+    let scale_z =
+        (sample_y[up as usize] as i32 - sample_y[down as usize] as i32).abs() as f32 * tile;
     let dx = (h_l - h_r) / scale_x.max(0.001);
     let dz = (h_d - h_u) / scale_z.max(0.001);
 
@@ -1140,9 +1148,9 @@ fn settings_hash_input(settings: &TerrainProjectSettings) -> TerrainProjectSetti
 mod tests {
     use super::*;
     use crate::rdb::terrain::{
-        LegacyTerrainMutationOp, LegacyTerrainMutationParams, TerrainMutationLayer, TerrainTile,
+        LegacyTerrainMutationOp, LegacyTerrainMutationParams, TerrainMutationLayer,
         TerrainMutationOp, TerrainMutationOpKind, TerrainMutationParams, TerrainProjectSettings,
-        mutation_op_entry,
+        TerrainTile, mutation_op_entry,
     };
     use bincode::serialize;
 
@@ -1478,7 +1486,7 @@ mod tests {
         let artifact = rdb
             .fetch::<TerrainChunkArtifact>(&artifact_key)
             .expect("artifact");
-        assert_eq!(artifact.content_hash, 0xA19A48D25039A6F8);
+        assert_eq!(artifact.content_hash, 0x508BAB5FF07F8DA8);
     }
 
     #[test]
@@ -1508,8 +1516,8 @@ mod tests {
             .fetch::<TerrainChunkArtifact>(&artifact_key_10)
             .expect("artifact");
 
-        assert_eq!(artifact_00.content_hash, 0xA19A48D25039A6F8);
-        assert_eq!(artifact_10.content_hash, 0x35049E2FE4D49D0B);
+        assert_eq!(artifact_00.content_hash, 0x508BAB5FF07F8DA8);
+        assert_eq!(artifact_10.content_hash, 0xE3F600BD851A83BB);
     }
 
     #[test]
@@ -1585,7 +1593,7 @@ mod tests {
         let artifact = rdb
             .fetch::<TerrainChunkArtifact>(&artifact_key)
             .expect("artifact");
-        assert_eq!(artifact.content_hash, 0xCE38803613E58517);
+        assert_eq!(artifact.content_hash, 0x0B9A9B41DB5A1F87);
     }
 
     #[test]

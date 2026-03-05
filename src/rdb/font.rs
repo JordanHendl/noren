@@ -4,11 +4,7 @@ use fontdue::{Font, FontSettings};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{
-    RDBView,
-    defaults::default_fonts,
-    utils::NorenError,
-};
+use crate::{RDBView, defaults::default_fonts, utils::NorenError};
 
 use super::DatabaseEntry;
 

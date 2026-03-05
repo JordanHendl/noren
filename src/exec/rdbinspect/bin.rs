@@ -498,9 +498,7 @@ fn describe_hole_masks(hole_masks: &[u8]) -> String {
     let total_bits = hole_masks.len() * 8;
     let hole_bits: u32 = hole_masks.iter().map(|mask| mask.count_ones()).sum();
     let nonzero_bytes = hole_masks.iter().filter(|mask| **mask != 0).count();
-    format!(
-        "{hole_bits} / {total_bits} holes set across {nonzero_bytes} nonzero bytes",
-    )
+    format!("{hole_bits} / {total_bits} holes set across {nonzero_bytes} nonzero bytes",)
 }
 
 fn describe_blend_texture(texture: &[[u8; 4]]) -> String {
@@ -512,11 +510,7 @@ fn describe_blend_texture(texture: &[[u8; 4]]) -> String {
         .iter()
         .filter(|rgba| rgba.iter().any(|channel| *channel != 0))
         .count();
-    format!(
-        "{} texels ({} nonzero)",
-        texture.len(),
-        nonzero_texels
-    )
+    format!("{} texels ({} nonzero)", texture.len(), nonzero_texels)
 }
 
 fn describe_material_ids(material_ids: Option<&Vec<[u32; 4]>>) -> String {
@@ -546,11 +540,7 @@ fn describe_material_ids(material_ids: Option<&Vec<[u32; 4]>>) -> String {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 fn describe_terrain_state(state: &TerrainChunkState) -> String {

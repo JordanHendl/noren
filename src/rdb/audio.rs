@@ -3,11 +3,7 @@ use std::collections::HashMap;
 use tracing::info;
 
 use super::DatabaseEntry;
-use crate::{
-    RDBView,
-    defaults::default_sounds,
-    utils::NorenError,
-};
+use crate::{RDBView, defaults::default_sounds, utils::NorenError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
