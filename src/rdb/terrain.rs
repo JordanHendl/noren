@@ -4,7 +4,10 @@ use furikake::{
     types::Camera as FurikakeCamera,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+};
 use tracing::info;
 
 use super::DatabaseEntry;
@@ -519,6 +522,21 @@ pub fn chunk_state_entry(project_key: &str, coord_key: &str) -> String {
     format!("{TERRAIN_CHUNK_STATE_PREFIX}/{project_key}/{coord_key}")
 }
 
+fn chunk_artifact_entry_into(
+    out: &mut String,
+    project_key: &str,
+    chunk_x: i32,
+    chunk_z: i32,
+    lod: u8,
+) {
+    out.clear();
+    out.push_str(TERRAIN_CHUNK_ARTIFACT_PREFIX);
+    out.push('/');
+    out.push_str(project_key);
+    out.push('/');
+    let _ = write!(out, "{chunk_x}_{chunk_z}/lod{lod}");
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerrainChunkArtifactKey {
     pub project_key: String,
@@ -593,6 +611,26 @@ impl TerrainCameraInfo {
 
         let lod = (normalized * max_lod as f32).floor() as u8;
         lod.min(max_lod)
+    }
+
+    pub fn lod_for_distance_sq(&self, settings: &TerrainProjectSettings, distance_sq: f32) -> u8 {
+        let max_lod = settings.lod_policy.max_lod;
+        if max_lod == 0 {
+            return 0;
+        }
+
+        if !settings.lod_policy.distance_bands.is_empty() {
+            let mut lod = 0_u8;
+            for (idx, band) in settings.lod_policy.distance_bands.iter().enumerate() {
+                let band_sq = band * band;
+                if distance_sq > band_sq {
+                    lod = lod.saturating_add(1).max((idx + 1) as u8);
+                }
+            }
+            return lod.min(max_lod);
+        }
+
+        self.lod_for_distance(settings, distance_sq.sqrt())
     }
 }
 
@@ -806,40 +844,6 @@ fn max_chunk_coords(
     (count_x.saturating_sub(1), count_z.saturating_sub(1))
 }
 
-fn chunk_bounds_world(
-    settings: &TerrainProjectSettings,
-    chunk_coords: [i32; 2],
-) -> Option<([f32; 3], [f32; 3])> {
-    let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
-    let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
-    if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
-        return None;
-    }
-    let min_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
-    let min_z = settings.world_bounds_min[2] + chunk_coords[1] as f32 * chunk_size_z;
-    let max_x = min_x + chunk_size_x;
-    let max_z = min_z + chunk_size_z;
-    Some((
-        [min_x, settings.world_bounds_min[1], min_z],
-        [max_x, settings.world_bounds_max[1], max_z],
-    ))
-}
-
-fn distance_sq_point_aabb(point: [f32; 3], bounds_min: [f32; 3], bounds_max: [f32; 3]) -> f32 {
-    let mut distance_sq = 0.0;
-    for idx in 0..3 {
-        let value = point[idx];
-        if value < bounds_min[idx] {
-            let delta = bounds_min[idx] - value;
-            distance_sq += delta * delta;
-        } else if value > bounds_max[idx] {
-            let delta = value - bounds_max[idx];
-            distance_sq += delta * delta;
-        }
-    }
-    distance_sq
-}
-
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct TerrainTile {
     pub tile_id: u32,
@@ -997,28 +1001,53 @@ pub struct TerrainDB {
 
 #[derive(Clone, Debug, Default)]
 struct TerrainChunkArtifactIndex {
-    projects: HashMap<String, HashMap<[i32; 2], HashSet<u8>>>,
+    projects: HashMap<String, HashMap<[i32; 2], Vec<u8>>>,
 }
 
 impl TerrainChunkArtifactIndex {
     fn insert(&mut self, project_key: &str, chunk_coords: [i32; 2], lod: u8) {
-        self.projects
+        let lods = self
+            .projects
             .entry(project_key.to_string())
             .or_default()
             .entry(chunk_coords)
-            .or_default()
-            .insert(lod);
+            .or_default();
+        if !lods.contains(&lod) {
+            lods.push(lod);
+            lods.sort_unstable();
+        }
     }
 
-    fn best_lod(&self, project_key: &str, chunk_coords: [i32; 2], requested_lod: u8) -> Option<u8> {
+    fn has_lod(&self, project_key: &str, chunk_coords: [i32; 2], lod: u8) -> bool {
         self.projects
             .get(project_key)
             .and_then(|chunks| chunks.get(&chunk_coords))
-            .and_then(|lods| {
-                lods.iter()
-                    .copied()
-                    .min_by_key(|lod| (lod.abs_diff(requested_lod), *lod))
-            })
+            .map(|lods| lods.binary_search(&lod).is_ok())
+            .unwrap_or(false)
+    }
+
+    fn best_lod(&self, project_key: &str, chunk_coords: [i32; 2], requested_lod: u8) -> Option<u8> {
+        let lods = self.projects.get(project_key)?.get(&chunk_coords)?;
+        if lods.is_empty() {
+            return None;
+        }
+
+        match lods.binary_search(&requested_lod) {
+            Ok(idx) => Some(lods[idx]),
+            Err(0) => lods.first().copied(),
+            Err(idx) if idx >= lods.len() => lods.last().copied(),
+            Err(idx) => {
+                let lower = lods[idx - 1];
+                let upper = lods[idx];
+                let lower_dist = requested_lod.abs_diff(lower);
+                let upper_dist = requested_lod.abs_diff(upper);
+                if lower_dist <= upper_dist {
+                    Some(lower)
+                } else {
+                    Some(upper)
+                }
+            }
+        }
     }
 }
 
@@ -1170,28 +1199,28 @@ impl TerrainDB {
         radius: f32,
         lod: u8,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
-        let entries = chunk_coords_in_radius(settings, center, radius)
-            .into_iter()
-            .map(|coords| {
-                let coord_key = chunk_coord_key(coords[0], coords[1]);
-                chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
-            })
-            .collect::<Vec<_>>();
+        let coords = chunk_coords_in_radius(settings, center, radius);
+        let mut chunks = Vec::with_capacity(coords.len());
+        let mut entry =
+            String::with_capacity(TERRAIN_CHUNK_ARTIFACT_PREFIX.len() + project_key.len() + 32);
+        let use_artifact_index = self.data.is_some();
 
-        let available = self.data.as_ref().map(|rdb| {
-            rdb.entries()
-                .into_iter()
-                .map(|meta| meta.name)
-                .collect::<HashSet<_>>()
-        });
-
-        let mut chunks = Vec::new();
-        for entry in entries {
-            if let Some(available) = &available {
-                if !available.contains(&entry) {
-                    continue;
-                }
+        for chunk_coords in coords {
+            if use_artifact_index
+                && !self
+                    .chunk_artifact_index
+                    .has_lod(project_key, chunk_coords, lod)
+            {
+                continue;
             }
+
+            chunk_artifact_entry_into(
+                &mut entry,
+                project_key,
+                chunk_coords[0],
+                chunk_coords[1],
+                lod,
+            );
             chunks.push(self.fetch_chunk_artifact(entry.as_str())?);
         }
 
@@ -1205,28 +1234,28 @@ impl TerrainDB {
         frustum: &TerrainFrustum,
         lod: u8,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
-        let entries = chunk_coords_in_frustum(settings, frustum)
-            .into_iter()
-            .map(|coords| {
-                let coord_key = chunk_coord_key(coords[0], coords[1]);
-                chunk_artifact_entry(project_key, &coord_key, &lod_key(lod))
-            })
-            .collect::<Vec<_>>();
+        let coords = chunk_coords_in_frustum(settings, frustum);
+        let mut chunks = Vec::with_capacity(coords.len());
+        let mut entry =
+            String::with_capacity(TERRAIN_CHUNK_ARTIFACT_PREFIX.len() + project_key.len() + 32);
+        let use_artifact_index = self.data.is_some();
 
-        let available = self.data.as_ref().map(|rdb| {
-            rdb.entries()
-                .into_iter()
-                .map(|meta| meta.name)
-                .collect::<HashSet<_>>()
-        });
-
-        let mut chunks = Vec::new();
-        for entry in entries {
-            if let Some(available) = &available {
-                if !available.contains(&entry) {
-                    continue;
-                }
+        for chunk_coords in coords {
+            if use_artifact_index
+                && !self
+                    .chunk_artifact_index
+                    .has_lod(project_key, chunk_coords, lod)
+            {
+                continue;
             }
+
+            chunk_artifact_entry_into(
+                &mut entry,
+                project_key,
+                chunk_coords[0],
+                chunk_coords[1],
+                lod,
+            );
             chunks.push(self.fetch_chunk_artifact(entry.as_str())?);
         }
 
@@ -1272,23 +1301,68 @@ impl TerrainDB {
             return Ok(Vec::new());
         };
 
+        let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+        let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+        if chunk_size_x <= 0.0 || chunk_size_z <= 0.0 {
+            return Ok(Vec::new());
+        }
+
         let max_dist_sq = max_dist * max_dist;
+        let chunk_count_x = (max_chunk[0] - min_chunk[0] + 1).max(0) as usize;
+        let chunk_count_z = (max_chunk[1] - min_chunk[1] + 1).max(0) as usize;
+        let mut artifacts = Vec::with_capacity(chunk_count_x.saturating_mul(chunk_count_z));
+        let mut entry =
+            String::with_capacity(TERRAIN_CHUNK_ARTIFACT_PREFIX.len() + project_key.len() + 32);
         let use_artifact_index = self.data.is_some();
-        let mut artifacts = Vec::new();
+
+        let world_min_x = settings.world_bounds_min[0];
+        let world_min_y = settings.world_bounds_min[1];
+        let world_min_z = settings.world_bounds_min[2];
+        let world_max_y = settings.world_bounds_max[1];
+
+        let cam_x = camera.position[0];
+        let cam_y = camera.position[1];
+        let cam_z = camera.position[2];
+
+        let dy = if cam_y < world_min_y {
+            world_min_y - cam_y
+        } else if cam_y > world_max_y {
+            cam_y - world_max_y
+        } else {
+            0.0
+        };
+        let dy_sq = dy * dy;
 
         for chunk_x in min_chunk[0]..=max_chunk[0] {
+            let min_x = world_min_x + chunk_x as f32 * chunk_size_x;
+            let max_x = min_x + chunk_size_x;
+            let dx = if cam_x < min_x {
+                min_x - cam_x
+            } else if cam_x > max_x {
+                cam_x - max_x
+            } else {
+                0.0
+            };
+            let dx_sq = dx * dx;
+
             for chunk_z in min_chunk[1]..=max_chunk[1] {
-                let chunk_coords = [chunk_x, chunk_z];
-                let Some((bounds_min, bounds_max)) = chunk_bounds_world(settings, chunk_coords)
-                else {
-                    continue;
+                let min_z = world_min_z + chunk_z as f32 * chunk_size_z;
+                let max_z = min_z + chunk_size_z;
+                let dz = if cam_z < min_z {
+                    min_z - cam_z
+                } else if cam_z > max_z {
+                    cam_z - max_z
+                } else {
+                    0.0
                 };
-                let distance_sq = distance_sq_point_aabb(camera.position, bounds_min, bounds_max);
+
+                let distance_sq = dx_sq + dy_sq + dz * dz;
                 if distance_sq > max_dist_sq {
                     continue;
                 }
 
-                let requested_lod = camera.lod_for_distance(settings, distance_sq.sqrt());
+                let chunk_coords = [chunk_x, chunk_z];
+                let requested_lod = camera.lod_for_distance_sq(settings, distance_sq);
                 let lod = if use_artifact_index {
                     let Some(lod) = self.chunk_artifact_index.best_lod(
                         project_key,
@@ -1302,8 +1376,7 @@ impl TerrainDB {
                     requested_lod
                 };
 
-                let coord_key = chunk_coord_key(chunk_x, chunk_z);
-                let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key(lod));
+                chunk_artifact_entry_into(&mut entry, project_key, chunk_x, chunk_z, lod);
                 artifacts.push(self.fetch_chunk_artifact(entry.as_str())?);
             }
         }

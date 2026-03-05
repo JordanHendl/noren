@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use memmap2::{Mmap, MmapMut};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::{Seek, SeekFrom},
     path::Path,
@@ -24,8 +25,8 @@ fn fnv1a64(s: &str) -> u64 {
     h
 }
 
-/// A cross-device, cross-process “type hash”.
-/// Stable as long as the type’s *name/path* doesn’t change.
+/// A cross-device, cross-process "type hash".
+/// Stable as long as the type's *name/path* doesn't change.
 fn portable_type_hash<T>() -> u64 {
     fnv1a64(type_name::<T>())
 }
@@ -419,37 +420,30 @@ impl RDBFile {
 }
 
 pub struct RDBView {
-    header: Header,
     mmap: Mmap,
     entries_start: usize,
     data_start: usize,
+    entry_index: HashMap<String, Entry>,
 }
 
 impl RDBView {
     /// Fetches a deserialized value from the mapped file by entry name.
     pub fn fetch<T: DeserializeOwned>(&mut self, name: &str) -> Result<T, RdbErr> {
-        let data = &self.mmap[self.data_start..self.mmap.len()];
-        let name_bytes = name.as_bytes();
-
-        for i in 0..self.header.entry_count {
-            //self.mmap[self.entries_start..self.data_start]
-            let offset = (i as isize * std::mem::size_of::<Entry>() as isize) as usize;
-            let entry_end = self.entries_start + offset + std::mem::size_of::<Entry>();
-            let ptr = self.mmap[self.entries_start + offset..entry_end].as_ptr() as *const Entry;
-            let entry = unsafe { std::ptr::read_unaligned(ptr) };
-            if stored_name_bytes(&entry.name) == name_bytes {
-                // Types match?
-                if entry.type_tag == portable_type_hash::<T>() as u32 {
-                    let data_start = entry.offset as usize;
-                    let data_end = data_start + entry.len as usize;
-
-                    let obj_bytes = &data[data_start..data_end];
-                    return Ok(from_bytes::<T>(obj_bytes));
-                }
-            }
+        let entry = self.entry_index.get(name).ok_or(RdbErr::BadHeader)?;
+        if entry.type_tag != portable_type_hash::<T>() as u32 {
+            return Err(RdbErr::BadHeader);
         }
 
-        return Err(RdbErr::BadHeader);
+        let data = &self.mmap[self.data_start..self.mmap.len()];
+        let data_start = entry.offset as usize;
+        let data_end = data_start
+            .checked_add(entry.len as usize)
+            .ok_or(RdbErr::BadHeader)?;
+        if data_end > data.len() {
+            return Err(RdbErr::BadHeader);
+        }
+
+        Ok(from_bytes::<T>(&data[data_start..data_end]))
     }
 
     /// Load by mmap, then cast header/entries directly from the mapped bytes.
@@ -475,11 +469,19 @@ impl RDBView {
             return Err(RdbErr::TooSmall);
         }
 
+        let entries = &map[header_sz..need];
+        let mut entry_index = HashMap::with_capacity(hdr.entry_count as usize);
+        for entry in EntryIter::new(entries) {
+            let name = String::from_utf8_lossy(stored_name_bytes(&entry.name)).into_owned();
+            // Keep first occurrence to preserve historical linear-scan behavior.
+            entry_index.entry(name).or_insert(entry);
+        }
+
         Ok(Self {
-            header: *hdr,
             mmap: map,
             entries_start: header_sz,
             data_start: need,
+            entry_index,
         })
     }
 
@@ -492,22 +494,17 @@ impl RDBView {
     /// Returns the raw byte contents for a named entry.
     pub fn entry_bytes(&self, name: &str) -> Result<&[u8], RdbErr> {
         let data = &self.mmap[self.data_start..self.mmap.len()];
-        let entries = &self.mmap[self.entries_start..self.data_start];
+        let entry = self.entry_index.get(name).ok_or(RdbErr::BadHeader)?;
 
-        for entry in EntryIter::new(entries) {
-            if stored_name_bytes(&entry.name) == name.as_bytes() {
-                let start = entry.offset as usize;
-                let end = start
-                    .checked_add(entry.len as usize)
-                    .ok_or(RdbErr::BadHeader)?;
-                if end > data.len() {
-                    return Err(RdbErr::BadHeader);
-                }
-                return Ok(&data[start..end]);
-            }
+        let start = entry.offset as usize;
+        let end = start
+            .checked_add(entry.len as usize)
+            .ok_or(RdbErr::BadHeader)?;
+        if end > data.len() {
+            return Err(RdbErr::BadHeader);
         }
 
-        Err(RdbErr::BadHeader)
+        Ok(&data[start..end])
     }
 }
 // ---------------------------
