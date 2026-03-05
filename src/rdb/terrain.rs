@@ -530,11 +530,11 @@ pub struct TerrainChunkArtifactKey {
 pub fn parse_chunk_artifact_entry(entry: &str) -> Option<TerrainChunkArtifactKey> {
     let prefix = format!("{TERRAIN_CHUNK_ARTIFACT_PREFIX}/");
     let remainder = entry.strip_prefix(&prefix)?;
-    let mut parts = remainder.split('/');
-    let project_key = parts.next()?.to_string();
-    let coord_key = parts.next()?;
+    let mut parts = remainder.rsplitn(3, '/');
     let lod_key = parts.next()?;
-    if parts.next().is_some() {
+    let coord_key = parts.next()?;
+    let project_key = parts.next()?.to_string();
+    if project_key.is_empty() {
         return None;
     }
     let (x, y) = parse_chunk_coord_key(coord_key)?;
@@ -1010,12 +1010,15 @@ impl TerrainChunkArtifactIndex {
             .insert(lod);
     }
 
-    fn contains(&self, project_key: &str, chunk_coords: [i32; 2], lod: u8) -> bool {
+    fn best_lod(&self, project_key: &str, chunk_coords: [i32; 2], requested_lod: u8) -> Option<u8> {
         self.projects
             .get(project_key)
             .and_then(|chunks| chunks.get(&chunk_coords))
-            .map(|lods| lods.contains(&lod))
-            .unwrap_or(false)
+            .and_then(|lods| {
+                lods.iter()
+                    .copied()
+                    .min_by_key(|lod| (lod.abs_diff(requested_lod), *lod))
+            })
     }
 }
 
@@ -1236,16 +1239,7 @@ impl TerrainDB {
         project_key: &str,
         camera: &TerrainCameraInfo,
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
-        let available = self.data.as_ref().map(|rdb| {
-            rdb.entries()
-                .into_iter()
-                .map(|meta| meta.name)
-                .collect::<HashSet<_>>()
-        });
-
-        Self::fetch_chunks_for_camera_with(settings, project_key, camera, available, |entry| {
-            self.fetch_chunk_artifact(entry)
-        })
+        self.fetch_chunks_for_camera_internal(settings, project_key, camera)
     }
 
     /// Fetches terrain chunk artifacts using camera data stored in furikake bindless state.
@@ -1258,13 +1252,22 @@ impl TerrainDB {
     ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
         let cameras = furikake.reserved::<ReservedBindlessCamera>("meshi_bindless_cameras")?;
         let camera_info = terrain_camera_info_from_furikake(cameras.camera(camera));
-        let max_dist = camera_info.max_dist.max(0.0);
+        self.fetch_chunks_for_camera_internal(settings, project_key, &camera_info)
+    }
+
+    fn fetch_chunks_for_camera_internal(
+        &mut self,
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        camera: &TerrainCameraInfo,
+    ) -> Result<Vec<TerrainChunkArtifact>, NorenError> {
+        let max_dist = camera.max_dist.max(0.0);
         if max_dist <= 0.0 {
             return Ok(Vec::new());
         }
 
         let Some((min_chunk, max_chunk)) =
-            chunk_index_window_for_camera(settings, camera_info.position, max_dist)
+            chunk_index_window_for_camera(settings, camera.position, max_dist)
         else {
             return Ok(Vec::new());
         };
@@ -1280,72 +1283,29 @@ impl TerrainDB {
                 else {
                     continue;
                 };
-                let distance_sq =
-                    distance_sq_point_aabb(camera_info.position, bounds_min, bounds_max);
+                let distance_sq = distance_sq_point_aabb(camera.position, bounds_min, bounds_max);
                 if distance_sq > max_dist_sq {
                     continue;
                 }
 
-                let lod = camera_info.lod_for_distance(settings, distance_sq.sqrt());
-                if use_artifact_index
-                    && !self
-                        .chunk_artifact_index
-                        .contains(project_key, chunk_coords, lod)
-                {
-                    continue;
-                }
+                let requested_lod = camera.lod_for_distance(settings, distance_sq.sqrt());
+                let lod = if use_artifact_index {
+                    let Some(lod) = self.chunk_artifact_index.best_lod(
+                        project_key,
+                        chunk_coords,
+                        requested_lod,
+                    ) else {
+                        continue;
+                    };
+                    lod
+                } else {
+                    requested_lod
+                };
 
-                let entry = format!(
-                    "{TERRAIN_CHUNK_ARTIFACT_PREFIX}/{project_key}/{chunk_x}_{chunk_z}/lod{lod}"
-                );
+                let coord_key = chunk_coord_key(chunk_x, chunk_z);
+                let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key(lod));
                 artifacts.push(self.fetch_chunk_artifact(entry.as_str())?);
             }
-        }
-
-        Ok(artifacts)
-    }
-
-    fn fetch_chunks_for_camera_with<F>(
-        settings: &TerrainProjectSettings,
-        project_key: &str,
-        camera: &TerrainCameraInfo,
-        available: Option<HashSet<String>>,
-        mut fetch: F,
-    ) -> Result<Vec<TerrainChunkArtifact>, NorenError>
-    where
-        F: FnMut(&str) -> Result<TerrainChunkArtifact, NorenError>,
-    {
-        let max_dist = camera.max_dist.max(0.0);
-        if max_dist <= 0.0 {
-            return Ok(Vec::new());
-        }
-
-        let entries =
-            chunk_coords_in_radius(settings, [camera.position[0], camera.position[2]], max_dist)
-                .into_iter()
-                .filter_map(|coords| {
-                    let (bounds_min, bounds_max) = chunk_bounds_world(settings, coords)?;
-                    let distance_sq =
-                        distance_sq_point_aabb(camera.position, bounds_min, bounds_max);
-                    if distance_sq > max_dist * max_dist {
-                        return None;
-                    }
-
-                    let distance = distance_sq.sqrt();
-                    let lod = camera.lod_for_distance(settings, distance);
-                    let coord_key = chunk_coord_key(coords[0], coords[1]);
-                    Some(chunk_artifact_entry(project_key, &coord_key, &lod_key(lod)))
-                })
-                .collect::<Vec<_>>();
-
-        let mut artifacts = Vec::new();
-        for entry in entries {
-            if let Some(available) = &available {
-                if !available.contains(&entry) {
-                    continue;
-                }
-            }
-            artifacts.push(fetch(entry.as_str())?);
         }
 
         Ok(artifacts)
@@ -1689,6 +1649,66 @@ mod tests {
         }
     }
 
+    fn camera_test_settings() -> TerrainProjectSettings {
+        let mut settings = TerrainProjectSettings::default();
+        settings.tile_size = 1.0;
+        settings.tiles_per_chunk = [4, 4];
+        settings.world_bounds_min = [0.0, 0.0, 0.0];
+        settings.world_bounds_max = [16.0, 32.0, 16.0];
+        settings.lod_policy = TerrainLodPolicy {
+            max_lod: 2,
+            distance_bands: vec![2.0, 6.0],
+        };
+        settings
+    }
+
+    fn camera_test_artifact(
+        settings: &TerrainProjectSettings,
+        project_key: &str,
+        chunk_coords: [i32; 2],
+        lod: u8,
+        height: f32,
+    ) -> TerrainChunkArtifact {
+        let chunk_size_x = settings.tiles_per_chunk[0] as f32 * settings.tile_size;
+        let chunk_size_z = settings.tiles_per_chunk[1] as f32 * settings.tile_size;
+        let min_x = settings.world_bounds_min[0] + chunk_coords[0] as f32 * chunk_size_x;
+        let min_z = settings.world_bounds_min[2] + chunk_coords[1] as f32 * chunk_size_z;
+        let max_x = min_x + chunk_size_x;
+        let max_z = min_z + chunk_size_z;
+
+        let grid_size = [3, 3];
+        let sample_count = (grid_size[0] * grid_size[1]) as usize;
+
+        TerrainChunkArtifact {
+            project_key: project_key.to_string(),
+            chunk_coords,
+            lod,
+            bounds_min: [min_x, settings.world_bounds_min[1], min_z],
+            bounds_max: [max_x, settings.world_bounds_max[1], max_z],
+            grid_size,
+            sample_spacing: chunk_size_x / 2.0,
+            heights: vec![height; sample_count],
+            normals: vec![[0.0, 1.0, 0.0]; sample_count],
+            hole_masks: vec![0; sample_count],
+            material_blend_texture: vec![[255, 0, 0, 0]; sample_count],
+            material_ids: None,
+            material_weights: None,
+            content_hash: ((chunk_coords[0] as i64 as u64) << 32)
+                ^ ((chunk_coords[1] as i64 as u64) << 16)
+                ^ lod as u64,
+        }
+    }
+
+    fn camera_info(position: [f32; 3], max_dist: f32) -> TerrainCameraInfo {
+        TerrainCameraInfo {
+            frustum: [[0.0; 2]; 4],
+            position,
+            curve: 1.0,
+            falloff: 0.0,
+            max_dist,
+        }
+    }
+
     #[test]
     fn tile_lookup_works() {
         let chunk = sample_chunk();
@@ -1818,10 +1838,50 @@ mod tests {
         index.insert("a", [1, 2], 2);
         index.insert("b", [1, 2], 1);
 
-        assert!(index.contains("a", [1, 2], 0));
-        assert!(index.contains("a", [1, 2], 2));
-        assert!(!index.contains("a", [1, 2], 1));
-        assert!(index.contains("b", [1, 2], 1));
+        assert_eq!(index.best_lod("a", [1, 2], 0), Some(0));
+        assert_eq!(index.best_lod("a", [1, 2], 1), Some(0));
+        assert_eq!(index.best_lod("a", [1, 2], 2), Some(2));
+        assert_eq!(index.best_lod("a", [1, 2], 3), Some(2));
+        assert_eq!(index.best_lod("missing", [1, 2], 0), None);
+    }
+
+    #[test]
+    fn fetch_chunks_for_camera_returns_valid_chunks_for_near_and_far_cameras()
+    -> Result<(), NorenError> {
+        let temp = tempdir().expect("temp dir");
+        let path = temp.path().join("terrain.rdb");
+        let project_key = "world/region-a";
+        let settings = camera_test_settings();
+
+        let artifact = camera_test_artifact(&settings, project_key, [0, 0], 0, 12.0);
+        let coord_key = chunk_coord_key(artifact.chunk_coords[0], artifact.chunk_coords[1]);
+
+        let mut file = RDBFile::new();
+        file.add(
+            &chunk_artifact_entry(project_key, &coord_key, &lod_key(artifact.lod)),
+            &artifact,
+        )?;
+        file.save(&path)?;
+
+        let mut db = TerrainDB::new(path.to_str().unwrap());
+        let cameras = [
+            camera_info([1.0, 4.0, 1.0], 20.0),
+            camera_info([1.0, 4.0, 14.0], 20.0),
+        ];
+
+        for camera in cameras {
+            let chunks = db.fetch_chunks_for_camera(&settings, project_key, &camera)?;
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].chunk_coords, [0, 0]);
+            assert_eq!(chunks[0].lod, 0);
+
+            let center_x = (chunks[0].bounds_min[0] + chunks[0].bounds_max[0]) * 0.5;
+            let center_z = (chunks[0].bounds_min[2] + chunks[0].bounds_max[2]) * 0.5;
+            let sample = height_from_artifact(&settings, &chunks[0], center_x, center_z);
+            assert_eq!(sample, Some(12.0));
+        }
+
+        Ok(())
     }
 
     #[test]
@@ -1999,6 +2059,19 @@ mod tests {
         assert_eq!(parsed.project_key, project_key);
         assert_eq!(parsed.chunk_coords, [-2, 5]);
         assert_eq!(parsed.lod, 3);
+        assert_eq!(parsed.entry, entry);
+    }
+
+    #[test]
+    fn chunk_artifact_entry_parses_project_keys_with_path_segments() {
+        let project_key = "world/region-a";
+        let coord_key = chunk_coord_key(3, 4);
+        let lod_key = lod_key(1);
+        let entry = chunk_artifact_entry(project_key, &coord_key, &lod_key);
+        let parsed = parse_chunk_artifact_entry(&entry).expect("parse entry");
+        assert_eq!(parsed.project_key, project_key);
+        assert_eq!(parsed.chunk_coords, [3, 4]);
+        assert_eq!(parsed.lod, 1);
         assert_eq!(parsed.entry, entry);
     }
 }
